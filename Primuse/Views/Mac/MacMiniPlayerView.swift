@@ -333,10 +333,7 @@ struct MacMiniPlayerView: View {
                         Spacer().frame(height: 30)
                         ForEach(Array(lyrics.enumerated()), id: \.element.id) { i, line in
                             let active = i == currentIndex
-                            Text(line.text)
-                                .font(.system(size: active ? 18 : 14, weight: active ? .bold : .regular))
-                                .foregroundStyle(active ? .primary : .secondary)
-                                .opacity(active ? 1 : 0.55)
+                            miniLyricLine(line: line, index: i, isActive: active)
                                 .id(line.id)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -356,6 +353,32 @@ struct MacMiniPlayerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func miniLyricLine(line: LyricLine, index: Int, isActive: Bool) -> some View {
+        let fontSize: CGFloat = isActive ? 18 : 14
+        let weight: Font.Weight = isActive ? .bold : .regular
+        if shouldRenderWordTimeline(line: line, index: index, isActive: isActive) {
+            KaraokeLineView(
+                line: line,
+                fontSize: fontSize,
+                weight: weight,
+                activeColor: .primary.opacity(isActive ? 1 : 0.72),
+                inactiveColor: .secondary.opacity(isActive ? 0.55 : 0.42),
+                timeAt: { date in player.interpolatedTime(at: date) }
+            )
+        } else {
+            Text(line.text)
+                .font(.system(size: fontSize, weight: weight))
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .opacity(isActive ? 1 : 0.55)
+        }
+    }
+
+    private func shouldRenderWordTimeline(line: LyricLine, index: Int, isActive: Bool) -> Bool {
+        guard line.isWordLevel else { return false }
+        return isActive || abs(index - currentIndex) == 1
     }
 
     private func reloadLyrics() async {

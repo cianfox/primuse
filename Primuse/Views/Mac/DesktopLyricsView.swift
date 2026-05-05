@@ -209,12 +209,22 @@ struct DesktopLyricsView: View {
             // 顶到工具按钮区域。
             let activeText = active?.text ?? placeholder
             HStack(alignment: .top, spacing: 14) {
-                verticalColumn(activeText,
-                               fontSize: fittedFontSize(text: activeText,
-                                                        in: size,
-                                                        base: activeFontSize(in: size)),
-                               weight: .semibold,
-                               color: lyricsColor)
+                if let active, active.isWordLevel {
+                    verticalWordColumn(active,
+                                       fontSize: fittedFontSize(text: activeText,
+                                                                in: size,
+                                                                base: activeFontSize(in: size)),
+                                       weight: .semibold,
+                                       activeColor: lyricsColor,
+                                       inactiveColor: .white.opacity(0.35))
+                } else {
+                    verticalColumn(activeText,
+                                   fontSize: fittedFontSize(text: activeText,
+                                                            in: size,
+                                                            base: activeFontSize(in: size)),
+                                   weight: .semibold,
+                                   color: lyricsColor)
+                }
                 if let next {
                     verticalColumn(next.text,
                                    fontSize: fittedFontSize(text: next.text,
@@ -279,6 +289,49 @@ struct DesktopLyricsView: View {
                     .frame(height: fontSize * Self.verticalLineHeightFactor)
             }
         }
+    }
+
+    private func verticalWordColumn(_ line: LyricLine,
+                                    fontSize: CGFloat,
+                                    weight: Font.Weight,
+                                    activeColor: Color,
+                                    inactiveColor: Color) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { context in
+            let now = player.interpolatedTime(at: context.date)
+            VStack(spacing: 0) {
+                ForEach(Array((line.syllables ?? []).enumerated()), id: \.offset) { _, syllable in
+                    Text(syllable.text)
+                        .font(.system(size: fontSize, weight: weight))
+                        .foregroundStyle(verticalSyllableColor(syllable, now: now,
+                                                               active: activeColor,
+                                                               inactive: inactiveColor))
+                        .shadow(color: .black.opacity(0.55), radius: 5, y: 2)
+                        .frame(height: fontSize * Self.verticalLineHeightFactor)
+                        .animation(.easeOut(duration: 0.12), value: verticalSyllableState(syllable, now: now))
+                }
+            }
+        }
+    }
+
+    private func verticalSyllableColor(_ syllable: LyricSyllable,
+                                       now: TimeInterval,
+                                       active: Color,
+                                       inactive: Color) -> Color {
+        switch verticalSyllableState(syllable, now: now) {
+        case 0:
+            return inactive
+        case 1:
+            return active.opacity(0.78)
+        default:
+            return active
+        }
+    }
+
+    private func verticalSyllableState(_ syllable: LyricSyllable, now: TimeInterval) -> Int {
+        let lookahead: TimeInterval = 0.10
+        if now < syllable.start - lookahead { return 0 }
+        if now <= max(syllable.end, syllable.start + 0.18) { return 2 }
+        return 1
     }
 
     // MARK: - Edge toolbar (按钮分散在 panel 四周)
