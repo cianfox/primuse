@@ -10,34 +10,62 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var searchText = ""
     @State private var showNowPlaying = false
+    private let legacyTabBarClearance: CGFloat = 49
+
+    @ViewBuilder
+    private var tabRoot: some View {
+        TabView(selection: $selectedTab) {
+            HomeView(switchToSettingsTab: { selectedTab = 3 })
+                .tabItem { Label(String(localized: "home_title"), systemImage: "house.fill") }
+                .tag(0)
+
+            LibraryView()
+                .tabItem { Label(String(localized: "library_title"), systemImage: "books.vertical") }
+                .tag(1)
+
+            SearchView(searchText: $searchText)
+                .tabItem { Label(String(localized: "search_title"), systemImage: "magnifyingglass") }
+                .tag(2)
+
+            SettingsView()
+                .tabItem { Label(String(localized: "settings_title"), systemImage: "gearshape") }
+                .tag(3)
+        }
+    }
+
+    @ViewBuilder
+    private var playerAwareTabRoot: some View {
+        #if os(iOS)
+        if player.currentSong != nil {
+            if #available(iOS 26.0, *) {
+                tabRoot
+                    .tabBarMinimizeBehavior(.onScrollDown)
+                    .tabViewBottomAccessory {
+                        NowPlayingAccessory(onTap: { showNowPlaying = true })
+                    }
+            } else {
+                tabRoot
+            }
+        } else {
+            tabRoot
+        }
+        #else
+        tabRoot
+        #endif
+    }
 
     var body: some View {
-        ZStack {
-            TabView(selection: $selectedTab) {
-                Tab(String(localized: "home_title"), systemImage: "house.fill", value: 0) {
-                    HomeView(
-                        switchToSettingsTab: { selectedTab = 3 }
-                    )
-                }
+        ZStack(alignment: .bottom) {
+            playerAwareTabRoot
 
-                Tab(String(localized: "library_title"), systemImage: "books.vertical", value: 1) {
-                    LibraryView()
-                }
-
-                Tab(String(localized: "search_title"), systemImage: "magnifyingglass", value: 2, role: .search) {
-                    SearchView(searchText: $searchText)
-                }
-
-                Tab(String(localized: "settings_title"), systemImage: "gearshape", value: 3) {
-                    SettingsView()
-                }
-            }
             #if os(iOS)
-            .tabBarMinimizeBehavior(player.currentSong != nil ? .onScrollDown : .never)
-            .tabViewBottomAccessory(isEnabled: player.currentSong != nil) {
-                NowPlayingAccessory(onTap: {
-                    showNowPlaying = true
-                })
+            if player.currentSong != nil {
+                if #unavailable(iOS 26.0) {
+                    LegacyNowPlayingAccessory(onTap: { showNowPlaying = true })
+                        .padding(.bottom, legacyTabBarClearance)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
             #endif
 
@@ -49,6 +77,7 @@ struct ContentView: View {
             // own internal `entered` state on first appear.
             if showNowPlaying {
                 PlayerOverlay(isPresented: $showNowPlaying)
+                    .zIndex(2)
             }
         }
         .onChange(of: library.visibleSongs.count) { _, _ in
@@ -185,6 +214,17 @@ struct PlayerOverlay: View {
 
 // MARK: - Now Playing Accessory (adapts to inline/expanded)
 
+struct LegacyNowPlayingAccessory: View {
+    var onTap: () -> Void
+
+    var body: some View {
+        MiniPlayerView(onTap: onTap)
+            .frame(maxWidth: .infinity)
+            .background(.ultraThinMaterial)
+    }
+}
+
+@available(iOS 26.0, *)
 struct NowPlayingAccessory: View {
     var onTap: () -> Void
     @Environment(AudioPlayerService.self) private var player

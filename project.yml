@@ -12,8 +12,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.1.1"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "8"
     DEVELOPMENT_TEAM: "2U97K3U27A"
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
@@ -85,6 +85,7 @@ targets:
           # 防御性 exclude:同样的逻辑反过来,避免 macOS 的 plist 被复制进 iOS bundle。
           - "Info.plist"
           - "Info-macOS.plist"
+          - "**/AppSecrets.example.swift"
     resources:
       - path: Primuse/Resources
     dependencies:
@@ -273,6 +274,7 @@ targets:
           # mac 的 INFOPLIST_FILE 已指向 Info-macOS.plist。
           - "Info.plist"
           - "Info-macOS.plist"
+          - "**/AppSecrets.example.swift"
     resources:
       - path: Primuse/Resources
     dependencies:

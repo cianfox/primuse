@@ -1,5 +1,8 @@
 import SwiftUI
 import PrimuseKit
+#if os(macOS)
+import AppKit
+#endif
 
 struct PlaylistDetailView: View {
     @Environment(AudioPlayerService.self) private var player
@@ -7,6 +10,9 @@ struct PlaylistDetailView: View {
     @Environment(SourcesStore.self) private var sourcesStore
     @Environment(MetadataBackfillService.self) private var backfill
     let playlist: Playlist
+
+    @State private var exportShareItem: ExportShareItem?
+    @State private var exportError: String?
 
     private var currentPlaylist: Playlist? {
         library.playlist(id: playlist.id)
@@ -18,6 +24,12 @@ struct PlaylistDetailView: View {
 
     private var playableSongs: [Song] {
         songs.filteredPlayable()
+    }
+
+    /// 给 .sheet 用 — URL 不是 Identifiable, 包一层。
+    struct ExportShareItem: Identifiable {
+        let id = UUID()
+        let url: URL
     }
 
     var body: some View {
@@ -87,6 +99,55 @@ struct PlaylistDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        export(format: .m3u8)
+                    } label: {
+                        Label("playlist_export_m3u8", systemImage: "doc.text")
+                    }
+                    Button {
+                        export(format: .json)
+                    } label: {
+                        Label("playlist_export_json", systemImage: "doc.badge.gearshape")
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(songs.isEmpty)
+            }
+        }
+        #if os(iOS)
+        .sheet(item: $exportShareItem) { item in
+            ShareSheet(items: [item.url])
+        }
+        #elseif os(macOS)
+        .onChange(of: exportShareItem?.url) { _, url in
+            guard let url else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            exportShareItem = nil
+        }
+        #endif
+        .alert(String(localized: "playlist_export_failed_title"),
+               isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
+            Button("ok", role: .cancel) {}
+        } message: { Text(exportError ?? "") }
+    }
+
+    private func export(format: PlaylistExporter.Format) {
+        do {
+            let target = currentPlaylist ?? playlist
+            let url = try PlaylistExporter.export(
+                playlist: target,
+                songs: songs,
+                format: format,
+                sourcesStore: sourcesStore
+            )
+            exportShareItem = ExportShareItem(url: url)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 
     #if os(macOS)

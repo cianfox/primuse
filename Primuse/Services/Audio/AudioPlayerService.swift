@@ -70,6 +70,16 @@ final class AudioPlayerService {
 
     private(set) var currentSong: Song?
     private(set) var isPlaying = false
+    /// 「歌播完了但 queue 没下一首」的状态 —— Apple Music / Spotify 风格的
+    /// "已播完待重播"。currentSong / queue / currentIndex 全保留, 只是
+    /// 引擎停了 + currentTime = 0 + isPlaying = false。用户点 play 会从头
+    /// 重放当前曲。这个状态存在的意义: 别让 currentSong 变 nil ——
+    /// 否则 NowPlayingView / 刮削 sheet / mini player 全是空白屏 (因为
+    /// 它们都靠 currentSong 渲染)。
+    ///
+    /// 触发: handleTrackEnd .off + nextSongInQueue() == nil
+    /// 退出: play(song:) / stop() / resume() (resume 会把当前歌重新 play)
+    private(set) var isAtTrackEnd = false
     /// `currentTimeAnchor` 在 didSet 里自动同步 wall-clock，配合 `interpolatedTime(at:)`
     /// 在 0.5s 引擎采样间隙内做线性外推，让 60Hz 字级歌词动画无抖。
     private(set) var currentTime: TimeInterval = 0 {
@@ -140,6 +150,11 @@ final class AudioPlayerService {
     private var crossfadeDecodingTask: Task<Void, Never>?
     private var crossfadeTimer: Timer?
     private var crossfadeTriggered = false
+    /// crossfade 进行中 —— 用来让 startTimeUpdater 跳过 currentTime 更新。
+    /// crossfade 期间 audioEngine.currentTime 还是旧曲的 primary node 时间,
+    /// 但 UI 已经切到新曲, 这两值对不上, 直接刷会让进度条乱跳。crossfade
+    /// 完成 swap 后 isCrossfading 清零, currentTime 跟随新 primary node。
+    private var isCrossfading = false
     private var playID: UUID?
 
     private var errorDismissTask: Task<Void, Never>?
@@ -243,6 +258,12 @@ final class AudioPlayerService {
         let callerFile = (caller as NSString).lastPathComponent
         plog("▶️ play(song: \(song.title)) playID=\(id.uuidString.prefix(8)) FROM=\(callerFile):\(callerLine)")
 
+        // 切到新歌前主动触发上一首的 streaming session finalize, 让它有机会
+        // 把 .partial 转成 final (如果缺口在 50MB 自动补齐阈值内)。
+        if let prev = currentSong, prev.id != song.id {
+            sourceManager?.finalizeStreamingSession(for: prev)
+        }
+
         // Stop current playback
         decodingTask?.cancel()
         decodingTask = nil
@@ -258,6 +279,7 @@ final class AudioPlayerService {
         duration = song.duration.sanitizedDuration
         isLoading = true
         isPlaying = false
+        isAtTrackEnd = false
         plog("▶️ currentSong set to: \(song.title)")
 
         do {
@@ -294,7 +316,7 @@ final class AudioPlayerService {
         isLoading = true
         isPlaying = false
         audioEngine.sampleTimeOffset = 0
-        crossfadeTriggered = false
+        crossfadeTriggered = false; isCrossfading = false
         activeDecoderKind = .native
 
         let isRemoteURL = url.scheme == "http" || url.scheme == "https"
@@ -425,6 +447,7 @@ final class AudioPlayerService {
             isLoading = false
             clearPendingPlaybackRecovery()
             library?.recordPlayback(of: song.id)
+            ScrobbleService.shared.handlePlaybackStarted(song: song); PlayHistoryStore.shared.beginSession(song: song)
             startTimeUpdater()
             updateNowPlayingInfo()
             updateNowPlayingArtworkIfNeeded()
@@ -557,6 +580,7 @@ final class AudioPlayerService {
             isLoading = false
             clearPendingPlaybackRecovery()
             library?.recordPlayback(of: song.id)
+            ScrobbleService.shared.handlePlaybackStarted(song: song); PlayHistoryStore.shared.beginSession(song: song)
             startTimeUpdater()
             updateNowPlayingInfo()
             updateNowPlayingArtworkIfNeeded()
@@ -820,6 +844,7 @@ final class AudioPlayerService {
             isLoading = false
             clearPendingPlaybackRecovery()
             library?.recordPlayback(of: song.id)
+            ScrobbleService.shared.handlePlaybackStarted(song: song); PlayHistoryStore.shared.beginSession(song: song)
             startTimeUpdater()
             updateNowPlayingInfo()
             updateNowPlayingArtworkIfNeeded()
@@ -917,7 +942,15 @@ final class AudioPlayerService {
     }
 
     func resume() {
-        guard !isLoading, currentSong != nil else { return }
+        guard !isLoading, let song = currentSong else { return }
+        // 「已播完待重播」: 引擎已经 stopPlayback, 不能 resume —— 那是 no-op。
+        // 直接重新 play 当前曲 (从 0 开始)。这是 Apple Music 锁屏在歌
+        // 播完之后再点 play 的行为。
+        if isAtTrackEnd {
+            isAtTrackEnd = false
+            Task { await play(song: song) }
+            return
+        }
         if needsPlaybackRecovery {
             seek(to: pendingRecoveryTime, startPlaying: true, isRecovery: true)
             return
@@ -937,25 +970,66 @@ final class AudioPlayerService {
     }
 
     func stop() {
+        // 主动结束当前 streaming session (切走 / 用户点停止时), 让 .partial
+        // 有机会转 final。
+        if let cur = currentSong {
+            sourceManager?.finalizeStreamingSession(for: cur)
+        }
         decodingTask?.cancel()
         decodingTask = nil
         crossfadeDecodingTask?.cancel()
         crossfadeDecodingTask = nil
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
-        crossfadeTriggered = false
+        crossfadeTriggered = false; isCrossfading = false
         audioEngine.stopPlayback()
         audioEngine.stopCrossfadeNode()
         audioEngine.resetPlayerVolume()
         isPlaying = false
+        isAtTrackEnd = false
         currentSong = nil
         currentTime = 0
         duration = 0
         clearPendingPlaybackRecovery()
         stopTimeUpdater()
+        ScrobbleService.shared.handlePlaybackStopped(); PlayHistoryStore.shared.endSession()
         // Clear NowPlaying info so Dynamic Island / Lock Screen also clears
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         updatePlaybackState()
+    }
+
+    /// 跟 stop() 的差别: 保留 currentSong / queue / currentIndex / duration,
+    /// 只清引擎 + 标 isAtTrackEnd = true。给 handleTrackEnd .off 用 ——
+    /// 用户搜出来一首歌 (queue 只有一首) 播完时不要把 UI 一下子全清掉
+    /// (sheet 白屏 / mini player 闪一下消失)。用户再点 play 可以从头重放
+    /// (resume() 检测到 isAtTrackEnd 会走 play(song:) 重新解码)。
+    private func stopAtTrackEnd() {
+        // 自然播完一首歌, 触发 finalize —— 这是 .partial → final 最关键的
+        // 时机, 用户期望「听完一整首」就该是完整缓存。
+        if let cur = currentSong {
+            sourceManager?.finalizeStreamingSession(for: cur)
+        }
+        decodingTask?.cancel()
+        decodingTask = nil
+        crossfadeDecodingTask?.cancel()
+        crossfadeDecodingTask = nil
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
+        crossfadeTriggered = false; isCrossfading = false
+        audioEngine.stopPlayback()
+        audioEngine.stopCrossfadeNode()
+        audioEngine.resetPlayerVolume()
+        isPlaying = false
+        isAtTrackEnd = true
+        currentTime = 0
+        clearPendingPlaybackRecovery()
+        stopTimeUpdater()
+        ScrobbleService.shared.handlePlaybackStopped(); PlayHistoryStore.shared.endSession()
+        // 锁屏 / Dynamic Island 显示「停在 0:00」状态, 不清空 ——
+        // 这样用户从锁屏点 play 也能直接重放当前曲。
+        updateNowPlayingInfo()
+        updatePlaybackState()
+        plog("⏹️ stopAtTrackEnd() currentSong preserved=\(currentSong?.title ?? "nil")")
     }
 
     func next(caller: String = #fileID, callerLine: Int = #line) async {
@@ -1000,6 +1074,8 @@ final class AudioPlayerService {
         let targetTime = safeDuration > 0 ? min(requestedTime, safeDuration) : requestedTime
         currentTime = targetTime
         isLoading = true
+        // 用户拖进度条 = 重新介入这首歌, 退出 "已播完" 状态
+        isAtTrackEnd = false
         updateNowPlayingInfo()
 
         guard let song = currentSong else { isLoading = false; return }
@@ -1261,7 +1337,7 @@ final class AudioPlayerService {
             currentSong = nextSong
             duration = nextSong.duration
             currentTime = 0
-            crossfadeTriggered = false
+            crossfadeTriggered = false; isCrossfading = false
             library?.recordPlayback(of: nextSong.id)
 
             // Apply ReplayGain for next track
@@ -1352,7 +1428,7 @@ final class AudioPlayerService {
 
     private func startCrossfade(duration crossfadeDuration: Double) async {
         guard let nextSong = nextSongInQueue() else {
-            crossfadeTriggered = false
+            crossfadeTriggered = false; isCrossfading = false
             return
         }
 
@@ -1360,16 +1436,33 @@ final class AudioPlayerService {
             let nextURL = try await resolvedURL(for: nextSong)
             guard nativeDecoder.canDecode(url: nextURL),
                   let outputFormat = audioEngine.outputFormat else {
-                crossfadeTriggered = false
+                crossfadeTriggered = false; isCrossfading = false
                 return
             }
+
+            // crossfade 一开始就把 UI 切到下一首 —— 用户听到的主音是 next
+            // 在淡入接管, 看到的应该跟着是 next。之前要等 ramp 跑完才切,
+            // 出现「下一首歌的声音出来了但播放器还显示上一首」的不一致。
+            // 期间 currentTime 暂停更新 (isCrossfading=true), 直到 swap
+            // 完成跟随新 primary node。
+            isCrossfading = true
+            advanceToNextIndex()
+            currentSong = nextSong
+            currentTime = 0
+            duration = nextSong.duration.sanitizedDuration
+            library?.recordPlayback(of: nextSong.id)
+            ScrobbleService.shared.handlePlaybackStarted(song: nextSong)
+            PlayHistoryStore.shared.beginSession(song: nextSong)
+            updateNowPlayingInfo()
+            updateNowPlayingArtworkIfNeeded()
+            updatePlaybackState()
 
             // Note: ReplayGain for crossfade node would need per-node volume tracking
             // For now, apply after swap
 
             // Decode into crossfade node — schedule first buffer before play
             guard let stream = await decodeStream(for: nextSong, url: nextURL, outputFormat: outputFormat) else {
-                crossfadeTriggered = false
+                crossfadeTriggered = false; isCrossfading = false
                 return
             }
             let iteratorBox = BufferIteratorBox(stream.makeAsyncIterator())
@@ -1399,7 +1492,7 @@ final class AudioPlayerService {
             }
         } catch {
             plog("Crossfade start error: \(error)")
-            crossfadeTriggered = false
+            crossfadeTriggered = false; isCrossfading = false
         }
     }
 
@@ -1448,15 +1541,14 @@ final class AudioPlayerService {
         decodingTask = crossfadeDecodingTask
         crossfadeDecodingTask = nil
 
-        // Update state — also update playID so this becomes the authoritative session
+        // 注意: currentSong / queue index / scrobble session 已经在
+        // startCrossfade 早期设置好了, 不在这里重复 (重复会让 ScrobbleService
+        // 误以为又开了一首新歌, 重新计时)。
         let newID = UUID()
         playID = newID
-        advanceToNextIndex()
-        plog("🔄 completeCrossfade: currentSong → \(nextSong.title)")
-        currentSong = nextSong
-        currentTime = 0
-        crossfadeTriggered = false
-        library?.recordPlayback(of: nextSong.id)
+        crossfadeTriggered = false; isCrossfading = false
+        isCrossfading = false
+        plog("🔄 completeCrossfade: swap done, currentSong=\(nextSong.title)")
 
         // Apply ReplayGain (now on the swapped primary node)
         let settings = playbackSettings.snapshot()
@@ -1471,7 +1563,6 @@ final class AudioPlayerService {
         }
 
         updateNowPlayingInfo()
-        updateNowPlayingArtworkIfNeeded()
         updatePlaybackState()
     }
 
@@ -1507,6 +1598,10 @@ final class AudioPlayerService {
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // crossfade 期间 audioEngine 报的还是旧曲 primary node 时间,
+                // 但 UI 已经切到新曲, 直接刷会让进度条乱跳。等 swap 完成
+                // (isCrossfading=false) 再继续。
+                if self.isCrossfading { return }
                 if let time = self.audioEngine.currentTime {
                     self.currentTime = time.sanitizedDuration
 
@@ -1518,6 +1613,11 @@ final class AudioPlayerService {
                         await self.handleTrackEnd()
                         return
                     }
+
+                    // Scrobble 进度判断 — 50% 或 4 分钟阈值由 service 内部决定。
+                    // 传 currentTime (已听到这个时间点), seek 后该首歌 elapsed 视为
+                    // 实际的当前 currentTime, Last.fm 协议本身允许这种近似。
+                    ScrobbleService.shared.handleProgressTick(elapsed: self.currentTime); PlayHistoryStore.shared.tick(elapsed: self.currentTime)
                 }
                 // Check if crossfade should start
                 self.checkCrossfade()
@@ -1569,7 +1669,11 @@ final class AudioPlayerService {
             if nextSongInQueue() != nil {
                 await next()
             } else {
-                stop()
+                // 没下一首 —— 进 "已播完" 状态而不是 stop() 全清。
+                // 否则 currentSong 一旦为 nil, 上层各种 sheet (刮削 /
+                // SongInfo / AddToPlaylist) 内容是空的就白屏, mini
+                // player 也闪一下消失体验很差。
+                stopAtTrackEnd()
             }
         }
     }

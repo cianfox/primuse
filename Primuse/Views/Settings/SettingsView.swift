@@ -41,6 +41,24 @@ struct SettingsView: View {
                     }
 
                     NavigationLink {
+                        LyricsTranslationSettingsView()
+                    } label: {
+                        Label("lyrics_translation_title", systemImage: "character.bubble")
+                    }
+
+                    NavigationLink {
+                        DuplicateSongsView()
+                    } label: {
+                        Label("dup_title", systemImage: "square.stack.3d.up.badge.automatic")
+                    }
+
+                    NavigationLink {
+                        PlaylistImportView()
+                    } label: {
+                        Label("playlist_import_title", systemImage: "tray.and.arrow.down")
+                    }
+
+                    NavigationLink {
                         StorageManagementView()
                     } label: {
                         Label("storage_management", systemImage: "internaldrive")
@@ -82,6 +100,20 @@ struct SettingsView: View {
                     } label: {
                         Label("recently_deleted", systemImage: "trash")
                     }
+
+                    #if os(iOS)
+                    NavigationLink {
+                        ListeningStatsView()
+                    } label: {
+                        Label("stats_title", systemImage: "chart.bar.xaxis")
+                    }
+                    #endif
+
+                    NavigationLink {
+                        ScrobbleSettingsView()
+                    } label: {
+                        Label("scrobble_title", systemImage: "music.note.list")
+                    }
                 }
 
                 Section {
@@ -95,14 +127,14 @@ struct SettingsView: View {
                     HStack {
                         Text("version")
                         Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+                        Text(Bundle.main.appVersion)
                             .foregroundStyle(.secondary)
                     }
 
                     HStack {
                         Text("build")
                         Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")
+                        Text(Bundle.main.appBuildNumber)
                             .foregroundStyle(.secondary)
                     }
 
@@ -578,6 +610,17 @@ struct StorageManagementView: View {
     @State private var isClearingAudio = false
     @State private var isClearingImages = false
     @State private var isClearingMetadata = false
+    @State private var audioBreakdown: SourceManager.AudioCacheBreakdown?
+    @State private var isClearingPartials = false
+    @State private var isClearingOrphans = false
+    /// 清理结果提示 — 失败时让用户知道为什么没全清掉 (通常是当前正在播放的歌)。
+    @State private var cacheActionToast: String?
+    @State private var logShareItem: LogShareItem?
+
+    struct LogShareItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
 
     var body: some View {
         @Bindable var settings = playbackSettings
@@ -616,10 +659,15 @@ struct StorageManagementView: View {
                 ) {
                     isClearingAudio = true
                     Task {
-                        sourceManager.clearAudioCache()
+                        let result = sourceManager.clearAudioCache()
                         await refreshSizes()
                         isClearingAudio = false
+                        flashCacheToast(freed: result.freedBytes, failed: result.failedCount)
                     }
+                }
+
+                if let bd = audioBreakdown {
+                    audioBreakdownDetail(bd)
                 }
 
                 storageRow(
@@ -662,10 +710,59 @@ struct StorageManagementView: View {
             } footer: {
                 Text("metadata_clear_footer")
             }
+
+            // Debug 区只在 Debug 构建里显示 —— 生产 Release 不出现这个入口,
+            // 普通用户看不到 (避免误触把开发日志泄露)。
+            #if DEBUG
+            Section {
+                Button {
+                    logShareItem = LogShareItem(url: FileLogger.shared.logFileURL)
+                } label: {
+                    Label("storage_export_log", systemImage: "square.and.arrow.up.on.square")
+                }
+            } header: {
+                Text("debug")
+            } footer: {
+                Text("storage_export_log_footer")
+            }
+            #endif
         }
+        #if os(iOS)
+        .sheet(item: $logShareItem) { item in
+            ShareSheet(items: [item.url])
+        }
+        #endif
         .navigationTitle("storage_management")
         .navigationBarTitleDisplayMode(.inline)
         .task { await refreshSizes() }
+        .overlay(alignment: .bottom) {
+            if let msg = cacheActionToast {
+                Text(msg)
+                    .font(.subheadline)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func flashCacheToast(freed: Int64, failed: Int) {
+        let fmt = ByteCountFormatter()
+        fmt.countStyle = .file
+        let freedStr = fmt.string(fromByteCount: freed)
+        let msg: String
+        if failed > 0 {
+            // 通常是当前正在播放的歌锁住了文件 — 提示一下用户暂停后重试
+            msg = String(format: String(localized: "cache_clear_partial_format"), freedStr, failed)
+        } else {
+            msg = String(format: String(localized: "cache_clear_done_format"), freedStr)
+        }
+        withAnimation { cacheActionToast = msg }
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation { cacheActionToast = nil }
+        }
     }
 
     private func storageRow(
@@ -694,12 +791,111 @@ struct StorageManagementView: View {
         }
     }
 
+    @ViewBuilder
+    private func audioBreakdownDetail(_ bd: SourceManager.AudioCacheBreakdown) -> some View {
+        let fmt = ByteCountFormatter()
+        let _ = (fmt.countStyle = .file)
+
+        // 缩进 + 小一号字, 提示是 audio cache 的细分
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.secondary).font(.caption)
+                Text("cache_completed").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text(fmt.string(fromByteCount: bd.completedBytes))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+
+            if bd.activeBytes > 0 {
+                HStack {
+                    Image(systemName: "play.circle")
+                        .foregroundStyle(.blue).font(.caption)
+                    Text("cache_active").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(fmt.string(fromByteCount: bd.activeBytes))
+                        .font(.caption).foregroundStyle(.blue).monospacedDigit()
+                }
+            }
+
+            if bd.prewarmSeedBytes > 0 {
+                HStack {
+                    Image(systemName: "bolt.circle")
+                        .foregroundStyle(.secondary).font(.caption)
+                    Text("cache_prewarm_seed").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(fmt.string(fromByteCount: bd.prewarmSeedBytes))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+
+            HStack {
+                Image(systemName: "ellipsis.circle")
+                    .foregroundStyle(.secondary).font(.caption)
+                Text("cache_partial").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Text(fmt.string(fromByteCount: bd.partialBytes))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                if bd.partialBytes > 0 {
+                    Button(role: .destructive) {
+                        isClearingPartials = true
+                        Task {
+                            let result = sourceManager.purgeAllPartialFiles()
+                            await refreshSizes()
+                            isClearingPartials = false
+                            flashCacheToast(freed: result.freedBytes, failed: result.failedCount)
+                        }
+                    } label: {
+                        if isClearingPartials {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "trash").font(.caption2)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .disabled(isClearingPartials)
+                }
+            }
+
+            if bd.orphanedBytes > 0 {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange).font(.caption)
+                    Text("cache_orphaned").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(fmt.string(fromByteCount: bd.orphanedBytes))
+                        .font(.caption).foregroundStyle(.orange).monospacedDigit()
+                    Button(role: .destructive) {
+                        isClearingOrphans = true
+                        Task {
+                            await sourceManager.purgeOrphanedAudioCache()
+                            await refreshSizes()
+                            isClearingOrphans = false
+                        }
+                    } label: {
+                        if isClearingOrphans {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "trash").font(.caption2)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .disabled(isClearingOrphans)
+                }
+            }
+        }
+        .padding(.leading, 24)
+    }
+
     private func refreshSizes() async {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
 
         let audio = Int64(sourceManager.audioCacheSize())
         audioCacheSize = formatter.string(fromByteCount: audio)
+        audioBreakdown = await sourceManager.audioCacheBreakdown()
 
         let images = (try? await ImageCache.shared.diskCacheSize()) ?? 0
         imageCacheSize = formatter.string(fromByteCount: images)

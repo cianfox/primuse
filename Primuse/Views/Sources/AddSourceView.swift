@@ -213,7 +213,7 @@ struct AddSourceView: View {
                         }
                     }
                 } else {
-                    SecureField(authType == .apiKey ? "api_key" : "password", text: $password)
+                    RevealableSecureField(title: authType == .apiKey ? "api_key" : "password", text: $password)
                         .focused($focusedField, equals: .password)
                         .submitLabel(.done)
                         .onSubmit { focusedField = nil }
@@ -338,7 +338,7 @@ struct AddSourceView: View {
                     .focused($focusedField, equals: .username)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                SecureField("Secret Key", text: $password)
+                RevealableSecureField(title: "Secret Key", text: $password)
                     .focused($focusedField, equals: .password)
                 Toggle("use_ssl", isOn: $useSsl)
             }
@@ -355,7 +355,7 @@ struct AddSourceView: View {
                             .focused($focusedField, equals: .username)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
-                        SecureField("Client Secret", text: $password)
+                        RevealableSecureField(title: "Client Secret", text: $password)
                             .focused($focusedField, equals: .password)
                     }
                     .font(.caption)
@@ -365,7 +365,7 @@ struct AddSourceView: View {
                         .focused($focusedField, equals: .username)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    SecureField("Client Secret (optional)", text: $password)
+                    RevealableSecureField(title: "Client Secret (optional)", text: $password)
                         .focused($focusedField, equals: .password)
                     Label("cloud_oauth_hint", systemImage: "info.circle")
                         .font(.caption)

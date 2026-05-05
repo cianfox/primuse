@@ -27,6 +27,8 @@ struct MacDetailContainer: View {
         switch route {
         case .home:
             MacHomeView()
+        case .stats:
+            ListeningStatsView()
         case .search:
             SearchView(searchText: $searchText)
                 .navigationTitle("search_title")

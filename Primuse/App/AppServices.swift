@@ -26,7 +26,7 @@ final class AppServices {
         // the services we own. Crash loudly instead.
         dispatchPrecondition(condition: .onQueue(.main))
 
-        if CloudSyncChannel.isEnabled(.credentials) {
+        if CloudSyncChannel.usesSynchronizableKeychain() {
             KeychainService.migrateLegacyEntriesToICloud()
             CloudTokenManager.migrateLegacyEntriesToICloud()
         }

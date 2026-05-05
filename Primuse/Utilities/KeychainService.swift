@@ -39,28 +39,11 @@ enum KeychainService {
         // The delete above also wipes our cache; restore it.
         cacheWrite(password, for: account)
 
-        // 优先尝试 synchronizable(走 iCloud Keychain),失败回退到本地 keychain。
-        // 沙盒 macOS 在用户没开 iCloud Keychain 时,synchronizable 写入会
-        // 返回 errSecParam/errSecMissingEntitlement,之前没有诊断 + 回退,
-        // 表现就是「密码看似保存了但下次读出来是空」→ 永远 400。
-        let preferSync = CloudSyncChannel.isEnabled(.credentials)
-
-        var status = errSecParam
-        if preferSync {
-            status = addItem(account: account, data: data, synchronizable: true)
-            if status != errSecSuccess {
-                plog("⚠️ Keychain setPassword (sync) status=\(status) — falling back to local")
-            }
-        }
-        if status != errSecSuccess {
-            status = addItem(account: account, data: data, synchronizable: false)
-            if status != errSecSuccess {
-                plog("⚠️ Keychain setPassword (local) status=\(status) account=\(account)")
-            }
-        }
-    }
-
-    private static func addItem(account: String, data: Data, synchronizable: Bool) -> OSStatus {
+        // The `credentials` channel toggle decides whether new writes go to
+        // iCloud Keychain (synchronizable) or stay local. Past entries already
+        // on iCloud Keychain stay there — that's a system-level decision the
+        // user has to revisit in iOS Settings.
+        let synchronizable = CloudSyncChannel.usesSynchronizableKeychain()
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: PrimuseConstants.keychainServiceName,
@@ -69,7 +52,7 @@ enum KeychainService {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
             kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue as Any : kCFBooleanFalse as Any,
         ]
-        return SecItemAdd(addQuery as CFDictionary, nil)
+        addPasswordItem(addQuery, synchronizable: synchronizable, account: account)
     }
 
     static func getPassword(for account: String) -> String? {
@@ -86,7 +69,7 @@ enum KeychainService {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecAttrSynchronizable as String: synchronizableLookupValue,
         ]
 
         var result: AnyObject?
@@ -112,9 +95,34 @@ enum KeychainService {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: PrimuseConstants.keychainServiceName,
             kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecAttrSynchronizable as String: synchronizableLookupValue,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    private static func addPasswordItem(_ query: [String: Any], synchronizable: Bool, account: String) {
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecSuccess { return }
+
+        if synchronizable {
+            var localQuery = query
+            localQuery[kSecAttrSynchronizable as String] = kCFBooleanFalse as Any
+            let fallbackStatus = SecItemAdd(localQuery as CFDictionary, nil)
+            if fallbackStatus == errSecSuccess {
+                plog("🔐 Keychain sync write failed (\(status)) for account=\(account.prefix(8))…; saved local-only fallback")
+            } else {
+                plog("⚠️ Keychain write failed for account=\(account.prefix(8))… syncStatus=\(status) localStatus=\(fallbackStatus)")
+            }
+        } else {
+            plog("⚠️ Keychain local write failed for account=\(account.prefix(8))… status=\(status)")
+        }
+    }
+
+    private static var synchronizableLookupValue: Any {
+        if CloudSyncChannel.usesSynchronizableKeychain() {
+            return kSecAttrSynchronizableAny
+        }
+        return kCFBooleanFalse as Any
     }
 
     /// Re-write any pre-iCloud (non-synchronizable) entries as synchronizable so they

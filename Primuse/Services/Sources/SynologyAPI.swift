@@ -57,6 +57,8 @@ actor SynologyAPI {
             params["device_id"] = deviceId
         }
 
+        plog("☁️ Synology login start host=\(redactedHost(host)) port=\(port) ssl=\(useSsl) accountSet=\(!account.isEmpty) passwordSet=\(!password.isEmpty) otpSet=\(!(otpCode ?? "").isEmpty) deviceNameSet=\(!(deviceName ?? "").isEmpty) deviceIdSet=\(!(deviceId ?? "").isEmpty)")
+
         do {
             // POST + form-urlencoded body for login: avoids GET query-string
             // encoding quirks where multi-byte chars (e.g. CJK punctuation
@@ -72,12 +74,12 @@ actor SynologyAPI {
                 let sid = d?["sid"] as? String
                 let did = d?["did"] as? String ?? d?["device_id"] as? String
                 self.sid = sid
-                plog("🔐 Synology login OK sidLen=\(sid?.count ?? 0) hasDeviceId=\(did != nil)")
+                plog("☁️ Synology login OK host=\(redactedHost(host)) sidPresent=\(sid?.isEmpty == false) deviceIdPresent=\(did?.isEmpty == false)")
                 return LoginResult(success: true, sid: sid, deviceId: did, needs2FA: false)
             } else {
                 let error = json["error"] as? [String: Any]
                 let code = error?["code"] as? Int ?? 0
-                plog("🔐 Synology login FAIL code=\(code) raw=\(String(data: data, encoding: .utf8)?.prefix(200) ?? "")")
+                plog("⚠️ Synology login failed host=\(redactedHost(host)) code=\(code) message=\(synologyErrorMessage(code: code))")
 
                 if code == 403 {
                     return LoginResult(success: false, needs2FA: true,
@@ -92,7 +94,7 @@ actor SynologyAPI {
                                    errorMessage: synologyErrorMessage(code: code))
             }
         } catch {
-            plog("🔐 Synology login THROW \(error.localizedDescription)")
+            plog("⚠️ Synology login request error host=\(redactedHost(host)): \(error.localizedDescription)")
             return LoginResult(success: false, needs2FA: false,
                                errorMessage: error.localizedDescription,
                                underlyingError: error)
@@ -367,6 +369,15 @@ actor SynologyAPI {
         case 410: return "密码需要重置"
         default: return "连接失败 (错误码: \(code))"
         }
+    }
+
+    private func redactedHost(_ host: String) -> String {
+        let parts = host.split(separator: ".")
+        if parts.count >= 3, let first = parts.first {
+            return "\(first.prefix(3))….\(parts.suffix(2).joined(separator: "."))"
+        }
+        guard !host.isEmpty else { return "(empty)" }
+        return "\(host.prefix(3))…"
     }
 
     private func intValue(_ value: Any?) -> Int {

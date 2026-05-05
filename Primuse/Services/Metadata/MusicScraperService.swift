@@ -82,22 +82,30 @@ final class MusicScraperService {
         }
 
         if !dryRun && updatedSong != song {
+            // 拿到 lyrics 立即写 hash JSON cache + 把 song.lyricsFileName 改成
+            // hash filename (不是 NAS .lrc path) —— 否则 NowPlayingView.loadLyrics
+            // 立即跑时, Tier1a cache miss + Tier1b 看 lyricsFileName 含 "/" 走
+            // Tier3 从 NAS 拉 line-level .lrc, 用户看到 line-level, 等后续 sidecar
+            // task 写 cache 已经晚了 (UI 不会再 reload)。
+            let lyricsLines = result.lyricsLines
+            let coverData = result.coverData
+            if let lyricsLines, !lyricsLines.isEmpty {
+                await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: updatedSong.id, force: true)
+                updatedSong.lyricsFileName = MetadataAssetStore.shared.expectedLyricsFileName(for: updatedSong.id)
+            }
             library.replaceSong(updatedSong)
 
             // Write sidecar files to source (cover.jpg, .lrc) and update Song refs
-            let coverData = result.coverData
-            let lyricsLines = result.lyricsLines
             plog("📝 Sidecar: coverData=\(coverData?.count ?? 0)B lyricsLines=\(lyricsLines?.count ?? 0) for '\(updatedSong.title)'")
             if coverData != nil || lyricsLines != nil {
                 let songForWrite = updatedSong
                 let sourceManager = self.sourceManager
                 let songID = updatedSong.id
                 Task { @MainActor in
-                    // 写 sidecar **前**先清旧 cache —— 避免 race window 内
-                    // NowPlayingView/CachedArtworkView 读到上次刮削写入的污染数据。
-                    // 短窗口内 cache miss 会自然 fall through 到 source connector。
+                    // 之前刮削过的 cover cache 可能仍然存在, 在 sidecar 写完前
+                    // 失效避免 UI 拿到上次的污染数据。lyrics 不在这里 invalidate
+                    // 因为我们刚刚已经写过新的字级 cache (上面那段)。
                     await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
-                    await MetadataAssetStore.shared.invalidateLyricsCache(forSongID: songID)
                     CachedArtworkView.invalidateCache(for: songID)
 
                     do {
@@ -125,13 +133,13 @@ final class MusicScraperService {
                             }
                             needsUpdate = true
                         }
-                        if writeResult.lyricsWritten {
-                            let lrcPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt).lrc")
-                            refSong.lyricsFileName = lrcPath
-                            if let lyricsLines {
-                                await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID)
-                            }
-                            needsUpdate = true
+                        if writeResult.lyricsWritten, let lyricsLines {
+                            // 不让 song.lyricsFileName 指向 NAS .lrc —— .lrc
+                            // 是行级备份, 字级数据只在本地 hash JSON 里。
+                            // 仍把内容回写到本地 cache 让 hash JSON 跟 NAS
+                            // 一致。
+                            // 用户动作 (scrape) 触发的 sidecar 镜像写回, 强制覆盖
+                            await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
                         }
 
                         if needsUpdate {
@@ -276,13 +284,11 @@ final class MusicScraperService {
                                         }
                                         needsUpdate = true
                                     }
-                                    if writeResult.lyricsWritten {
-                                        let lrcPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt).lrc")
-                                        refSong.lyricsFileName = lrcPath
-                                        if let lyricsLines {
-                                            await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID)
-                                        }
-                                        needsUpdate = true
+                                    if writeResult.lyricsWritten, let lyricsLines {
+                                        // 同上: 不指向 NAS .lrc, 字级数据只在
+                                        // 本地 hash JSON。
+                                        // 用户动作 (scrape) 触发的 sidecar 镜像写回, 强制覆盖
+                            await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
                                     }
 
                                     if needsUpdate {
@@ -407,10 +413,14 @@ final class MusicScraperService {
         // trustedSource: false —— scrape 路径下 online 结果可能错配,
         // 不让 loadMetadata 直接写 hash cache。等 sidecar 写到 source
         // 成功后再回写 cache（在 scrapeSingle / startScraping 的 Task 里做）。
+        // fallbackTitle 用 song.filePath 的原始文件名 (NAS 真实名), 不让
+        // loadMetadata 在嵌入元数据缺失时退化到 cache 的 sanitized 名
+        let originalFileBaseName = ((song.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
         let metadata = await metadataService.loadMetadata(
             for: fileURL,
             cacheKey: storeAssets ? song.id : nil,
-            trustedSource: false
+            trustedSource: false,
+            fallbackTitle: originalFileBaseName
         )
         let merged = mergedSong(
             song,
