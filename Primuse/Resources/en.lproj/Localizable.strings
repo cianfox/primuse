@@ -638,3 +638,7 @@
 "password_show" = "Show password";
 "password_hide" = "Hide password";
 "password_ascii_hint" = "Use English/half-width input to avoid full-width characters breaking sign-in.";
+"source_auth_failed_title" = "Sign-in failed";
+"source_auth_failed_re_enter" = "Re-enter password";
+"source_auth_failed_message_generic" = "Login failed. Check credentials or NAS status.";
+"later" = "Later";

@@ -239,7 +239,9 @@ struct SongRowView: View {
                     CachedArtworkView.invalidateCache(for: oldRef)
                 }
             }
-            .presentationDetents([.medium, .large])
+            // 与 NowPlayingView 一致 — medium 半屏会把"自动/手动刮削"按钮和
+            // 搜索数量 picker 挤到下方,用户不知道要上滑会以为功能消失。
+            .presentationDetents([.large])
         }
         .sheet(isPresented: $showAddToPlaylist) {
             AddToPlaylistSheet(song: song)

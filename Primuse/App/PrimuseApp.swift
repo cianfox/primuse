@@ -109,6 +109,12 @@ struct PrimuseApp: App {
 
     @AppStorage("primuse.iCloudSyncEnabled") private var iCloudSyncEnabled: Bool = true
 
+    /// 后台 connect() 失败时弹的 "登录失败" 提示。点 "重新输入" 后会把 source
+    /// 存到 reauthSource 触发 AddSourceView sheet。
+    @State private var authAlertSource: MusicSource?
+    @State private var authAlertMessage: String = ""
+    @State private var reauthSource: MusicSource?
+
     init() {
         let services = AppServices.shared
         _sourcesStore = State(initialValue: services.sourcesStore)
@@ -253,6 +259,41 @@ struct PrimuseApp: App {
                 // after the cellular gate paused it.
                 .onChange(of: NetworkMonitor.shared.isOnUnmeteredNetwork) { _, onWifi in
                     if onWifi { metadataBackfill.start() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .primuseSourceAuthFailed)) { note in
+                    guard let id = note.userInfo?["sourceID"] as? String,
+                          let src = sourcesStore.source(id: id) else { return }
+                    authAlertMessage = note.userInfo?["message"] as? String ?? ""
+                    authAlertSource = src
+                }
+                .alert(
+                    String(localized: "source_auth_failed_title"),
+                    isPresented: Binding(
+                        get: { authAlertSource != nil },
+                        set: { if !$0 { authAlertSource = nil } }
+                    ),
+                    presenting: authAlertSource
+                ) { source in
+                    Button(String(localized: "source_auth_failed_re_enter")) {
+                        reauthSource = source
+                        authAlertSource = nil
+                    }
+                    Button(String(localized: "later"), role: .cancel) {
+                        authAlertSource = nil
+                    }
+                } message: { source in
+                    let detail = authAlertMessage.isEmpty
+                        ? String(localized: "source_auth_failed_message_generic")
+                        : authAlertMessage
+                    Text("\(source.name) — \(detail)")
+                }
+                .sheet(item: $reauthSource) { source in
+                    AddSourceView(sourceType: source.type, editingSource: source) { updated in
+                        sourcesStore.update(updated.id) { $0 = updated }
+                        scanService.removeSynologyAPI(for: updated.id)
+                        Task { await sourceManager.refreshConnector(for: updated.id) }
+                        SourceAuthAlert.clear(sourceID: updated.id)
+                    }
                 }
         }
     }
