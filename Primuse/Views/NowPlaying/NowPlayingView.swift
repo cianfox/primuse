@@ -77,7 +77,8 @@ struct NowPlayingView: View {
                                     songID: player.currentSong?.id ?? "",
                                     size: 44, cornerRadius: 6,
                                     sourceID: player.currentSong?.sourceID,
-                                    filePath: player.currentSong?.filePath
+                                    filePath: player.currentSong?.filePath,
+                                    revisionToken: player.coverRevision
                                 )
 
                                 VStack(alignment: .leading, spacing: 2) {
@@ -117,7 +118,8 @@ struct NowPlayingView: View {
                             songID: player.currentSong?.id ?? "",
                             size: artSize, cornerRadius: 12,
                             sourceID: player.currentSong?.sourceID,
-                            filePath: player.currentSong?.filePath
+                            filePath: player.currentSong?.filePath,
+                            revisionToken: player.coverRevision
                         )
                         .scaleEffect(player.isPlaying ? 1.0 : 0.9)
                         .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
@@ -869,6 +871,19 @@ fileprivate struct LyricsScrollView: View {
     @State private var currentLineIndex = 0
     @State private var wordLineFrames: [String: CGRect] = [:]
 
+    // 用户手动拖动歌词时, 暂时冻结自动滚动 ── 否则刚拖到想看的位置, 下一帧
+    // auto follow 又把视图拽回当前行, 等于不能浏览。lastUserScrollTime 静止
+    // 超过 manualScrollGracePeriod 后恢复 auto follow。
+    @State private var lastUserScrollTime: Date = .distantPast
+    /// 字级模式下, 用户手动拖出的偏移。nil 表示当前由 auto follow 接管。
+    @State private var manualWordOffset: CGFloat? = nil
+    /// 拖动 session 开始时的偏移基准 (用于把 translation.height 累加上去)。
+    @State private var wordDragStartOffset: CGFloat = 0
+    /// 最近一次 auto follow 计算出的偏移 ── 当用户开始拖动时作为起点, 避免
+    /// 起手就跳。
+    @State private var lastAutoWordOffset: CGFloat = 0
+    private static let manualScrollGracePeriod: TimeInterval = 3.0
+
     // Translation —— system translation framework
     // 离线 + 免费, 翻译结果走 LyricsTranslationCache 持久化, 切歌时按当前
     // 启用状态触发批量翻译。
@@ -959,8 +974,19 @@ fileprivate struct LyricsScrollView: View {
                         isPinchingLyrics = false
                     }
             )
+            // 监听任意拖动手势 → 刷新 lastUserScrollTime, 让 onChange 里的 auto
+                // scrollTo 暂时退让, 用户能往上往下浏览其他歌词。
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { _ in lastUserScrollTime = Date() }
+                    .onEnded { _ in lastUserScrollTime = Date() }
+            )
             .onChange(of: currentLineIndex) { _, idx in
                 guard !isPinchingLyrics, idx < lyrics.count else { return }
+                // 用户手动滚动后 manualScrollGracePeriod 内不要把视图拽回当前行,
+                // 否则刚拖到想看的位置又被自动 scrollTo 弹回, 等同不能浏览。
+                guard Date().timeIntervalSince(lastUserScrollTime) >= Self.manualScrollGracePeriod
+                else { return }
                 withAnimation(.smooth(duration: 0.34, extraBounce: 0)) {
                     proxy.scrollTo(lyrics[idx].id, anchor: .center)
                 }
@@ -972,7 +998,12 @@ fileprivate struct LyricsScrollView: View {
         GeometryReader { geo in
             TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
                 let now = player.interpolatedTime(at: ctx.date)
-                let offset = smoothWordContentOffset(at: now, viewportHeight: geo.size.height)
+                let autoOffset = smoothWordContentOffset(at: now, viewportHeight: geo.size.height)
+                // 用户手动拖动接管期 (lastUserScrollTime + grace 内): 用 manualWordOffset;
+                // 静止超过 grace 后清掉手动状态, 平滑回到 auto follow。
+                // resolveWordOffset 还会把最新 autoOffset 缓存进 lastAutoWordOffset
+                // 供 DragGesture 起手取用。
+                let displayOffset = resolveWordOffset(autoOffset: autoOffset)
 
                 VStack(alignment: .leading, spacing: 12) {
                     Spacer().frame(height: 20)
@@ -980,8 +1011,16 @@ fileprivate struct LyricsScrollView: View {
                     wordLevelBadge
 
                     ForEach(Array(lyrics.enumerated()), id: \.element.id) { index, line in
-                        lyricsRow(line: line, index: index)
+                        // 字级模式: row 整体明暗 / 缩放都用基于 now 的连续函数接管,
+                        // 内部 foregroundStyle 全用 .white 实色 (dimmedByAmbient=true)。
+                        // - opacity:  active 行 1.0, 远行 0.4 / 0.25; 用 wordLevelScrollLead /
+                        //             Duration 同步窗口, 跟滚动一气呵成。
+                        // - scale:    active 行 1.06, 渐进过渡 ── 给"近大远小"的纵深感。
+                        let activity = rowVisualActivity(at: now, index: index)
+                        lyricsRow(line: line, index: index, dimmedByAmbient: true)
                             .id(line.id)
+                            .opacity(activity.opacity)
+                            .scaleEffect(activity.scale, anchor: line.voice == .secondary ? .trailing : .leading)
                             .onTapGesture { player.seek(to: line.timestamp) }
                             .padding(.vertical, 2)
                             .background(rowFrameReader(id: line.id))
@@ -991,7 +1030,7 @@ fileprivate struct LyricsScrollView: View {
                 }
                 .padding(.horizontal, 24)
                 .coordinateSpace(name: SmoothWordLyricsCoordinateSpace.name)
-                .offset(y: offset)
+                .offset(y: displayOffset)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .onPreferenceChange(LyricRowFramePreferenceKey.self) { frames in
                     wordLineFrames = frames
@@ -999,6 +1038,22 @@ fileprivate struct LyricsScrollView: View {
             }
         }
         .clipped()
+        // 顶/底 fade mask: viewport 边缘的歌词不要硬切, 用 LinearGradient 让它
+        // 自然渐隐 ── 像歌词从黑暗中浮现 / 退去, 没有"切边"的廉价感。Apple Music
+        // 同款手法。clear 区域占 12%, 内部 88% 全显示。
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black, location: 0.12),
+                    .init(color: .black, location: 0.88),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .contentShape(Rectangle())  // GeometryReader 自身不响应手势, 给整个区域加命中区
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in
@@ -1012,6 +1067,41 @@ fileprivate struct LyricsScrollView: View {
                     isPinchingLyrics = false
                 }
         )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 4)
+                .onChanged { value in
+                    if manualWordOffset == nil {
+                        // 起手: 以当前 auto offset 作为基准, 避免视图突然跳到顶部。
+                        wordDragStartOffset = lastAutoWordOffset
+                        manualWordOffset = lastAutoWordOffset
+                    }
+                    manualWordOffset = wordDragStartOffset + value.translation.height
+                    lastUserScrollTime = Date()
+                }
+                .onEnded { value in
+                    if let cur = manualWordOffset {
+                        wordDragStartOffset = cur
+                    }
+                    lastUserScrollTime = Date()
+                }
+        )
+    }
+
+    /// 决定字级歌词视图当前应该用哪个 offset:
+    /// - 用户在 grace period 内拖动过 → 用手动偏移
+    /// - 否则 → 用 auto follow 偏移, 顺便把 manual 状态清空
+    /// 同时记录最新 auto offset, DragGesture 起手时拿来当基准。
+    private func resolveWordOffset(autoOffset: CGFloat) -> CGFloat {
+        lastAutoWordOffset = autoOffset
+        let withinGrace = Date().timeIntervalSince(lastUserScrollTime) < Self.manualScrollGracePeriod
+        if withinGrace, let manual = manualWordOffset {
+            return manual
+        }
+        // 退出 grace: 清掉手动状态, 让下一帧开始走 auto follow。
+        if manualWordOffset != nil {
+            manualWordOffset = nil
+        }
+        return autoOffset
     }
 
     private var wordLevelBadge: some View {
@@ -1070,18 +1160,23 @@ fileprivate struct LyricsScrollView: View {
         return clamped * clamped * (3 - 2 * clamped)
     }
 
+    /// dimmedByAmbient: 字级模式调用时传 true ── 表明行整体明暗由外层基于 now
+    /// 的连续 ambient opacity 接管, row 内部不要再按 isActive 离散切换颜色,
+    /// 否则跟外层 .opacity multiply 会双重叠加 + 跳变。
     @ViewBuilder
-    private func lyricsRow(line: LyricLine, index: Int) -> some View {
+    private func lyricsRow(line: LyricLine, index: Int, dimmedByAmbient: Bool = false) -> some View {
         let isActive = index == currentLineIndex
         let baseSize = hasWordLevelLyrics
             ? Self.lyricsWordLevelBaseSize
             : isActive ? Self.lyricsActiveBaseSize : Self.lyricsInactiveBaseSize
         let fontSize = baseSize * CGFloat(effectiveLyricsScale)
-        let weight: Font.Weight = isActive ? .bold : .semibold
+        // weight 在 dimmedByAmbient 模式下也固定 .semibold ── 字级模式 active 行
+        // 已经有 syllable 扫光 + scale bounce 强调, weight 跳变只会增加视觉颗粒感。
+        let weight: Font.Weight = dimmedByAmbient ? .semibold : (isActive ? .bold : .semibold)
         let alignment: HorizontalAlignment = line.voice == .secondary ? .trailing : .leading
 
         VStack(alignment: alignment, spacing: 4) {
-            singleLineContent(line: line, isActive: isActive, index: index, fontSize: fontSize, weight: weight)
+            singleLineContent(line: line, isActive: isActive, index: index, fontSize: fontSize, weight: weight, dimmedByAmbient: dimmedByAmbient)
 
             // 歌词翻译 — 在原文下面以略小的字号显示, 仅当启用且当前行有翻译。
             // 字号取原文的 0.65 + medium weight, 视觉上是 secondary。
@@ -1089,15 +1184,20 @@ fileprivate struct LyricsScrollView: View {
                 Text(translated)
                     .font(.system(size: fontSize * 0.65, weight: .medium))
                     .foregroundStyle(
-                        isActive ? .white.opacity(0.7)
-                        : index < currentLineIndex ? .white.opacity(0.18)
-                        : .white.opacity(0.28)
+                        dimmedByAmbient
+                            ? .white.opacity(0.7)
+                            : isActive ? .white.opacity(0.7)
+                            : index < currentLineIndex ? .white.opacity(0.18)
+                            : .white.opacity(0.28)
                     )
+                    // 长翻译在窄屏 / 大字号下要 wrap 多行。不加 fixedSize 时 SwiftUI
+                    // 会优先单行 + 截断显示省略号。
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let bgs = line.background {
                 ForEach(bgs) { bg in
-                    singleLineContent(line: bg, isActive: isActive, index: index, fontSize: fontSize * 0.7, weight: .medium)
+                    singleLineContent(line: bg, isActive: isActive, index: index, fontSize: fontSize * 0.7, weight: .medium, dimmedByAmbient: dimmedByAmbient)
                         .opacity(0.7)
                 }
             }
@@ -1111,11 +1211,18 @@ fileprivate struct LyricsScrollView: View {
         isActive: Bool,
         index: Int,
         fontSize: CGFloat,
-        weight: Font.Weight
+        weight: Font.Weight,
+        dimmedByAmbient: Bool = false
     ) -> some View {
-        if shouldRenderWordTimeline(line: line, index: index, isActive: isActive) {
-            let inactiveOpacity = isActive ? 0.4 : (index < currentLineIndex ? 0.25 : 0.4)
-            let activeOpacity = isActive ? 1.0 : inactiveOpacity
+        if shouldRenderWordTimeline(line: line, index: index, isActive: isActive, dimmedByAmbient: dimmedByAmbient) {
+            // dimmedByAmbient 模式: KaraokeLineView 内部用固定 active=1.0 / inactive=0.4
+            // 对比, 外层 ambient opacity 接管 row 整体明暗。这样无论 row 处于 future /
+            // active / past, syllable 扫光的对比度都一致, 只是整体亮度被 ambient
+            // 平滑过渡。
+            let inactiveOpacity: Double = dimmedByAmbient ? 0.4
+                : (isActive ? 0.4 : (index < currentLineIndex ? 0.25 : 0.4))
+            let activeOpacity: Double = dimmedByAmbient ? 1.0
+                : (isActive ? 1.0 : inactiveOpacity)
             KaraokeLineView(
                 line: line,
                 fontSize: fontSize,
@@ -1128,15 +1235,97 @@ fileprivate struct LyricsScrollView: View {
             Text(line.text)
                 .font(.system(size: fontSize, weight: weight))
                 .foregroundStyle(
-                    isActive ? .white
-                    : index < currentLineIndex ? .white.opacity(0.25)
-                    : .white.opacity(0.4)
+                    dimmedByAmbient
+                        ? .white
+                        : isActive ? .white
+                        : index < currentLineIndex ? .white.opacity(0.25)
+                        : .white.opacity(0.4)
                 )
+                // 长歌词在窄屏 / 放大字号下需要 wrap 多行。不加 fixedSize 时 SwiftUI
+                // 在某些 layout 约束下会单行 + 省略号; 而靠近当前行时切到 KaraokeLineView
+                // (它有 fixedSize) 会展开多行 → 视觉上"省略号展开收起"的跳动。
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func shouldRenderWordTimeline(line: LyricLine, index: Int, isActive: Bool) -> Bool {
+    /// 字级模式 row 的视觉状态 ── opacity 和 scale 都基于同一个 activity 0..1
+    /// 连续值派生, 保证两者节奏一致。
+    private struct RowActivity {
+        var opacity: Double
+        var scale: Double
+    }
+
+    /// 字级模式专用 ── 计算指定行的视觉激活度 (0..1, 0=远行, 1=正在唱), 然后
+    /// 一次性派生 opacity / scale。两者同节奏渐变, 行从 active → past 的过渡
+    /// 跟 scroll offset 在同一套时间窗口 (wordLevelScrollLead /
+    /// wordLevelScrollDuration) 内同步发生 ── 位置 / 颜色 / 缩放是一个事件的
+    /// 不同面, 不再有"先滑动后跳暗"的不协调感。
+    private func rowVisualActivity(at now: TimeInterval, index: Int) -> RowActivity {
+        guard index >= 0, index < lyrics.count else {
+            return RowActivity(opacity: 0.4, scale: 1.0)
+        }
+        let myStart = lyrics[index].timestamp
+        // 最后一行没有"下一行 timestamp", 假设它持续 8s ── 短于这个时长歌曲也
+        // 早就结束了, 长于的话最多就是最后一行没有渐暗效果, 不影响中间行。
+        let nextStart: TimeInterval = (index + 1 < lyrics.count)
+            ? lyrics[index + 1].timestamp
+            : myStart + 8.0
+
+        // 视觉过渡窗口跟 scroll lookahead 解耦。
+        //
+        // 之前 opacity / scale 用 scroll 同款窗口 (lookahead=0.42s, duration=0.54s):
+        // 下一行在当前行还没唱完时就开始变亮 / 变大, 中间过渡有 0.5s+ 的"中间
+        // 状态"。眼睛看到的是 active(1.0) → 过渡中(0.6) → 远行(0.4) 三档深度,
+        // 配合 fadeIn 的 0.4→0.6→1.0 反向过渡, 切换瞬间感受到"第三档浅色快速
+        // 变深"的视觉跳跃。
+        //
+        // 缩短到 0.18s + 围绕行真正切换的时刻 (myStart / nextStart) 后, 过渡
+        // 几乎瞬时, 中间档持续时间不到一帧的两三倍, 主观上只剩 active / 非
+        // active 两档。scroll 不变, 行的位置仍然平滑滑过 ── 视觉上像"灯光
+        // 跟着行走": 行先滑到中心, 灯光打到它身上瞬间亮起。
+        let visualWindow: TimeInterval = 0.18
+        let fadeInStart = myStart - visualWindow / 2
+        let fadeInEnd = myStart + visualWindow / 2
+        let fadeOutStart = nextStart - visualWindow / 2
+        let fadeOutEnd = nextStart + visualWindow / 2
+
+        let activity: Double
+        if now < fadeInStart { activity = 0 }
+        else if now < fadeInEnd {
+            activity = smoothstep((now - fadeInStart) / max(fadeInEnd - fadeInStart, 0.001))
+        } else if now < fadeOutStart { activity = 1 }
+        else if now < fadeOutEnd {
+            activity = 1 - smoothstep((now - fadeOutStart) / max(fadeOutEnd - fadeOutStart, 0.001))
+        } else { activity = 0 }
+
+        // opacity: 两档 ── 非 active 0.4 / active 1.0。
+        let opacity = 0.4 + 0.6 * activity
+
+        // scale: 非 active 1.0 / active 1.12 ── 比之前的 1.06 更夸张, 给"聚焦
+        // 灯光打在你身上"的强调感, 让 active 行更突出。
+        let scale = 1.0 + 0.12 * activity
+
+        return RowActivity(opacity: opacity, scale: scale)
+    }
+
+    private func smoothstep(_ t: Double) -> Double {
+        let c = max(0, min(1, t))
+        return c * c * (3 - 2 * c)
+    }
+
+    private func shouldRenderWordTimeline(line: LyricLine, index: Int, isActive: Bool, dimmedByAmbient: Bool = false) -> Bool {
         guard line.isWordLevel else { return false }
+        // dimmedByAmbient 模式 (字级歌词): 只让 active 行走 KaraokeLineView 扫光,
+        // 相邻 ±1 行也走普通 Text。
+        //
+        // 原因: KaraokeLineView 内部 inactive syllable 用 .white.opacity(0.4) 实现
+        // 双层 Text 的"扫光底色对比"; 而 row 外层 ambient opacity 在非 active 行
+        // 也是 0.4。两者 multiply → 0.16, 比远行 (普通 Text × 0.4 = 0.4) 显著
+        // 暗一档 ── 用户看到的"下一行比下下行还暗"就是这个双重 multiply 造成。
+        //
+        // 代价: 下一行失去"提前 100ms 预热扫光"的细节, 行真正切到 active 时才
+        // 启动扫光。lookahead 100ms 在视觉上几乎不可察觉, 取舍合理。
+        if dimmedByAmbient { return isActive }
         return isActive || abs(index - currentLineIndex) == 1
     }
 

@@ -225,6 +225,10 @@ struct PrimuseApp: App {
                           let updated = musicLibrary.songs.first(where: { $0.id == currentID })
                     else { return }
                     playerService.syncSongMetadata(updated)
+                    // forceRefreshNowPlayingArtwork 内部已 bump coverRevision,
+                    // 这里不需要重复 bump。三处封面 view 监听 revisionToken 会触发
+                    // reload, 即便 coverArtFileName 字符串没变 (重复刮 deterministic
+                    // hash 文件名时 coverRef 不变, onChange 不会触发)。
                     playerService.forceRefreshNowPlayingArtwork()
                     themeService.updateFromCoverArt(
                         fileName: updated.coverArtFileName,

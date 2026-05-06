@@ -1779,6 +1779,16 @@ final class AudioPlayerService {
     /// Tracks which cover we last loaded to avoid redundant disk reads
     private var lastArtworkFileName: String?
 
+    /// 单调递增的封面刷新 token。当刮削回写完成、cache 失效但 coverArtFileName
+    /// 字符串可能没变（hash deterministic）时, view 上的 onChange(coverRef) 不会
+    /// 触发 reload, @State image 卡在旧 UIImage。CachedArtworkView 监听这个
+    /// token, 任意 bump 都能强制三个封面位重新走 loadImage。
+    private(set) var coverRevision: Int = 0
+
+    func bumpCoverRevision() {
+        coverRevision &+= 1
+    }
+
     private func updateNowPlayingInfo() {
         guard currentSong != nil else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -1901,6 +1911,7 @@ final class AudioPlayerService {
     /// Resets lastArtworkFileName so the guard check passes.
     func forceRefreshNowPlayingArtwork() {
         lastArtworkFileName = nil
+        bumpCoverRevision()
         updateNowPlayingArtworkIfNeeded()
     }
 

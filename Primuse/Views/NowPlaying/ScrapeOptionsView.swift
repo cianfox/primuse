@@ -710,9 +710,10 @@ struct ScrapeOptionsView: View {
 
         Task { @MainActor in
             // Persist assets to disk (atomic, fast)
-            if needsCover, let data = coverData, let name = coverFileName {
+            if needsCover, let data = coverData {
                 MetadataAssetStore.shared.storeCoverSync(data, for: songID)
-                CachedArtworkView.invalidateCache(for: name)
+                // cacheKey 基于 songID, 用 hash 文件名 invalidate 不命中。
+                // 下面 onCompleteRef closure (line 264) 用 songID invalidate 才有效。
             }
             if needsLyrics, let lines = lyricsLines {
                 let wordLevel = lines.filter { $0.isWordLevel }.count
@@ -723,46 +724,68 @@ struct ScrapeOptionsView: View {
             lib.replaceSong(final)
             onCompleteRef?(final)
 
-            // Sidecar (cover.jpg / .lrc) 写回 NAS — fire and forget,
-            // 不阻塞用户后续操作。失败只会落到 plog, 不影响本地。
+            // Sidecar (cover.jpg / .lrc) 写回 NAS — fire and forget。
+            //
+            // 关键: detached + 30s 超时。之前的实现是 Task { @MainActor in ... },
+            // 这意味着整段 (包括 await connector.connect → NAS 网络握手, await
+            // writeSidecars → NAS 上传) 都跑在 main actor 的 cooperative thread
+            // 上。任意一个 await 异常挂起 (如 NAS 不响应也不超时), main actor
+            // 上其他 Task 仍然能跑, 但代码路径里有 lib.replaceSong / cacheCover
+            // 等回到 main actor 的同步点 ── 一旦 NAS 写回到一半挂起, 主 actor
+            // 反应链卡住, 用户描述的 "UI 完全卡死、滑掉 app 第一次失败" 就是这种
+            // main actor cooperative thread 死锁。
+            //
+            // detached 让网络写完全走背景 executor; 关键的"回写 main actor 状态"
+            // (replaceSong / invalidateCache) 用 await MainActor.run 显式跳回,
+            // 网络挂起的时候 main actor 不被持有。
+            //
+            // withTimeout 兜底: 30 秒后强制取消, 即使 NAS 端有 bug 也不会无限期
+            // 占用 connector actor。
             if needsCover || needsLyrics {
-                Task { @MainActor in
+                let titleSnapshot = final.title
+                let songDir = (final.filePath as NSString).deletingLastPathComponent
+                let baseNameNoExt = ((final.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
+                let finalSnapshot = final
+                Task.detached(priority: .utility) {
+                    plog("📝 Sidecar: writing back to source for '\(titleSnapshot)'")
                     do {
-                        plog("📝 Sidecar: writing back to source for '\(final.title)'")
-                        let connector = try await sm.auxiliaryConnector(for: final)
-                        let writeResult = await SidecarWriteService.shared.writeSidecars(
-                            for: final, using: connector,
+                        try await Self.writeSidecarWithTimeout(
+                            seconds: 30,
+                            sourceManager: sm,
+                            song: finalSnapshot,
                             coverData: needsCover ? coverData : nil,
                             lyricsLines: needsLyrics ? lyricsLines : nil
-                        )
-                        plog("📝 Sidecar: result cover=\(writeResult.coverWritten) lyrics=\(writeResult.lyricsWritten)")
+                        ) { writeResult in
+                            plog("📝 Sidecar: result cover=\(writeResult.coverWritten) lyrics=\(writeResult.lyricsWritten)")
 
-                        let songDir = (final.filePath as NSString).deletingLastPathComponent
-                        let baseNameNoExt = ((final.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
-                        var refSong = final
-                        var needsUpdate = false
-
-                        if writeResult.coverWritten {
-                            let coverPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt)-cover.jpg")
-                            refSong.coverArtFileName = coverPath
-                            await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
-                            needsUpdate = true
+                            if writeResult.coverWritten {
+                                let coverPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt)-cover.jpg")
+                                var refSong = finalSnapshot
+                                refSong.coverArtFileName = coverPath
+                                // sidecar 已落盘 → 回写 hash cache 作为可信 mirror。
+                                // 不要先 invalidate 再 cacheCover ── 制造空窗期, 期间 view
+                                // reload 会拿不到本地 cache 被迫走 NAS, 拉到 HTTP 端缓存的旧
+                                // 文件就显示旧封面。直接覆写。
+                                if let data = coverData {
+                                    await MetadataAssetStore.shared.cacheCover(data, forSongID: songID)
+                                }
+                                // 不要把 song.lyricsFileName 改成 NAS 的 .lrc 路径 ──
+                                // 那只是给其他播放器看的备份, 内容是行级 (没字时间)。
+                                // 字级数据在本地 App Support hash JSON 里, song 必须
+                                // 一直指向那个, 否则下次读会从 NAS .lrc 拿行级歌词。
+                                await MainActor.run {
+                                    CachedArtworkView.invalidateCache(for: songID)
+                                    lib.replaceSong(refSong)
+                                }
+                            }
+                            if !writeResult.errors.isEmpty {
+                                plog("⚠️ Sidecar write errors: \(writeResult.errors)")
+                            }
                         }
-                        // 不要把 song.lyricsFileName 改成 NAS 的 .lrc 路径 ——
-                        // 那只是给其他播放器看的备份, 内容是行级 (没字时间)。
-                        // 字级数据在本地 App Support hash JSON 里, song 必须
-                        // 一直指向那个, 否则下次读会从 NAS .lrc 拿行级歌词,
-                        // 字级丢了。`writeResult.lyricsWritten` 仍然有效:
-                        // sidecar 写到 NAS 是为了被别的设备 / 别的播放器读到,
-                        // Primuse 自己用本地 cache。
-                        if needsUpdate {
-                            lib.replaceSong(refSong)
-                        }
-                        if !writeResult.errors.isEmpty {
-                            plog("⚠️ Sidecar write errors: \(writeResult.errors)")
-                        }
+                    } catch is CancellationError {
+                        plog("⚠️ Sidecar write timed out (30s) for '\(titleSnapshot)' ── 网络挂起被强制中断, 本地 cache 仍然是新的, 仅 NAS sidecar 未写。")
                     } catch {
-                        plog("⚠️ Sidecar write failed for '\(final.title)': \(error.localizedDescription)")
+                        plog("⚠️ Sidecar write failed for '\(titleSnapshot)': \(error.localizedDescription)")
                     }
                 }
             }
@@ -770,6 +793,45 @@ struct ScrapeOptionsView: View {
     }
 
     // MARK: - Helpers
+
+    /// 给 sidecar 写回流程加超时兜底。withThrowingTaskGroup race 真实工作和
+    /// sleep, 谁先完成谁赢, 输的被 cancelAll 中断。
+    ///
+    /// 必须用 detached 调用方调用本函数 ── 否则 sleep 这条 task 会和 caller 共享
+    /// main actor cooperative thread, 真 hang 时谁也跑不了。
+    private static func writeSidecarWithTimeout(
+        seconds: TimeInterval,
+        sourceManager: SourceManager,
+        song: Song,
+        coverData: Data?,
+        lyricsLines: [LyricLine]?,
+        applyResult: @escaping @Sendable (SidecarWriteService.WriteResult) async -> Void
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                // SourceManager 是 @MainActor, await 会切到 main actor 上跑
+                // auxiliaryConnector / connect; 真正的 NAS IO (writeSidecars)
+                // 走 SidecarWriteService actor (背景 executor), 不占 main actor。
+                let connector = try await sourceManager.auxiliaryConnector(for: song)
+                let writeResult = await SidecarWriteService.shared.writeSidecars(
+                    for: song,
+                    using: connector,
+                    coverData: coverData,
+                    lyricsLines: lyricsLines
+                )
+                await applyResult(writeResult)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw CancellationError()
+            }
+            // 等任意一个先完成。如果是真实工作完成 → 第二个 sleep task 被 cancelAll
+            // 中断; 如果是 sleep 先完成 (即 30s 超时) → 第二个 task 被 cancelAll
+            // 中断, throw 也被 group 抛给外层 catch。
+            try await group.next()
+            group.cancelAll()
+        }
+    }
 
     private func formatDuration(_ t: TimeInterval) -> String {
         t.formattedDuration
