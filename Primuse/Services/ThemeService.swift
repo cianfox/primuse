@@ -29,7 +29,6 @@ final class ThemeService {
 
     // MARK: - Cover directory (via MetadataAssetStore)
 
-    private static let artworkDir: URL = MetadataAssetStore.shared.artworkDirectoryURL
 
     // MARK: - Public API
 
@@ -39,12 +38,12 @@ final class ThemeService {
             return
         }
 
-        // Try songID-based cache first, then legacy filename
+        // Try songID-based cache first, then legacy filename。读取必须走
+        // readCoverData(named:),它会透明处理 content-addressed redirect。
         let image: UIImage?
         if let songID {
             let hashedName = MetadataAssetStore.shared.expectedCoverFileName(for: songID)
-            let url = Self.artworkDir.appendingPathComponent(hashedName)
-            image = (try? Data(contentsOf: url)).flatMap { UIImage(data: $0) }
+            image = MetadataAssetStore.shared.readCoverData(named: hashedName).flatMap { UIImage(data: $0) }
         } else {
             image = nil
         }
@@ -53,9 +52,8 @@ final class ThemeService {
             resolvedImage = image
         } else if let fileName, !fileName.isEmpty,
                   !fileName.contains("/"), !fileName.contains("://") {
-            // Legacy: direct filename in artworkDir
-            let fileURL = Self.artworkDir.appendingPathComponent(fileName)
-            guard let data = try? Data(contentsOf: fileURL),
+            // Legacy: direct filename in artworkDir (走 redirect-aware reader)
+            guard let data = MetadataAssetStore.shared.readCoverData(named: fileName),
                   let loaded = UIImage(data: data) else {
                 resetToDefault()
                 return

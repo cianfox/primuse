@@ -171,6 +171,13 @@ struct PrimuseApp: App {
                     // .partial 永久占盘, LRU 看不到这些。同步执行很快
                     // (只 stat mtime, 不读内容)。
                     sourceManager.pruneStalePartialFiles()
+                    // 把内容寻址的封面 content/ 目录限定在 500MB 以内。
+                    // 超过就按 mtime 删最老的物理 jpeg, ref 文件下次读
+                    // miss → CachedArtworkView 自动重新拉。运行在 background
+                    // 优先级 detached, 不阻塞启动序列。
+                    Task.detached(priority: .background) {
+                        await MetadataAssetStore.shared.evictArtworkContentIfNeeded()
+                    }
                     // 启动 prewarm —— 只覆盖 currentSong + queue 接下来 5 首。
                     // 之前还会接着 prewarm 整个 library, 一首歌 1MB head +
                     // 256KB tail = 1.25MB, 818 首 ≈ 1GB 后台流量, 用户开
