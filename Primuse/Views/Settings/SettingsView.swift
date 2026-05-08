@@ -125,6 +125,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    CheckForUpdateRow()
+
                     NavigationLink {
                         LicensesView()
                     } label: {
@@ -134,6 +136,99 @@ struct SettingsView: View {
             }
             .navigationTitle("settings_title")
             .toolbarTitleDisplayMode(.inlineLarge)
+        }
+    }
+}
+
+/// Settings row that lets the user manually poll the App Store. Three
+/// visual states:
+/// - Idle: tappable "Check for updates" row.
+/// - Checking: spinner replaces the chevron.
+/// - Result: inline status line under the title — "you're on the
+///   latest version" or "version X.Y.Z available, tap to update".
+private struct CheckForUpdateRow: View {
+    @Environment(AppUpdateChecker.self) private var checker
+
+    enum Status: Equatable {
+        case idle
+        case checking
+        case upToDate
+        case available(version: String)
+    }
+
+    @State private var status: Status = .idle
+
+    var body: some View {
+        Button {
+            switch status {
+            case .available:
+                checker.openAppStore()
+            case .idle, .upToDate:
+                Task { await runCheck() }
+            case .checking:
+                break
+            }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("check_for_updates")
+                        .foregroundStyle(.primary)
+                    if let detail = statusDetail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(statusColor)
+                    }
+                }
+                Spacer()
+                accessory
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(status == .checking)
+    }
+
+    @ViewBuilder
+    private var accessory: some View {
+        switch status {
+        case .checking:
+            ProgressView().controlSize(.small)
+        case .available:
+            Image(systemName: "arrow.up.circle.fill")
+                .foregroundStyle(.tint)
+        default:
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var statusDetail: String? {
+        switch status {
+        case .idle, .checking:
+            return nil
+        case .upToDate:
+            return String(localized: "check_for_updates_up_to_date")
+        case .available(let v):
+            return String(format: String(localized: "check_for_updates_available_format"), v)
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .available: return .accentColor
+        default: return .secondary
+        }
+    }
+
+    private func runCheck() async {
+        status = .checking
+        // force=true bypasses the 6h throttle so the manual button
+        // always actually hits the network.
+        await checker.checkForUpdate(force: true)
+        if let info = checker.availableUpdate {
+            status = .available(version: info.version)
+        } else {
+            status = .upToDate
         }
     }
 }
