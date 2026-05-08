@@ -722,3 +722,10 @@
 "backfill_keep_app_alive_hint" = "Play any song to keep tag reading running";
 "notify_backfill_complete" = "Notify when tag reading completes";
 "notify_permission_denied_hint" = "Notification permission denied. Allow it in iOS Settings → Primuse.";
+
+// MARK: - App Store update banner
+"update_banner_title" = "Primuse has a new version";
+"update_banner_version_format" = "Latest on App Store: %@";
+"update_banner_now" = "Update Now";
+"update_banner_later" = "Remind Me Later";
+"update_banner_skip" = "Skip This Version";

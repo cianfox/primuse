@@ -16,6 +16,7 @@ final class AppServices {
     let themeService: ThemeService
     let scanService: ScanService
     let metadataBackfill: MetadataBackfillService
+    let updateChecker: AppUpdateChecker
 
     private init() {
         // Class is @MainActor so this initializer is too — but the static
@@ -62,6 +63,7 @@ final class AppServices {
         self.themeService = theme
         self.scanService = ScanService()
         self.metadataBackfill = MetadataBackfillService(library: library, sourceManager: manager)
+        self.updateChecker = AppUpdateChecker()
 
         library.updateDisabledSourceIDs(
             Set(store.sources.filter { !$0.isEnabled }.map(\.id))

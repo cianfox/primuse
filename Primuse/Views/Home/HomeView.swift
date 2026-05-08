@@ -22,6 +22,7 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    UpdateBanner()
                     if hasContent {
                         contentView
                     } else {

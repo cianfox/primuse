@@ -723,3 +723,10 @@
 "backfill_keep_app_alive_hint" = "播放任意一首歌曲可让标签持续读取";
 "notify_backfill_complete" = "标签读取完成时通知我";
 "notify_permission_denied_hint" = "通知权限已被拒绝。请到系统「设置 → 猿音」中允许通知。";
+
+// MARK: - App Store update banner
+"update_banner_title" = "猿音有新版本可更新";
+"update_banner_version_format" = "App Store 最新版本：%@";
+"update_banner_now" = "立即更新";
+"update_banner_later" = "稍后提醒";
+"update_banner_skip" = "跳过此版本";

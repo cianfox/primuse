@@ -106,6 +106,7 @@ struct PrimuseApp: App {
     @State private var themeService: ThemeService
     @State private var scanService: ScanService
     @State private var metadataBackfill: MetadataBackfillService
+    @State private var updateChecker: AppUpdateChecker
 
     @AppStorage("primuse.iCloudSyncEnabled") private var iCloudSyncEnabled: Bool = true
 
@@ -128,6 +129,7 @@ struct PrimuseApp: App {
         _themeService = State(initialValue: services.themeService)
         _scanService = State(initialValue: services.scanService)
         _metadataBackfill = State(initialValue: services.metadataBackfill)
+        _updateChecker = State(initialValue: services.updateChecker)
     }
 
     var body: some Scene {
@@ -148,6 +150,14 @@ struct PrimuseApp: App {
                 .environment(scanService)
                 .environment(cloudSync)
                 .environment(metadataBackfill)
+                .environment(updateChecker)
+                .task {
+                    // Background-poll the App Store. Throttled internally
+                    // to once per 6h, so calling on every scene-active is
+                    // cheap. Failure is silent — banner only appears when
+                    // a strictly newer version is found.
+                    await updateChecker.checkForUpdate()
+                }
                 .task {
                     PrimuseAppDelegate.sync = cloudSync
                     if iCloudSyncEnabled { await cloudSync.start() }
@@ -247,6 +257,7 @@ struct PrimuseApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                     playerService.handleAppDidBecomeActive()
+                    Task { await updateChecker.checkForUpdate() }
                     // Auto-resume any scan that was interrupted (app killed,
                     // backgrounded past the begin/endBackgroundTask window, or
                     // crashed mid-scan). Idempotent.
