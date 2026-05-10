@@ -318,19 +318,16 @@ struct NowPlayingView: View {
 
     private func deleteCurrentSong() {
         guard let song = player.currentSong else { return }
-        // Skip to next before deleting
-        Task { await player.next() }
-        // Clean caches
-        let songID = song.id
         Task {
-            await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
-            await MetadataAssetStore.shared.invalidateLyricsCache(forSongID: songID)
+            // Skip to next before deleting
+            await player.next()
+            let retainedSongs = library.songs.filter { $0.id != song.id }
+            let deleteSidecars = sourceManager.shouldDeleteSidecars(for: song, retaining: retainedSongs)
+            _ = await sourceManager.deleteSourceFilesAndCaches(for: song, deleteSidecars: deleteSidecars)
+            // Remove from library and keep the source badge in sync.
+            let remaining = library.deleteSong(song)
+            sourcesStore.updateLocal(song.sourceID) { $0.songCount = remaining }
         }
-        CachedArtworkView.invalidateCache(for: song.id)
-        sourceManager.deleteAudioCache(for: song)
-        // Remove from library and keep the source badge in sync.
-        let remaining = library.deleteSong(song)
-        sourcesStore.updateLocal(song.sourceID) { $0.songCount = remaining }
     }
 
     // MARK: - More Menu

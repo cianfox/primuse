@@ -84,7 +84,9 @@ final class ScanService {
         let resumeTotal = checkpoint?.totalCount ?? 0
 
         if !resumeSongs.isEmpty {
-            library.addSongs(resumeSongs)
+            // resume 阶段恢复 checkpoint 内容, 是部分扫描结果, 不应触发"已删除"
+            // 通知 (otherwise listener 会把还没扫到的歌的本地缓存全清)。
+            library.addSongs(resumeSongs, affectedSourceIDs: Set([source.id]), notifyRemovals: false)
             let acceptedCount = library.songs.filter { $0.sourceID == source.id }.count
             sourceStore.updateLocal(source.id) { $0.songCount = acceptedCount }
         }
@@ -320,7 +322,11 @@ final class ScanService {
                 let pendingDelta = update.scannedCount - lastIncrementalUpdate
                 let timeSinceFlush = Date().timeIntervalSince(lastFlushAt)
                 if pendingDelta >= Self.flushBatchSize || (pendingDelta > 0 && timeSinceFlush >= Self.flushInterval) {
-                    library.addSongs(lastSongs)
+                    // 中间 flush ── lastSongs 是当前累积的部分扫描结果, 还没
+                    // 扫到的歌会被 addSongs 临时移除, 下次 flush 又补回。
+                    // 这种"伪移除"不该触发缓存清理, 否则扫描中用户的本地
+                    // 缓存被反复清空。
+                    library.addSongs(lastSongs, affectedSourceIDs: Set([source.id]), notifyRemovals: false)
                     let acceptedCount = library.songs.filter { $0.sourceID == source.id }.count
                     sourceStore.updateLocal(source.id) { $0.songCount = acceptedCount }
                     persistCheckpoint(
@@ -417,7 +423,11 @@ final class ScanService {
                 let pendingDelta = update.addedCount - lastIncrementalUpdate
                 let timeSinceFlush = Date().timeIntervalSince(lastFlushAt)
                 if pendingDelta >= Self.flushBatchSize || (pendingDelta > 0 && timeSinceFlush >= Self.flushInterval) {
-                    library.addSongs(lastSongs)
+                    // 中间 flush ── lastSongs 是当前累积的部分扫描结果, 还没
+                    // 扫到的歌会被 addSongs 临时移除, 下次 flush 又补回。
+                    // 这种"伪移除"不该触发缓存清理, 否则扫描中用户的本地
+                    // 缓存被反复清空。
+                    library.addSongs(lastSongs, affectedSourceIDs: Set([source.id]), notifyRemovals: false)
                     let acceptedCount = library.songs.filter { $0.sourceID == source.id }.count
                     sourceStore.updateLocal(source.id) { $0.songCount = acceptedCount }
                     persistCheckpoint(
@@ -475,7 +485,7 @@ final class ScanService {
         scraperService: MusicScraperService?,
         sourceManager: SourceManager? = nil
     ) {
-        library.addSongs(songs)
+        library.addSongs(songs, affectedSourceIDs: Set([sourceID]))
         // Use the post-tombstone count from the library, not the raw scan
         // count — otherwise a deleted-then-rescanned song shows as still
         // present in the source card while the library actually filters it.

@@ -1,6 +1,25 @@
 import Foundation
 import PrimuseKit
 
+struct SongFileDeletionResult: Sendable {
+    struct Failure: Sendable {
+        let path: String
+        let message: String
+    }
+
+    var deletedPaths: [String] = []
+    var missingPaths: [String] = []
+    var failedPaths: [Failure] = []
+
+    var hasFailures: Bool { !failedPaths.isEmpty }
+
+    mutating func merge(_ other: SongFileDeletionResult) {
+        deletedPaths.append(contentsOf: other.deletedPaths)
+        missingPaths.append(contentsOf: other.missingPaths)
+        failedPaths.append(contentsOf: other.failedPaths)
+    }
+}
+
 @MainActor
 @Observable
 final class SourceManager {
@@ -11,15 +30,19 @@ final class SourceManager {
         self.sourcesProvider = {
             try await database.allSources()
         }
+        observeLibraryInvalidations()
     }
 
     init(sourcesProvider: @escaping @Sendable () async throws -> [MusicSource]) {
         self.sourcesProvider = sourcesProvider
+        observeLibraryInvalidations()
+    }
+
+    private func observeLibraryInvalidations() {
         // When a re-scan detects that the bytes behind a known path
         // changed (user replaced the file on the cloud drive), the old
-        // local cache file is now stale. Wipe it so the next play
-        // re-streams against the new bytes instead of decoding the
-        // previous content.
+        // local cache files are now stale. Wipe them so the next play or
+        // artwork/lyrics load uses the fresh remote bytes.
         NotificationCenter.default.addObserver(
             forName: .primuseSongContentChanged,
             object: nil,
@@ -28,14 +51,19 @@ final class SourceManager {
             guard let self else { return }
             let songs = (note.userInfo?["songs"] as? [Song]) ?? []
             MainActor.assumeIsolated {
-                for song in songs {
-                    self.deleteAudioCache(for: song)
-                    let cache = self.cacheURL(for: song)
-                    let partial = URL(fileURLWithPath: cache.path + ".partial")
-                    try? FileManager.default.removeItem(at: partial)
-                    let marker = URL(fileURLWithPath: cache.path + ".partial.prewarmed")
-                    try? FileManager.default.removeItem(at: marker)
-                }
+                self.deleteLocalCaches(for: songs)
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .primuseSongsRemoved,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            let songs = (note.userInfo?["songs"] as? [Song]) ?? []
+            MainActor.assumeIsolated {
+                self.deleteLocalCaches(for: songs)
             }
         }
     }
@@ -252,6 +280,75 @@ final class SourceManager {
         return audioCacheDirectory(for: song.sourceID).appendingPathComponent(sanitized)
     }
 
+    @discardableResult
+    func deleteSourceFilesAndCaches(for song: Song, deleteSidecars: Bool = true) async -> SongFileDeletionResult {
+        let result = await deleteSourceFiles(for: song, deleteSidecars: deleteSidecars)
+        deleteLocalCaches(for: song)
+        return result
+    }
+
+    @discardableResult
+    func deleteSourceFiles(for song: Song, deleteSidecars: Bool = true) async -> SongFileDeletionResult {
+        var result = SongFileDeletionResult()
+
+        do {
+            let sources = try await sourcesProvider()
+            guard let source = sources.first(where: { $0.id == song.sourceID }) else {
+                result.failedPaths.append(.init(path: song.filePath, message: "Source not found"))
+                return result
+            }
+
+            let conn = connector(for: source)
+            try await conn.connect()
+
+            do {
+                try await conn.deleteFile(at: song.filePath)
+                result.deletedPaths.append(song.filePath)
+            } catch {
+                if Self.isMissingFileError(error) {
+                    result.missingPaths.append(song.filePath)
+                } else {
+                    result.failedPaths.append(.init(path: song.filePath, message: error.localizedDescription))
+                    return result
+                }
+            }
+
+            if deleteSidecars {
+                for path in Self.sidecarPathsToDelete(for: song) {
+                    do {
+                        try await conn.deleteFile(at: path)
+                        result.deletedPaths.append(path)
+                    } catch {
+                        if Self.isMissingFileError(error) {
+                            result.missingPaths.append(path)
+                        } else {
+                            result.failedPaths.append(.init(path: path, message: error.localizedDescription))
+                        }
+                    }
+                }
+            }
+        } catch {
+            result.failedPaths.append(.init(path: song.filePath, message: error.localizedDescription))
+        }
+
+        if result.hasFailures {
+            let failures = result.failedPaths.map { "\($0.path): \($0.message)" }.joined(separator: "; ")
+            plog("⚠️ Delete source files failed for '\(song.title)': \(failures)")
+        }
+        return result
+    }
+
+    nonisolated func shouldDeleteSidecars(for song: Song, retaining retainedSongs: [Song]) -> Bool {
+        let targetSidecars = Set(Self.sidecarPathsToDelete(for: song))
+        guard targetSidecars.isEmpty == false else { return false }
+
+        let sidecarsAreShared = retainedSongs.contains { retained in
+            guard retained.id != song.id, retained.sourceID == song.sourceID else { return false }
+            return Set(Self.sidecarPathsToDelete(for: retained)).isDisjoint(with: targetSidecars) == false
+        }
+        return !sidecarsAreShared
+    }
+
     private static var smbCacheDir: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("primuse_smb_cache")
     }
@@ -413,9 +510,55 @@ final class SourceManager {
 
     func deleteAudioCache(for song: Song) {
         let cacheURL = cacheURL(for: song)
-        try? FileManager.default.removeItem(at: cacheURL)
+        removeCacheFileFamily(at: cacheURL)
+        deleteConnectorTempCaches(for: song)
         let relativePath = "\(song.sourceID)/\(song.filePath.replacingOccurrences(of: "/", with: "_"))"
         Task { await AudioCacheManager.shared.removeEntry(path: relativePath) }
+    }
+
+    func deleteLocalCaches(for song: Song) {
+        deleteLocalCaches(for: [song])
+    }
+
+    func deleteLocalCaches(for songs: [Song]) {
+        guard songs.isEmpty == false else { return }
+
+        for song in songs {
+            deleteAudioCache(for: song)
+            CachedArtworkView.invalidateCache(for: song.id)
+            if let coverRef = song.coverArtFileName {
+                CachedArtworkView.invalidateCache(for: coverRef)
+            }
+        }
+
+        let songIDs = songs.map(\.id)
+        Task {
+            for songID in songIDs {
+                await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
+                await MetadataAssetStore.shared.invalidateLyricsCache(forSongID: songID)
+            }
+        }
+    }
+
+    private func deleteConnectorTempCaches(for song: Song) {
+        let sanitized = song.filePath.replacingOccurrences(of: "/", with: "_")
+        let temp = FileManager.default.temporaryDirectory
+        let candidates = [
+            temp.appendingPathComponent("primuse_smb_cache").appendingPathComponent(song.sourceID).appendingPathComponent(sanitized),
+            temp.appendingPathComponent("primuse_ftp_cache").appendingPathComponent(song.sourceID).appendingPathComponent(sanitized),
+            temp.appendingPathComponent("primuse_sftp_cache").appendingPathComponent(song.sourceID).appendingPathComponent(sanitized),
+            temp.appendingPathComponent("primuse_webdav_cache").appendingPathComponent(sanitized),
+        ]
+        for url in candidates {
+            removeCacheFileFamily(at: url)
+        }
+    }
+
+    private func removeCacheFileFamily(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        let partial = URL(fileURLWithPath: url.path + ".partial")
+        try? FileManager.default.removeItem(at: partial)
+        try? FileManager.default.removeItem(at: URL(fileURLWithPath: partial.path + CloudPlaybackSource.prewarmMarkerSuffix))
     }
 
     /// 清空所有音频缓存。返回 (成功删除字节数, 失败文件数)。
@@ -807,6 +950,101 @@ final class SourceManager {
             await connector.disconnect()
         }
         connectors.removeAll()
+    }
+}
+
+private extension SourceManager {
+    nonisolated static func sidecarPathsToDelete(for song: Song) -> [String] {
+        let songDir = (song.filePath as NSString).deletingLastPathComponent
+        let songFileName = (song.filePath as NSString).lastPathComponent
+        let songBase = (songFileName as NSString).deletingPathExtension
+
+        var paths: [String] = []
+        paths.append((songDir as NSString).appendingPathComponent("\(songBase).lrc"))
+        paths.append((songDir as NSString).appendingPathComponent("\(songBase)-cover.jpg"))
+
+        if let lyricsRef = song.lyricsFileName, isSafeLyricsSidecar(lyricsRef, for: song) {
+            paths.append(lyricsRef)
+        }
+        if let coverRef = song.coverArtFileName, isSafeCoverSidecar(coverRef, for: song) {
+            paths.append(coverRef)
+        }
+
+        var seen: Set<String> = [song.filePath]
+        return paths.filter { path in
+            guard seen.contains(path) == false else { return false }
+            seen.insert(path)
+            return true
+        }
+    }
+
+    nonisolated static func isSafeLyricsSidecar(_ path: String, for song: Song) -> Bool {
+        isSafeSameDirectorySidecar(
+            path,
+            for: song,
+            allowedExtensions: Set(PrimuseConstants.supportedLyricsExtensions),
+            allowedBaseSuffixes: [""]
+        )
+    }
+
+    nonisolated static func isSafeCoverSidecar(_ path: String, for song: Song) -> Bool {
+        isSafeSameDirectorySidecar(
+            path,
+            for: song,
+            allowedExtensions: Set(PrimuseConstants.supportedCoverExtensions),
+            allowedBaseSuffixes: ["", "-cover"]
+        )
+    }
+
+    nonisolated static func isSafeSameDirectorySidecar(
+        _ path: String,
+        for song: Song,
+        allowedExtensions: Set<String>,
+        allowedBaseSuffixes: [String]
+    ) -> Bool {
+        guard path.contains("://") == false, path.contains("/") else { return false }
+
+        let songDir = normalizedRemotePath((song.filePath as NSString).deletingLastPathComponent)
+        let sidecarDir = normalizedRemotePath((path as NSString).deletingLastPathComponent)
+        guard songDir == sidecarDir else { return false }
+
+        let songBase = ((song.filePath as NSString).lastPathComponent as NSString)
+            .deletingPathExtension
+            .lowercased()
+        let sidecarName = (path as NSString).lastPathComponent
+        let sidecarBase = (sidecarName as NSString).deletingPathExtension.lowercased()
+        let sidecarExt = (sidecarName as NSString).pathExtension.lowercased()
+        guard allowedExtensions.contains(sidecarExt) else { return false }
+
+        return allowedBaseSuffixes.contains { suffix in
+            sidecarBase == "\(songBase)\(suffix)"
+        }
+    }
+
+    nonisolated static func normalizedRemotePath(_ path: String) -> String {
+        let components = path
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard components.isEmpty == false else { return "/" }
+        return "/" + components.joined(separator: "/")
+    }
+
+    nonisolated static func isMissingFileError(_ error: Error) -> Bool {
+        if case SourceError.fileNotFound = error { return true }
+        if case SourceError.pathNotFound = error { return true }
+
+        let ns = error as NSError
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOENT) {
+            return true
+        }
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileNoSuchFileError {
+            return true
+        }
+
+        let message = error.localizedDescription.lowercased()
+        return message.contains("not found")
+            || message.contains("no such file")
+            || message.contains("不存在")
     }
 }
 

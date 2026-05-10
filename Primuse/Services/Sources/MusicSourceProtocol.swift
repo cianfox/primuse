@@ -69,6 +69,10 @@ protocol MusicSourceConnector: Sendable {
     /// Write data to a remote path. Used by sidecar file writing (cover art, lyrics).
     func writeFile(data: Data, to path: String) async throws
 
+    /// Delete a remote file. Used by song deletion to remove the source audio
+    /// file and safe same-name sidecars.
+    func deleteFile(at path: String) async throws
+
     /// Count audio files in a directory (recursive). Default implementation uses scanAudioFiles.
     func countAudioFiles(in path: String) async throws -> Int
 
@@ -117,6 +121,10 @@ extension MusicSourceConnector {
 
     func writeFile(data: Data, to path: String) async throws {
         throw SourceError.connectionFailed("This source does not support file writing")
+    }
+
+    func deleteFile(at path: String) async throws {
+        throw SourceError.connectionFailed("This source does not support file deletion")
     }
 
     /// Default fallback: download the whole file via `localURL` then slice.

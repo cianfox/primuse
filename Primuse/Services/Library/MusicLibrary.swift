@@ -125,8 +125,18 @@ final class MusicLibrary {
         loadSnapshot()
     }
 
-    /// Add songs from a scan result and rebuild albums/artists
-    func addSongs(_ newSongs: [Song]) {
+    /// Add songs from a scan result and rebuild albums/artists.
+    ///
+    /// `notifyRemovals` 控制是否在发现"affected source 里有歌不在 incoming 里"
+    /// 时发出 `primuseSongsRemoved` 通知。完整扫描结束 (completeScan) 应当
+    /// 传 true (远端真的少了一首歌, listener 应当清缓存); 中间 flush 应当
+    /// 传 false ── 因为中间 flush 拿到的是部分扫描结果, 还没扫到的歌会被
+    /// line 164 临时移除, 下次 flush 又补回, 这种"伪移除"不应触发缓存清理。
+    func addSongs(
+        _ newSongs: [Song],
+        affectedSourceIDs explicitAffectedSourceIDs: Set<String>? = nil,
+        notifyRemovals: Bool = true
+    ) {
         // Merge semantics:
         //
         // - Drop songs from the affected sources that the new scan didn't
@@ -159,8 +169,9 @@ final class MusicLibrary {
                 return s
             }
         let incomingIDs = Set(filteredNewSongs.map(\.id))
-        let sourceIDs = Set(filteredNewSongs.map(\.sourceID))
+        let sourceIDs = explicitAffectedSourceIDs ?? Set(filteredNewSongs.map(\.sourceID))
 
+        let removedSongs = songs.filter { sourceIDs.contains($0.sourceID) && !incomingIDs.contains($0.id) }
         songs.removeAll { sourceIDs.contains($0.sourceID) && !incomingIDs.contains($0.id) }
 
         var existingIndexByID: [String: Int] = [:]
@@ -251,6 +262,13 @@ final class MusicLibrary {
                 userInfo: ["songs": contentChanged]
             )
         }
+        if notifyRemovals && !removedSongs.isEmpty {
+            NotificationCenter.default.post(
+                name: .primuseSongsRemoved,
+                object: nil,
+                userInfo: ["songs": removedSongs]
+            )
+        }
     }
 
     /// Delete a single song and rebuild index
@@ -265,6 +283,7 @@ final class MusicLibrary {
         cleanPlaybackHistoryEntries()
         rebuildIndex()
         persistSnapshot()
+        postSongsRemoved([song])
         return songs.filter { $0.sourceID == song.sourceID }.count
     }
 
@@ -285,6 +304,7 @@ final class MusicLibrary {
         cleanPlaybackHistoryEntries()
         rebuildIndex()
         persistSnapshot()
+        postSongsRemoved(songsToDelete)
     }
 
     /// Reverse a previous `deleteSong` so the next scan can re-add the
@@ -295,6 +315,15 @@ final class MusicLibrary {
         guard deletedSongIdentities.contains(key) else { return }
         deletedSongIdentities.remove(key)
         persistSnapshot()
+    }
+
+    private func postSongsRemoved(_ songs: [Song]) {
+        guard songs.isEmpty == false else { return }
+        NotificationCenter.default.post(
+            name: .primuseSongsRemoved,
+            object: nil,
+            userInfo: ["songs": songs]
+        )
     }
 
     /// Remove all songs for a given source
@@ -1119,6 +1148,10 @@ extension Notification.Name {
     /// listeners (SourceManager, MetadataBackfillService) drop stale audio
     /// caches and clear failed-backfill marks for these IDs.
     static let primuseSongContentChanged = Notification.Name("primuse.songContentChanged")
+    /// Posted when songs leave the library because the user deleted them or a
+    /// complete re-scan no longer sees their source files. `userInfo["songs"]`
+    /// is the removed `[Song]`; listeners drop audio/artwork/lyrics caches.
+    static let primuseSongsRemoved = Notification.Name("primuse.songsRemoved")
     /// Posted in addition to `primuseSourcesDidChange` when a source is
     /// soft-deleted locally. CloudKitSyncService listens to this and
     /// enqueues a real `deleteRecord` instead of pushing the soft-delete

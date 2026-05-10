@@ -324,4 +324,9 @@ actor SynologySource: MusicSourceConnector {
         let fileName = (path as NSString).lastPathComponent
         try await api.uploadFile(data: data, toDirectory: directory, fileName: fileName)
     }
+
+    func deleteFile(at path: String) async throws {
+        try await connect()
+        try await api.deleteFile(path: path)
+    }
 }

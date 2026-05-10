@@ -143,7 +143,7 @@
 "enable" = "启用";
 "disabled" = "已禁用";
 "delete_song" = "从资料库删除";
-"delete_song_message" = "歌曲、封面和歌词缓存将被同步删除";
+"delete_song_message" = "支持删除的音乐源会同步删除源歌曲；同名封面/歌词没有其他歌曲使用时才会删除，并清除本地缓存。";
 "scan" = "扫描";
 "password_edit_hint" = "留空则保持当前密码不变";
 "anonymous_login_hint" = "账号和密码留空以匿名方式连接";
@@ -595,10 +595,10 @@
 "dup_none_desc" = "library 里同首歌只有一个版本,无需清理。";
 "dup_groups_count" = "重复分组";
 "dup_redundant_count" = "可删除冗余";
-"dup_summary_footer" = "按标题 + 艺术家 + 时长±1s 分组,标记最高音质版本为推荐保留。删除仅从 library 移除,不影响 NAS 上的源文件。";
+"dup_summary_footer" = "按标题 + 艺术家 + 时长±1s 分组,标记最高音质版本为推荐保留。清理重复项只删冗余音频；同名歌词/封面仍被保留版本使用时不会删除。";
 "dup_clean_all_action" = "一键智能保留 (删除所有冗余)";
 "dup_clean_all_confirm" = "确定一键清理所有冗余?";
-"dup_clean_all_message_format" = "将从 library 移除 %d 首冗余歌曲,只保留每组最高音质版本。NAS 上的源文件不受影响。";
+"dup_clean_all_message_format" = "将删除 %d 首冗余歌曲,只保留每组最高音质版本。同名歌词/封面仍被保留版本使用时不会删除。";
 "dup_keep_best_action_short" = "保留最佳";
 "dup_keep_best_action_format" = "保留最佳,删除其余 %d 个版本";
 "dup_best_badge" = "推荐";
