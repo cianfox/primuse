@@ -101,6 +101,26 @@ extension Notification.Name {
     static let primuseRequestExpandNowPlaying = Notification.Name("primuse.expandNowPlaying")
 }
 
+/// SwiftUI 的 `openWindow` action 只能在 View 层级里通过 `@Environment`
+/// 拿到,但菜单栏 popover 上的 "Open Main Window" 按钮要从 AppKit 的
+/// `MacMenuBarController` 调用——用户把主窗口红灯关掉后,`NSApp.windows`
+/// 里已经没有 WindowGroup 创建的 NSWindow 可以 `makeKeyAndOrderFront`,
+/// 按钮就静默失效。MacContentView 启动时把 action 注册过来,菜单栏
+/// 兜底就有路径触发 SwiftUI 重建主窗口。
+@MainActor
+enum MainWindowOpener {
+    static let mainWindowID = "primuse-main"
+    private static var action: OpenWindowAction?
+
+    static func register(_ openWindow: OpenWindowAction) {
+        action = openWindow
+    }
+
+    static func openMainWindow() {
+        action?(id: mainWindowID)
+    }
+}
+
 /// macOS counterpart of `PrimuseAppDelegate`. macOS has no BGTaskScheduler /
 /// CarPlay / Intents-handler routing — the delegate exists only to forward
 /// CloudKit silent pushes the same way the iOS one does, plus install the
@@ -240,6 +260,18 @@ struct PrimuseApp: App {
         _metadataBackfill = State(initialValue: services.metadataBackfill)
     }
 
+    /// macOS 给主 WindowGroup 一个稳定 id,菜单栏 "Open Main Window"
+    /// 兜底走 `openWindow(id:)` 才能在窗口被关掉后重新拉出来; iOS 没这
+    /// 需求,沿用原来的无 id 版本即可。
+    @SceneBuilder
+    private func macAwareMainGroup<V: View>(@ViewBuilder _ content: @escaping () -> V) -> some Scene {
+        #if os(macOS)
+        WindowGroup(id: MainWindowOpener.mainWindowID) { content() }
+        #else
+        WindowGroup { content() }
+        #endif
+    }
+
     @ViewBuilder
     private func injectServices<V: View>(@ViewBuilder _ content: () -> V) -> some View {
         // On macOS we deliberately don't force the global tint to the brand
@@ -270,7 +302,7 @@ struct PrimuseApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        macAwareMainGroup {
             injectServices {
                 #if os(iOS)
                 ContentView()

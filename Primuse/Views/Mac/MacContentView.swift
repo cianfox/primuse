@@ -17,6 +17,11 @@ struct MacContentView: View {
     @State private var nowPlayingPresented = false
     @State private var queuePresented = false
     @State private var searchText = ""
+    /// 把 SwiftUI 的 openWindow action 捕获到 MainWindowOpener,菜单栏
+    /// popover 的 "Open Main Window" 按钮在主窗口被红灯关掉之后才能
+    /// 通过它重新创建窗口,否则 NSApp.windows 里没东西可 makeKey,
+    /// 按钮静默失效。
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -79,6 +84,7 @@ struct MacContentView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .task { MainWindowOpener.register(openWindow) }
         .onReceive(NotificationCenter.default.publisher(for: .primuseRequestExpandNowPlaying)) { _ in
             // 全屏请求由 AppDelegate 发出,这里把 NowPlaying 视图展开,
             // 让全屏内容直接是播放器界面。

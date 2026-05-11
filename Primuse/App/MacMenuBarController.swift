@@ -109,8 +109,36 @@ final class MacMenuBarController: NSObject, NSPopoverDelegate {
 
     private func activateMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.canBecomeMain && !($0.styleMask.contains(.utilityWindow)) }) {
+        if let window = existingMainWindow() {
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
+            return
+        }
+        // 主窗口已被用户关掉(红灯), SwiftUI 把 WindowGroup 实例销毁了,
+        // NSApp.windows 找不到任何可 makeKey 的内容窗口。走 SwiftUI 的
+        // openWindow(id:) 让 WindowGroup 重新建一份;桥接的 action 在
+        // MacContentView.task 里已经注册过。
+        MainWindowOpener.openMainWindow()
+    }
+
+    /// 找到当前 SwiftUI 主窗口。排除 mini player / 桌面歌词 / Settings /
+    /// 各种 NSPanel 副窗口。Settings 也是 canBecomeMain 的 NSWindow,
+    /// 必须用 identifier / autosaveName / title 联合过滤,不能只看
+    /// canBecomeMain。
+    private func existingMainWindow() -> NSWindow? {
+        NSApp.windows.first { window in
+            guard window.canBecomeMain,
+                  !(window is NSPanel),
+                  !window.styleMask.contains(.utilityWindow) else { return false }
+            // Settings 场景的 identifier 形如 "com_apple_SwiftUI_Settings_window"。
+            if let id = window.identifier?.rawValue, id.contains("Settings") {
+                return false
+            }
+            if window.frameAutosaveName == "PrimuseMiniPlayer" ||
+                window.frameAutosaveName == "PrimuseDesktopLyrics" {
+                return false
+            }
+            return true
         }
     }
 }
