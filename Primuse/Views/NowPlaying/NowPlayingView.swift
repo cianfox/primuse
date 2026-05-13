@@ -232,7 +232,9 @@ struct NowPlayingView: View {
                 Spacer()
                 Button { Task { await player.previous() } } label: {
                     Image(systemName: "backward.fill").font(.title).foregroundStyle(.white)
-                }.frame(width: 56, height: 56)
+                }
+                .frame(width: 56, height: 56)
+                .accessibilityLabel("a11y_previous_track")
                 Spacer()
                 Button { withAnimation(.spring(response: 0.3)) { player.togglePlayPause() } } label: {
                     ZStack {
@@ -248,10 +250,15 @@ struct NowPlayingView: View {
                     }
                 }
                 .disabled(player.isLoading)
+                .accessibilityLabel(player.isPlaying
+                    ? String(localized: "a11y_pause")
+                    : String(localized: "a11y_play"))
                 Spacer()
                 Button { Task { await player.next() } } label: {
                     Image(systemName: "forward.fill").font(.title).foregroundStyle(.white)
-                }.frame(width: 56, height: 56)
+                }
+                .frame(width: 56, height: 56)
+                .accessibilityLabel("a11y_next_track")
                 Spacer()
                 ctrlBtn(player.repeatMode == .one ? "repeat.1" : "repeat", active: player.repeatMode != .off) {
                     switch player.repeatMode {
@@ -442,7 +449,9 @@ struct NowPlayingView: View {
                         Spacer()
                         Button { Task { await player.previous() } } label: {
                             Image(systemName: "backward.fill").font(.title).foregroundStyle(.white)
-                        }.frame(width: 56, height: 56)
+                        }
+                        .frame(width: 56, height: 56)
+                        .accessibilityLabel("a11y_previous_track")
                         Spacer()
                         Button { withAnimation(.spring(response: 0.3)) { player.togglePlayPause() } } label: {
                             ZStack {
@@ -461,10 +470,15 @@ struct NowPlayingView: View {
                             }
                         }
                         .disabled(player.isLoading)
+                        .accessibilityLabel(player.isPlaying
+                            ? String(localized: "a11y_pause")
+                            : String(localized: "a11y_play"))
                         Spacer()
                         Button { Task { await player.next() } } label: {
                             Image(systemName: "forward.fill").font(.title).foregroundStyle(.white)
-                        }.frame(width: 56, height: 56)
+                        }
+                        .frame(width: 56, height: 56)
+                        .accessibilityLabel("a11y_next_track")
                         Spacer()
                         ctrlBtn(player.repeatMode == .one ? "repeat.1" : "repeat", active: player.repeatMode != .off) {
                             switch player.repeatMode {
@@ -668,7 +682,21 @@ struct NowPlayingView: View {
         Button(action: action) {
             Image(systemName: icon).font(.body)
                 .foregroundStyle(active ? .white : .white.opacity(0.4))
-        }.frame(width: 44, height: 44)
+        }
+        .frame(width: 44, height: 44)
+        .accessibilityLabel(Self.iconA11yLabel(icon))
+        .accessibilityValue(active
+            ? String(localized: "a11y_value_on")
+            : String(localized: "a11y_value_off"))
+    }
+
+    /// SF Symbol -> VoiceOver 标签的映射, 用在 transport 控件上。
+    private static func iconA11yLabel(_ icon: String) -> LocalizedStringKey {
+        switch icon {
+        case "shuffle": return "a11y_shuffle"
+        case "repeat", "repeat.1": return "a11y_repeat"
+        default: return "a11y_button_generic"
+        }
     }
 
     private func loadLyrics() async {

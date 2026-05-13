@@ -52,6 +52,9 @@ struct MiniPlayerView: View {
                         .frame(width: 36, height: 36)
                     }
                     .disabled(player.isLoading)
+                    .accessibilityLabel(player.isPlaying
+                        ? String(localized: "a11y_pause")
+                        : String(localized: "a11y_play"))
 
                     Button {
                         Task { await player.next() }
@@ -60,6 +63,7 @@ struct MiniPlayerView: View {
                             .font(.caption)
                             .frame(width: 32, height: 32)
                     }
+                    .accessibilityLabel("a11y_next_track")
                 }
                 .fixedSize()
             }

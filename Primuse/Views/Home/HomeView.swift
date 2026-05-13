@@ -20,6 +20,7 @@ struct HomeView: View {
     }
 
     @Environment(AppUpdateChecker.self) private var updateChecker
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showUpdateSheet: Bool = false
 
     var body: some View {
@@ -578,11 +579,17 @@ struct HomeView: View {
                 .font(.title3).fontWeight(.bold)
                 .padding(.horizontal, 20)
 
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12),
-            ], spacing: 12) {
-                ForEach(library.recentlyAddedAlbums(limit: 6)) { album in
+            // iPad regular size class 多列展开,iPhone / 小窗保持 2 列
+            LazyVGrid(
+                columns: sizeClass == .regular
+                    ? [GridItem(.adaptive(minimum: 220), spacing: 12)]
+                    : [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12),
+                    ],
+                spacing: 12
+            ) {
+                ForEach(library.recentlyAddedAlbums(limit: sizeClass == .regular ? 12 : 6)) { album in
                     Button { playAlbum(album) } label: {
                         recentlyAddedRow(album: album)
                     }

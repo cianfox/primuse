@@ -791,3 +791,17 @@
 "onboarding_add_first_source" = "添加第一个音乐源";
 "onboarding_later" = "稍后再说";
 "skip" = "跳过";
+"a11y_shuffle" = "随机播放";
+"a11y_repeat" = "循环模式";
+"a11y_button_generic" = "按钮";
+"a11y_value_on" = "已开启";
+"a11y_value_off" = "已关闭";
+"a11y_play" = "播放";
+"a11y_pause" = "暂停";
+"a11y_previous_track" = "上一首";
+"a11y_next_track" = "下一首";
+"a11y_queue" = "播放队列";
+"a11y_open_lyrics" = "显示歌词";
+"a11y_close_lyrics" = "隐藏歌词";
+"a11y_favorite_add" = "加入歌单";
+"a11y_more_actions" = "更多操作";

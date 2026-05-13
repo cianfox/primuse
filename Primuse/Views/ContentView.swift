@@ -395,12 +395,16 @@ struct NowPlayingAccessory: View {
                         .frame(width: isInline ? 28 : 32, height: isInline ? 28 : 32)
                     }
                     .disabled(player.isLoading)
+                    .accessibilityLabel(player.isPlaying
+                        ? String(localized: "a11y_pause")
+                        : String(localized: "a11y_play"))
 
                     if !isInline {
                         Button { Task { await player.next() } } label: {
                             Image(systemName: "forward.fill").font(.caption)
                                 .frame(width: 28, height: 28)
                         }
+                        .accessibilityLabel("a11y_next_track")
                     }
                 }
                 .fixedSize()

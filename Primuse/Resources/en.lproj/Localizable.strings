@@ -790,3 +790,17 @@
 "onboarding_add_first_source" = "Add your first source";
 "onboarding_later" = "Maybe later";
 "skip" = "Skip";
+"a11y_shuffle" = "Shuffle";
+"a11y_repeat" = "Repeat";
+"a11y_button_generic" = "Button";
+"a11y_value_on" = "On";
+"a11y_value_off" = "Off";
+"a11y_play" = "Play";
+"a11y_pause" = "Pause";
+"a11y_previous_track" = "Previous track";
+"a11y_next_track" = "Next track";
+"a11y_queue" = "Queue";
+"a11y_open_lyrics" = "Show lyrics";
+"a11y_close_lyrics" = "Hide lyrics";
+"a11y_favorite_add" = "Add to playlist";
+"a11y_more_actions" = "More actions";

@@ -172,9 +172,18 @@ struct SongRowView: View {
                         .frame(width: 32, height: 32)
                         .contentShape(Rectangle())
                 }
+                .accessibilityLabel("a11y_more_actions")
             }
         }
         .contentShape(Rectangle())
+        // VoiceOver 把整行合并成一个可选元素,读出来 "歌名,艺术家",
+        // 操作菜单走 contextMenu (VoiceOver 长按手势仍可触发)。
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(
+            [song.title, song.artistName]
+                .compactMap { $0 }
+                .joined(separator: " — ")
+        ))
         // Bare songs (still being filled by MetadataBackfillService) are
         // tap-disabled with a clear hint rather than just visually dimmed.
         // The overlay is layered above the row's content so its tap

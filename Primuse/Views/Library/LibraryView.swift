@@ -35,6 +35,7 @@ enum LibrarySection: String, CaseIterable, Hashable {
 struct LibraryView: View {
     @Environment(AudioPlayerService.self) private var player
     @Environment(MusicLibrary.self) private var library
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var navigationPath = NavigationPath()
 
     private var songs: [Song] { library.visibleSongs }
@@ -74,11 +75,18 @@ struct LibraryView: View {
                             }
                         }
 
-                        // 2-column grid of recent songs/albums (no NavigationLink to avoid arrows)
-                        LazyVGrid(columns: [
-                            GridItem(.flexible(), spacing: 12),
-                            GridItem(.flexible(), spacing: 12)
-                        ], spacing: 14) {
+                        // iPad regular size class 上自适应多列 —— 横屏可以排
+                        // 4-5 张卡, 竖屏 3 张; iPhone / Stage Manager 小窗保持
+                        // 原本 2 列固定宽。
+                        LazyVGrid(
+                            columns: sizeClass == .regular
+                                ? [GridItem(.adaptive(minimum: 160), spacing: 12)]
+                                : [
+                                    GridItem(.flexible(), spacing: 12),
+                                    GridItem(.flexible(), spacing: 12)
+                                ],
+                            spacing: 14
+                        ) {
                             ForEach(recentItems) { item in
                                 RecentItemCard(item: item)
                                     .contentShape(Rectangle())
