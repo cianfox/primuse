@@ -87,5 +87,78 @@ final class AppServices {
 
         CloudKVSSync.shared.register(key: CloudKVSKey.lyricsFontScale) { }
         CloudKVSSync.shared.register(key: CloudKVSKey.recentSearches) { }
+
+        wireIntentBridge()
+    }
+
+    /// 把 `PrimuseIntentBridge` 的闭包指向真实的 player / library。Widget
+    /// extension / Shortcuts / Control Center 触发 intent 时,系统会把
+    /// `AudioPlaybackIntent.perform()` 路由到主 app 进程(必要时唤醒),
+    /// 这里注入的闭包就跑起来了。
+    private func wireIntentBridge() {
+        let bridge = PrimuseIntentBridge.shared
+        let player = self.playerService
+        let library = self.musicLibrary
+
+        bridge.togglePlayPause = { player.togglePlayPause() }
+        bridge.setPlaying = { desired in
+            // 状态对齐: 想播放且当前没播 → toggle 一下; 想暂停且当前在播 → toggle。
+            // 已经对齐就别动 (避免来回开停)。
+            if desired != player.isPlaying { player.togglePlayPause() }
+        }
+        bridge.next = { await player.next(caller: "AppIntent") }
+        bridge.previous = { await player.previous() }
+
+        bridge.playSong = { title, artist in
+            let candidates = Self.matchingSongs(in: library.visibleSongs, title: title, artist: artist)
+            guard let song = candidates.first else { return nil }
+            // 命中歌 + 整库剩下的拼起来当队列,播完会自然往下接。
+            let rest = library.visibleSongs.filter { s in !candidates.contains(where: { $0.id == s.id }) }
+            player.setQueue(candidates + rest, startAt: 0)
+            await player.play(song: song, caller: "AppIntent")
+            let by = song.artistName.map { " by \($0)" } ?? ""
+            return "Playing \(song.title)\(by)"
+        }
+
+        bridge.playPlaylist = { name in
+            let trimmed = name.lowercased()
+            let exact = library.playlists.first(where: { $0.name.lowercased() == trimmed })
+            let target = exact ?? library.playlists.first(where: { $0.name.lowercased().contains(trimmed) })
+            guard let playlist = target else { return nil }
+            let songs = library.songs(forPlaylist: playlist.id)
+            guard let first = songs.first else { return nil }
+            player.setQueue(songs, startAt: 0)
+            await player.play(song: first, caller: "AppIntent")
+            return "Playing playlist \(playlist.name)."
+        }
+
+        bridge.shuffleLibrary = {
+            let pool = library.visibleSongs.shuffled()
+            guard let first = pool.first else { return }
+            player.setQueue(pool, startAt: 0)
+            await player.play(song: first, caller: "AppIntent")
+        }
+    }
+
+    /// 模糊匹配 ── title 包含 + (可选) artist 包含,都不区分大小写。
+    /// 精确 title 匹配排前。
+    private static func matchingSongs(in songs: [Song], title: String, artist: String?) -> [Song] {
+        let titleLower = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !titleLower.isEmpty else { return [] }
+        let artistLower = artist?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = songs.filter { s in
+            let titleMatch = s.title.lowercased().contains(titleLower)
+            guard titleMatch else { return false }
+            if let artistLower, !artistLower.isEmpty {
+                return (s.artistName ?? "").lowercased().contains(artistLower)
+            }
+            return true
+        }
+        return filtered.sorted { a, b in
+            let aExact = a.title.lowercased() == titleLower
+            let bExact = b.title.lowercased() == titleLower
+            if aExact != bExact { return aExact }
+            return false
+        }
     }
 }

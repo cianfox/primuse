@@ -10,6 +10,7 @@ struct NowPlayingView: View {
     @Environment(MusicScraperService.self) private var scraperService
     @Environment(SourceManager.self) private var sourceManager
     @Environment(SourcesStore.self) private var sourcesStore
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var lyrics: [LyricLine] = []
@@ -39,6 +40,13 @@ struct NowPlayingView: View {
             .keyWindow?.safeAreaInsets.top ?? 59
     }
 
+    /// iPad 横屏(regular size class + 宽 > 高)启用左右双栏 —— 左封面 + 控件,
+    /// 右常驻歌词。其它(iPhone / iPad 竖屏 / 分屏小窗 compact)还走原来的
+    /// 上下结构,showLyrics 切歌词 / 封面模式。
+    private func shouldUseWideLayout(geo: GeometryProxy) -> Bool {
+        sizeClass == .regular && geo.size.width > geo.size.height
+    }
+
     var body: some View {
         GeometryReader { geo in
             let artSize = min(geo.size.width - 60, geo.size.height * 0.38)
@@ -49,7 +57,256 @@ struct NowPlayingView: View {
                 // Dynamic background from cover colors — fully opaque
                 backgroundGradient.ignoresSafeArea()
 
-                VStack(spacing: 0) {
+                if shouldUseWideLayout(geo: geo) {
+                    wideLandscapeLayout(geo: geo)
+                } else {
+                    portraitLayout(geo: geo, artSize: artSize)
+                }
+            }
+        }
+        .task(id: player.currentSong?.id) { await loadLyrics() }
+        .sheet(isPresented: $showQueue) {
+            QueueView()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showScrapeOptions) {
+            if let song = player.currentSong {
+                ScrapeOptionsView(song: song) { u in
+                    CachedArtworkView.invalidateCache(for: u.id)
+                    if let oldRef = song.coverArtFileName {
+                        CachedArtworkView.invalidateCache(for: oldRef)
+                    }
+                    Task { await loadLyrics() }
+                }
+                .presentationDetents([.large])
+            }
+        }
+        .sheet(isPresented: $showAddToPlaylist) {
+            if let song = player.currentSong {
+                AddToPlaylistSheet(song: song)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        .sheet(isPresented: $showSongInfo) {
+            if let song = player.currentSong {
+                SongInfoSheet(song: song)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        .confirmationDialog(String(localized: "sleep_timer"), isPresented: $showSleepTimer) {
+            Button("5 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 5) }
+            Button("15 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 15) }
+            Button("30 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 30) }
+            Button("45 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 45) }
+            Button("60 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 60) }
+            Button(String(localized: "sleep_at_track_end")) { player.scheduleSleepAtTrackEnd() }
+                .disabled(player.currentSong == nil)
+            if player.isSleepTimerActive {
+                Button(String(localized: "cancel_timer"), role: .destructive) { player.cancelSleep() }
+            }
+            Button(String(localized: "cancel"), role: .cancel) {}
+        }
+        .alert(String(localized: "scrape_song"),
+               isPresented: Binding(get: { scrapeAlertMessage != nil }, set: { if !$0 { scrapeAlertMessage = nil } })) {
+            Button("done", role: .cancel) {}
+        } message: { Text(scrapeAlertMessage ?? "") }
+        .alert(String(localized: "delete_song"), isPresented: $showDeleteConfirm) {
+            Button(String(localized: "cancel"), role: .cancel) {}
+            Button(String(localized: "delete"), role: .destructive) {
+                deleteCurrentSong()
+            }
+        } message: {
+            Text(String(localized: "delete_song_message"))
+        }
+        .onChange(of: lyricsFontScale) { _, _ in
+            CloudKVSSync.shared.markChanged(key: CloudKVSKey.lyricsFontScale)
+        }
+    }
+
+    // MARK: - iPad 横屏 layout (左封面 / 右歌词)
+    //
+    // 横屏时 showLyrics 状态不参与判断,封面 + 歌词永远并排显示。封面这一侧
+    // 复用原 portrait 模式的所有控件子组件(PlaybackProgressBar, ctrlBtn,
+    // VolumeSlider, AirPlayButton, moreMenu), 只是改成一个独立 VStack
+    // 钉到左半屏。歌词复用 `lyricsFullView`。
+
+    @ViewBuilder
+    private func wideLandscapeLayout(geo: GeometryProxy) -> some View {
+        let halfWidth = geo.size.width / 2
+        // 左侧封面留 80pt 内边距,大小不超过列高 60%。这套尺寸在 iPad Pro
+        // 13" 横屏 (1366x1024) 下封面 ~ 580pt,既不显空也不溢出。
+        let artSize = min(halfWidth - 80, geo.size.height * 0.6)
+
+        HStack(spacing: 0) {
+            wideLeftPane(artSize: artSize)
+                .frame(width: halfWidth)
+
+            // 中缝细分隔,半透明白,跟封面阴影协调
+            Rectangle()
+                .fill(.white.opacity(0.06))
+                .frame(width: 1)
+                .padding(.vertical, 40)
+
+            wideRightPane()
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func wideLeftPane(artSize: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            // 顶部 grabber —— 跟 portrait 模式对齐,留出下拉关闭手势的视觉提示
+            Capsule()
+                .fill(.white.opacity(0.4))
+                .frame(width: 48, height: 5)
+                .padding(.top, topSafeArea + 6)
+                .padding(.bottom, 10)
+
+            if let error = player.lastPlaybackError {
+                Text(error)
+                    .font(.caption).fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(.red.opacity(0.8), in: Capsule())
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            Spacer()
+
+            CachedArtworkView(
+                coverRef: player.currentSong?.coverArtFileName,
+                songID: player.currentSong?.id ?? "",
+                size: artSize, cornerRadius: 16,
+                sourceID: player.currentSong?.sourceID,
+                filePath: player.currentSong?.filePath,
+                revisionToken: player.coverRevision
+            )
+            .scaleEffect(player.isPlaying ? 1.0 : 0.92)
+            .shadow(color: .black.opacity(0.35), radius: 28, y: 12)
+            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: player.isPlaying)
+
+            Spacer()
+
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(player.currentSong?.title ?? "")
+                        .font(.title2).fontWeight(.bold).lineLimit(1)
+                        .foregroundStyle(.white)
+                    Text(player.currentSong?.artistName ?? "")
+                        .font(.title3).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                }
+                Spacer()
+                Button { showAddToPlaylist = true } label: {
+                    Image(systemName: isInAnyPlaylist ? "heart.fill" : "heart")
+                        .font(.title2)
+                        .foregroundStyle(isInAnyPlaylist ? .red : .white.opacity(0.6))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .padding(.trailing, 6)
+                moreMenu
+            }
+            .padding(.horizontal, 36).padding(.top, 18)
+
+            PlaybackProgressBar()
+                .padding(.horizontal, 36).padding(.top, 10)
+
+            HStack(spacing: 0) {
+                Spacer()
+                ctrlBtn("shuffle", active: player.shuffleEnabled) { player.shuffleEnabled.toggle() }
+                Spacer()
+                Button { Task { await player.previous() } } label: {
+                    Image(systemName: "backward.fill").font(.title).foregroundStyle(.white)
+                }.frame(width: 56, height: 56)
+                Spacer()
+                Button { withAnimation(.spring(response: 0.3)) { player.togglePlayPause() } } label: {
+                    ZStack {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 60)).opacity(0)
+                        if player.isLoading {
+                            ProgressView().controlSize(.large).tint(.white)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 60)).foregroundStyle(.white)
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                    }
+                }
+                .disabled(player.isLoading)
+                Spacer()
+                Button { Task { await player.next() } } label: {
+                    Image(systemName: "forward.fill").font(.title).foregroundStyle(.white)
+                }.frame(width: 56, height: 56)
+                Spacer()
+                ctrlBtn(player.repeatMode == .one ? "repeat.1" : "repeat", active: player.repeatMode != .off) {
+                    switch player.repeatMode {
+                    case .off: player.repeatMode = .all
+                    case .all: player.repeatMode = .one
+                    case .one: player.repeatMode = .off
+                    }
+                }
+                Spacer()
+            }
+            .padding(.top, 14)
+
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.fill").font(.caption2).foregroundStyle(.white.opacity(0.4))
+                VolumeSlider(value: Binding(
+                    get: { Double(player.audioEngine.volume) },
+                    set: { player.audioEngine.volume = Float($0) }
+                ))
+                Image(systemName: "speaker.wave.3.fill").font(.caption2).foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(.horizontal, 36).padding(.top, 12)
+
+            // 底部 bar —— 没有歌词切换按钮(歌词永远在右栏可见),保留 AirPlay
+            // 和队列入口
+            HStack {
+                Spacer()
+                AirPlayButton().frame(width: 36, height: 36)
+                Spacer()
+                Button { showQueue = true } label: {
+                    Image(systemName: "list.bullet").foregroundStyle(.white.opacity(0.55))
+                }
+            }
+            .font(.body).padding(.horizontal, 80).padding(.top, 14)
+
+            if let song = player.currentSong {
+                HStack(spacing: 4) {
+                    Text(song.fileFormat.displayName)
+                    if let sr = song.sampleRate { Text("·"); Text("\(sr / 1000)kHz") }
+                    if sourcesStore.sources.count > 1,
+                       let source = sourcesStore.source(id: song.sourceID) {
+                        Text("·")
+                        Image(systemName: source.type.iconName)
+                        Text(source.name)
+                    }
+                }
+                .font(.caption2).foregroundStyle(.white.opacity(0.3))
+                .padding(.top, 6).padding(.bottom, 16)
+            } else {
+                Spacer().frame(height: 16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func wideRightPane() -> some View {
+        VStack(spacing: 0) {
+            // 跟左栏 grabber 顶端对齐
+            Spacer().frame(height: topSafeArea + 21)
+            lyricsFullView
+                .padding(.bottom, 24)
+        }
+    }
+
+    // MARK: - 原 portrait layout (iPhone + iPad 竖屏 + 分屏小窗)
+
+    @ViewBuilder
+    private func portraitLayout(geo: GeometryProxy, artSize: CGFloat) -> some View {
+        VStack(spacing: 0) {
                     // Grabber handle (system-matching dimensions)
                     Capsule()
                         .fill(.white.opacity(0.4))
@@ -248,75 +505,6 @@ struct NowPlayingView: View {
                         .font(.caption2).foregroundStyle(.white.opacity(0.3)).padding(.top, 4).padding(.bottom, 6)
                     }
                 }
-            }
-        }
-        .task(id: player.currentSong?.id) { await loadLyrics() }
-        .sheet(isPresented: $showQueue) {
-            QueueView()
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showScrapeOptions) {
-            if let song = player.currentSong {
-                ScrapeOptionsView(song: song) { u in
-                    // Invalidate cover cache so all views reload。
-                    // 注意:syncSongMetadata + forceRefreshNowPlayingArtwork +
-                    // themeService 由 PrimuseApp 监听 songReplacementToken 统一处理,
-                    // 这里只做本视图独有的(loadLyrics)和 cache 失效。
-                    CachedArtworkView.invalidateCache(for: u.id)
-                    if let oldRef = song.coverArtFileName {
-                        CachedArtworkView.invalidateCache(for: oldRef)
-                    }
-                    Task { await loadLyrics() }
-                }
-                // 默认全屏 (`.large`) — medium 半屏会把"自动/手动刮削"按钮和
-                // 搜索数量 picker 挤到下方, 用户不知道要上滑会误以为功能消失。
-                // 想看下面的 NowPlaying 时下拉关闭 sheet 即可。
-                .presentationDetents([.large])
-            }
-        }
-        .sheet(isPresented: $showAddToPlaylist) {
-            if let song = player.currentSong {
-                AddToPlaylistSheet(song: song)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
-        }
-        .sheet(isPresented: $showSongInfo) {
-            if let song = player.currentSong {
-                SongInfoSheet(song: song)
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.visible)
-            }
-        }
-        .confirmationDialog(String(localized: "sleep_timer"), isPresented: $showSleepTimer) {
-            Button("5 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 5) }
-            Button("15 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 15) }
-            Button("30 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 30) }
-            Button("45 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 45) }
-            Button("60 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 60) }
-            Button(String(localized: "sleep_at_track_end")) { player.scheduleSleepAtTrackEnd() }
-                .disabled(player.currentSong == nil)
-            if player.isSleepTimerActive {
-                Button(String(localized: "cancel_timer"), role: .destructive) { player.cancelSleep() }
-            }
-            Button(String(localized: "cancel"), role: .cancel) {}
-        }
-        .alert(String(localized: "scrape_song"),
-               isPresented: Binding(get: { scrapeAlertMessage != nil }, set: { if !$0 { scrapeAlertMessage = nil } })) {
-            Button("done", role: .cancel) {}
-        } message: { Text(scrapeAlertMessage ?? "") }
-        .alert(String(localized: "delete_song"), isPresented: $showDeleteConfirm) {
-            Button(String(localized: "cancel"), role: .cancel) {}
-            Button(String(localized: "delete"), role: .destructive) {
-                deleteCurrentSong()
-            }
-        } message: {
-            Text(String(localized: "delete_song_message"))
-        }
-        .onChange(of: lyricsFontScale) { _, _ in
-            CloudKVSSync.shared.markChanged(key: CloudKVSKey.lyricsFontScale)
-        }
     }
 
     private func deleteCurrentSong() {
@@ -874,7 +1062,7 @@ struct AirPlayButton: UIViewRepresentable {
 ///
 /// 通过把 currentLineIndex 等内部状态封装在子 view 里,行切换只让本 view 重算,
 /// 父 view 的 Menu / sheet 不受影响。
-fileprivate struct LyricsScrollView: View {
+struct LyricsScrollView: View {
     let lyrics: [LyricLine]
     let player: AudioPlayerService
     let songID: String?

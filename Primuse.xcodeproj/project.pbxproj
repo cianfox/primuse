@@ -72,6 +72,9 @@
 		42786BA198C03F835DBF49EC /* SourcesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E43D86A7277FFD6BA412DECF /* SourcesStore.swift */; };
 		42D3D23AAADAC9B441E04D87 /* MusicScraperProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9081DDAD5B33D4D005479E15 /* MusicScraperProtocol.swift */; };
 		448D9C545A04EA47EFC97B60 /* PrimuseAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ECCDD80F05FA4A71FA0CB32 /* PrimuseAppIntents.swift */; };
+		E1E2E3E4E5E6E7E8E9E0BBBB /* PrimuseIntentBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1E2E3E4E5E6E7E8E9E0AAAA /* PrimuseIntentBridge.swift */; };
+		F1F2F3F4F5F6F7F8F9F0CCCC /* PrimuseAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ECCDD80F05FA4A71FA0CB32 /* PrimuseAppIntents.swift */; };
+		F1F2F3F4F5F6F7F8F9F0BBBB /* PrimuseControlWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1F2F3F4F5F6F7F8F9F0AAAA /* PrimuseControlWidgets.swift */; };
 		44F0370A7EDCAD809D7B860F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 67A74DBDB4BE669EBE61F4DA /* Assets.xcassets */; };
 		45792DBCB1B655DB7EDEBFE7 /* SongIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C46A7CFAEE41704BC45A8CB /* SongIdentity.swift */; };
 		462E50063C5075D907ABD7B6 /* SFTPSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D64868ED9B01B2808EEFF51 /* SFTPSource.swift */; };
@@ -104,6 +107,8 @@
 		5AA3AE3298DF7992046DF390 /* NowPlayingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDC5ED08076B47DEE8ECB3AA /* NowPlayingWidget.swift */; };
 		5AF67F370EFCD4AA7528FEC6 /* CloudKitSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BB00031B96FBABEE4773C15 /* CloudKitSyncService.swift */; };
 		5BFA0F2DB7AF20E3D70CD55C /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C8D0CD987CACC83D845497B /* CarPlaySceneDelegate.swift */; };
+		E2E3E4E5E6E7E8E9E0F1B1B1 /* ExternalDisplaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2E3E4E5E6E7E8E9E0F1A1A1 /* ExternalDisplaySceneDelegate.swift */; };
+		E2E3E4E5E6E7E8E9E0F1B2B2 /* ExternalDisplayNowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2E3E4E5E6E7E8E9E0F1A2A2 /* ExternalDisplayNowPlayingView.swift */; };
 		5C09CCC8FE4085218C5465FA /* UnsupportedSourceConnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45D55D0BB606ED1969120F51 /* UnsupportedSourceConnector.swift */; };
 		5D6F48597B8F49A11600BC25 /* MusicSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80D713C15544A72530F3E0ED /* MusicSource.swift */; };
 		5D9C7448984A096646317144 /* Album.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAE5ECFCA4B6AB18CC72F7DB /* Album.swift */; };
@@ -428,6 +433,8 @@
 		4CFE0AB34758413DB8B02463 /* Primuse-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Primuse-Bridging-Header.h"; sourceTree = "<group>"; };
 		4D5D8BD40FCC0AA7011B551B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4ECCDD80F05FA4A71FA0CB32 /* PrimuseAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrimuseAppIntents.swift; sourceTree = "<group>"; };
+		E1E2E3E4E5E6E7E8E9E0AAAA /* PrimuseIntentBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrimuseIntentBridge.swift; sourceTree = "<group>"; };
+		F1F2F3F4F5F6F7F8F9F0AAAA /* PrimuseControlWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrimuseControlWidgets.swift; sourceTree = "<group>"; };
 		4EE3B2E6C5B0B89258193D97 /* LyricsTranslationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsTranslationSettingsView.swift; sourceTree = "<group>"; };
 		4F953DC4532B85C7AD604EF9 /* AudioPlayerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayerService.swift; sourceTree = "<group>"; };
 		4F9BAE1D915901E05BF85719 /* HomeSectionsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSectionsSettingsView.swift; sourceTree = "<group>"; };
@@ -474,6 +481,8 @@
 		7A221B7D8D5901440E56C3F6 /* SynologyScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SynologyScanner.swift; sourceTree = "<group>"; };
 		7B77E91ECC8568E876861750 /* EQPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EQPreset.swift; sourceTree = "<group>"; };
 		7C8D0CD987CACC83D845497B /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
+		E2E3E4E5E6E7E8E9E0F1A1A1 /* ExternalDisplaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalDisplaySceneDelegate.swift; sourceTree = "<group>"; };
+		E2E3E4E5E6E7E8E9E0F1A2A2 /* ExternalDisplayNowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalDisplayNowPlayingView.swift; sourceTree = "<group>"; };
 		7CD88BFBBCA5054A7248399F /* Bundle+AppVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Bundle+AppVersion.swift"; sourceTree = "<group>"; };
 		7D86538AD37BA59C267F1B20 /* QnapAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QnapAPI.swift; sourceTree = "<group>"; };
 		80BF155F8BD6EBFBBAA9B83A /* PlaybackSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSettingsStore.swift; sourceTree = "<group>"; };
@@ -913,6 +922,7 @@
 				80D713C15544A72530F3E0ED /* MusicSource.swift */,
 				3A0BB7D64F2BBD76A56CD9C5 /* PlaybackState.swift */,
 				38FB8C7B3EA4A58B80265EDC /* Playlist.swift */,
+				E1E2E3E4E5E6E7E8E9E0AAAA /* PrimuseIntentBridge.swift */,
 				C04638250BE3489928491A07 /* RecentAlbumsStore.swift */,
 				52372EA9E4EDCA492D106A05 /* SmartPlaylist.swift */,
 				34FA9CB76C020D1783D91368 /* Song.swift */,
@@ -953,6 +963,7 @@
 			children = (
 				E8F85E53FF87D6A322E1A0A7 /* AppServices.swift */,
 				7C8D0CD987CACC83D845497B /* CarPlaySceneDelegate.swift */,
+				E2E3E4E5E6E7E8E9E0F1A1A1 /* ExternalDisplaySceneDelegate.swift */,
 				52DC73F5A1DA3D173DB8D78E /* PlayMediaIntentHandler.swift */,
 				DE13E2DA7798D1EB66AAB221 /* PrimuseApp.swift */,
 			);
@@ -1062,6 +1073,7 @@
 				0F81293C12739B638C578939 /* Sources */,
 				D48435669B3FD569916FF182 /* YearlyReport */,
 				3A04A9461976D9D58E02D5BA /* ContentView.swift */,
+				E2E3E4E5E6E7E8E9E0F1A2A2 /* ExternalDisplayNowPlayingView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -1072,6 +1084,7 @@
 				D6FCDA560A7C84C713C02499 /* Assets.xcassets */,
 				8A7424889FC9166F74570F6E /* Info.plist */,
 				BDC5ED08076B47DEE8ECB3AA /* NowPlayingWidget.swift */,
+				F1F2F3F4F5F6F7F8F9F0AAAA /* PrimuseControlWidgets.swift */,
 				91C06A4C190FC178D4C65D00 /* PrimuseWidgetBundle.swift */,
 				1D6CD16F36EEEA61C94435DA /* PrimuseWidgetExtension.entitlements */,
 				6938B4831BD4508FCE2FB6C0 /* QuickAccessWidget.swift */,
@@ -1521,6 +1534,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				5AA3AE3298DF7992046DF390 /* NowPlayingWidget.swift in Sources */,
+				F1F2F3F4F5F6F7F8F9F0CCCC /* PrimuseAppIntents.swift in Sources */,
+				F1F2F3F4F5F6F7F8F9F0BBBB /* PrimuseControlWidgets.swift in Sources */,
 				FF1BDF6B3543D685C762F962 /* PrimuseWidgetBundle.swift in Sources */,
 				C27FC4095CCA4C732D2E235A /* QuickAccessWidget.swift in Sources */,
 				2EFBCB657D83A2B64F03C9C3 /* WidgetDesignSystem.swift in Sources */,
@@ -1555,6 +1570,7 @@
 				C17A3B3D7E8B0D1508A0022B /* PlaybackActivityAttributes.swift in Sources */,
 				574266CAE3D7A5B6DE1E1103 /* PlaybackState.swift in Sources */,
 				E1E6E2746C97E7523587FBF4 /* Playlist.swift in Sources */,
+				E1E2E3E4E5E6E7E8E9E0BBBB /* PrimuseIntentBridge.swift in Sources */,
 				8057E3B6274053DAFEA3F8F7 /* RecentAlbumsStore.swift in Sources */,
 				C067C2586AAA10F3F398296C /* SharedConstants.swift in Sources */,
 				4104522A47C989851CAB4E72 /* SmartPlaylist.swift in Sources */,
@@ -1613,6 +1629,8 @@
 				1B0A3CACE7B4634D20DA6C89 /* Bundle+AppVersion.swift in Sources */,
 				0A176E7239A1CEA25561D8F8 /* CachedArtworkView.swift in Sources */,
 				5BFA0F2DB7AF20E3D70CD55C /* CarPlaySceneDelegate.swift in Sources */,
+				E2E3E4E5E6E7E8E9E0F1B1B1 /* ExternalDisplaySceneDelegate.swift in Sources */,
+				E2E3E4E5E6E7E8E9E0F1B2B2 /* ExternalDisplayNowPlayingView.swift in Sources */,
 				722E2A82BC5297BCB3942AE1 /* CloudAccountMigrationService.swift in Sources */,
 				B678A94A106E8D8FB032DE4F /* CloudDirectoryNameStore.swift in Sources */,
 				3997C4EE7DF9D36DA1851230 /* CloudDriveBase.swift in Sources */,

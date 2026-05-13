@@ -2,7 +2,8 @@ import AppIntents
 import Foundation
 import PrimuseKit
 
-/// 猿音的 App Intents 集合 ── iOS 16+ Shortcuts / Siri 入口。
+/// 猿音的 App Intents 集合 ── iOS 16+ Shortcuts / Siri 入口 + iOS 17+
+/// Live Activity / iOS 18 Control Center 按钮入口。
 ///
 /// 跟老 SiriKit (`INPlayMediaIntent`, 见 `PlayMediaIntentHandler`) 并存:
 /// - 老 SiriKit 主要给 CarPlay 语音 / 系统媒体快捷键 (锁屏 / 灵动岛) 用,
@@ -10,55 +11,77 @@ import PrimuseKit
 /// - 这里的 App Intents 是面向用户在 Shortcuts.app 里搭流程, 也支持 Siri
 ///   直接说"用猿音 [动作]"。可以自由定义参数和返回值。
 ///
-/// 所有 intent 的 perform 都在 main actor 上跑 ── AudioPlayerService /
-/// MusicLibrary 都是 @MainActor, 直接调它们的方法。
+/// **跨进程注意**:
+/// 这份文件同时被 widget extension target 引用 (供 Control Widget /
+/// Lock Screen Live Activity 按钮 引用 intent 类型), 所以 `perform()` 里
+/// 不能直接 `AppServices.shared.xxx` —— widget 进程没这个符号会 link
+/// 不过。改走 `PrimuseIntentBridge` 闭包, 主 app 启动时把真正的实现注入。
+/// 所有 intent 都 conform `AudioPlaybackIntent`, 系统会把 `perform()`
+/// 路由到主 app 进程跑(必要时唤醒主 app), 那时 bridge 已经注入完毕。
 
 // MARK: - Play / Pause / Skip
 
-struct PrimusePlayPauseIntent: AppIntent {
+struct PrimusePlayPauseIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Play / Pause"
     static let description = IntentDescription("Toggle Primuse playback.")
-    static let openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        AppServices.shared.playerService.togglePlayPause()
+        PrimuseIntentBridge.shared.togglePlayPause()
         return .result()
     }
 }
 
-struct PrimuseNextIntent: AppIntent {
+/// Control Center toggle 专用 ── `ControlWidgetToggle` 要求 intent conform
+/// `SetValueIntent`, 系统会把"用户想要的目标状态" (true = 想播放) 直接
+/// 注入到 `value` 上。跟上面纯 toggle 的 `PrimusePlayPauseIntent` 不同步
+/// 共存,各自给不同 surface (Shortcuts vs Control Center)。
+struct PrimuseSetPlayingIntent: AudioPlaybackIntent, SetValueIntent {
+    static let title: LocalizedStringResource = "Set Playing"
+    static let description = IntentDescription("Start or pause Primuse playback.")
+
+    @Parameter(title: "Playing")
+    var value: Bool
+
+    init() {}
+    init(value: Bool) { self.value = value }
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        PrimuseIntentBridge.shared.setPlaying(value)
+        return .result()
+    }
+}
+
+struct PrimuseNextIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Next Track"
     static let description = IntentDescription("Skip to the next track in Primuse.")
-    static let openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        await AppServices.shared.playerService.next(caller: "AppIntent")
+        await PrimuseIntentBridge.shared.next()
         return .result()
     }
 }
 
-struct PrimusePreviousIntent: AppIntent {
+struct PrimusePreviousIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Previous Track"
     static let description = IntentDescription("Go back to the previous track in Primuse.")
-    static let openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        await AppServices.shared.playerService.previous()
+        await PrimuseIntentBridge.shared.previous()
         return .result()
     }
 }
 
 // MARK: - Play by name
 
-struct PrimusePlaySongIntent: AppIntent {
+struct PrimusePlaySongIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Play Song"
     static let description = IntentDescription(
         "Find a song by title (and optional artist) and play it."
     )
-    static let openAppWhenRun = false
 
     @Parameter(title: "Title")
     var query: String
@@ -68,98 +91,42 @@ struct PrimusePlaySongIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let library = AppServices.shared.musicLibrary
-        let player = AppServices.shared.playerService
-
-        let candidates = matchingSongs(in: library.visibleSongs, title: query, artist: artist)
-        guard let song = candidates.first else {
+        let description = await PrimuseIntentBridge.shared.playSong(query, artist)
+        guard let description else {
             return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: "No matching song in your library.")))
         }
-
-        // 拿命中歌曲做队列起点, 后续整库相关歌曲跟在后面 ── 让"播完一首会
-        // 自动接下去"。简单做法: 把 candidates + library 其他歌按 candidates 排序拼起来。
-        let queue = candidates + library.visibleSongs.filter { s in !candidates.contains(where: { $0.id == s.id }) }
-        player.setQueue(queue, startAt: 0)
-        await player.play(song: song, caller: "AppIntent")
-
-        let response = "Playing \(song.title)" + (song.artistName.map { " by \($0)" } ?? "")
-        return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: response)))
-    }
-
-    /// 模糊匹配 ── title 包含 + (可选) artist 包含, 都不区分大小写。
-    /// 优先返回精确 title 匹配。
-    private func matchingSongs(in songs: [Song], title: String, artist: String?) -> [Song] {
-        let titleLower = title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !titleLower.isEmpty else { return [] }
-        let artistLower = artist?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let filtered = songs.filter { s in
-            let titleMatch = s.title.lowercased().contains(titleLower)
-            guard titleMatch else { return false }
-            if let artistLower, !artistLower.isEmpty {
-                return (s.artistName ?? "").lowercased().contains(artistLower)
-            }
-            return true
-        }
-        // 精确 title 匹配排前
-        return filtered.sorted { a, b in
-            let aExact = a.title.lowercased() == titleLower
-            let bExact = b.title.lowercased() == titleLower
-            if aExact != bExact { return aExact }
-            return false
-        }
+        return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: description)))
     }
 }
 
-struct PrimusePlayPlaylistIntent: AppIntent {
+struct PrimusePlayPlaylistIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Play Playlist"
     static let description = IntentDescription("Find a playlist by name and play it.")
-    static let openAppWhenRun = false
 
     @Parameter(title: "Name")
     var name: String
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let library = AppServices.shared.musicLibrary
-        let player = AppServices.shared.playerService
-
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: "Please specify a playlist name.")))
         }
-        // 精确名匹配优先, 否则模糊包含。
-        let lists = library.playlists
-        let exact = lists.first(where: { $0.name.lowercased() == trimmed })
-        let target = exact ?? lists.first(where: { $0.name.lowercased().contains(trimmed) })
-        guard let playlist = target else {
+        let description = await PrimuseIntentBridge.shared.playPlaylist(trimmed)
+        guard let description else {
             return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: "No matching playlist in your library.")))
         }
-
-        let songs = library.songs(forPlaylist: playlist.id)
-        guard let first = songs.first else {
-            return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: "Playlist is empty.")))
-        }
-
-        player.setQueue(songs, startAt: 0)
-        await player.play(song: first, caller: "AppIntent")
-        return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: "Playing playlist \(playlist.name).")))
+        return .result(dialog: IntentDialog(LocalizedStringResource(stringLiteral: description)))
     }
 }
 
-struct PrimuseShuffleAllIntent: AppIntent {
+struct PrimuseShuffleAllIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Shuffle Library"
     static let description = IntentDescription("Shuffle the entire library and start playing.")
-    static let openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let library = AppServices.shared.musicLibrary
-        let player = AppServices.shared.playerService
-        let pool = library.visibleSongs.shuffled()
-        guard let first = pool.first else { return .result() }
-        player.setQueue(pool, startAt: 0)
-        await player.play(song: first, caller: "AppIntent")
+        await PrimuseIntentBridge.shared.shuffleLibrary()
         return .result()
     }
 }

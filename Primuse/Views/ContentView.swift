@@ -1,10 +1,44 @@
 import SwiftUI
 import PrimuseKit
 
+/// iPad sidebar 顶层入口。`rawValue` 跟 iPhone TabView 的 tag 对齐,
+/// 这样 `selectedTab: Int` 同一份 state 两端都能复用,sidebar 切到设置
+/// 等同于 phone 端切 tab 3。
+private enum SidebarItem: Int, CaseIterable, Identifiable, Hashable {
+    case home = 0
+    case library = 1
+    case search = 2
+    case settings = 3
+
+    var id: Int { rawValue }
+
+    var titleKey: String.LocalizationValue {
+        switch self {
+        case .home: return "home_title"
+        case .library: return "library_title"
+        case .search: return "search_title"
+        case .settings: return "settings_title"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: return "house.fill"
+        case .library: return "books.vertical"
+        case .search: return "magnifyingglass"
+        case .settings: return "gearshape"
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(AudioPlayerService.self) private var player
     @Environment(MusicLibrary.self) private var library
     @Environment(SourcesStore.self) private var sourcesStore
+    /// iPad (regular) 走 NavigationSplitView; iPhone / iPad 分屏小窗 (compact)
+    /// 走 TabView。Apple 推荐用 horizontalSizeClass 而不是 idiom 来判断,以
+    /// 适配 Stage Manager / 分屏 / 折叠态。
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var selectedTab = 0
     @State private var searchText = ""
     @State private var showNowPlaying = false
@@ -51,12 +85,59 @@ struct ContentView: View {
         }
     }
 
+    /// iPad 用的 sidebar + detail 双栏布局。sidebar 顶层就是 Home / 资料库 /
+    /// 搜索 / 设置,detail 直接挂对应的现有视图。底部 NowPlaying accessory
+    /// 走 body 的 ZStack overlay,不区分 iPhone/iPad。
+    @ViewBuilder
+    private var padRoot: some View {
+        NavigationSplitView {
+            // 显式 sidebar style + ForEach + selection — Label 单独配 tag 在
+            // iPad 上有时不响应点击。改用 ForEach 让 SwiftUI 把每一行当真正
+            // 的 list row 渲染,并通过 button-style selection 触发。
+            // iOS 的 List(selection:) 单选签名要求 Binding<Hashable?>。
+            let selection = Binding<Int?>(
+                get: { selectedTab },
+                set: { if let v = $0 { selectedTab = v } }
+            )
+            List(selection: selection) {
+                ForEach(SidebarItem.allCases) { item in
+                    Label(String(localized: item.titleKey), systemImage: item.icon)
+                        .tag(item.rawValue as Int?)
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Primuse")
+            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+        } detail: {
+            // 现有 Home/Library/Settings/Search 自己内部都有 NavigationStack,
+            // 直接挂在 detail 里; 不再额外包 stack 防止双重导航 chrome。
+            switch selectedTab {
+            case 1: LibraryView()
+            case 2: SearchView(searchText: $searchText)
+            case 3: SettingsView()
+            default: HomeView(switchToSettingsTab: { selectedTab = 3 })
+            }
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            playerAwareTabRoot
+            if sizeClass == .regular {
+                padRoot
+            } else {
+                playerAwareTabRoot
+            }
 
             if player.currentSong != nil {
-                if #available(iOS 26.0, *) {
+                if sizeClass == .regular {
+                    // iPad split view 没有底部 tab bar, 直接钉一个紧凑的
+                    // mini player 到 detail pane 底部。padding 给 16 留出
+                    // 跟系统 home indicator 的呼吸空间。
+                    LegacyNowPlayingAccessory(onTap: { showNowPlaying = true })
+                        .padding(.bottom, 16)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(1)
+                } else if #available(iOS 26.0, *) {
                     EmptyView()
                 } else {
                     LegacyNowPlayingAccessory(onTap: { showNowPlaying = true })
