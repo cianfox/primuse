@@ -139,7 +139,14 @@ struct NowPlayingView: View {
         }
         // Handoff —— 用户在当前设备播,旁边的 Mac / iPad 在 Spotlight / 任务
         // 切换器底部出现"在 Primuse 中继续"的 chip。打开后通过 ContentView
-        // 的 onContinueUserActivity 拿到 songID 切到对应歌。
+        // 的 onContinueUserActivity 拿到完整队列上下文,在另一台设备上无缝接
+        // 着播下去 (同一首歌、同样的队列顺序、相同的播放位置、同样的播放/
+        // 暂停状态)。
+        //
+        // 队列截前 50 首是 payload size 安全垫: NSUserActivity userInfo 总
+        // 大小 ~128KB,单 song.id (SHA256 hex) 64 字符,50 首 ~3.2KB,余量
+        // 充裕。超过的尾部由 receiver 进入队列后,下一首靠 setQueue 内的
+        // 自然推进就能继续 ── 主接力点是当前歌 + 接下来几首。
         .userActivity(
             "com.welape.yuanyin.nowplaying",
             isActive: player.currentSong != nil
@@ -151,7 +158,20 @@ struct NowPlayingView: View {
             // 不把 song.id 暴露给搜索 / 公开索引,handoff 直接拿去就好
             activity.isEligibleForSearch = false
             activity.isEligibleForPublicIndexing = false
-            activity.userInfo = ["songID": song.id]
+
+            let queueIDs = Array(player.queue.prefix(50).map(\.id))
+            activity.userInfo = [
+                "songID": song.id,
+                "queueIDs": queueIDs,
+                // currentTime + snapshotTime 一起记录, receiver 用 (now -
+                // snapshot) 推算"如果还在播,实际应该到哪里了",避免接力
+                // 时听见同一段刚播过的内容。
+                "currentTime": player.currentTime,
+                "snapshotTime": Date().timeIntervalSinceReferenceDate,
+                "isPlaying": player.isPlaying,
+                "shuffleEnabled": player.shuffleEnabled,
+                "repeatMode": player.repeatMode.rawValue,
+            ]
             activity.requiredUserInfoKeys = ["songID"]
         }
     }

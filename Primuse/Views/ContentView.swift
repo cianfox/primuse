@@ -194,10 +194,10 @@ struct ContentView: View {
             guard let item = SpotlightIndexService.identifier(from: activity) else { return }
             handleSpotlightItem(item)
         }
-        // Handoff ── 从另一台设备过来时拿到 songID, 找歌开播。
+        // Handoff ── 从另一台设备过来时拿到完整播放上下文 (当前歌 / 队列 /
+        // 播放位置 / 播放或暂停 / shuffle / repeat),无缝接着播下去。
         .onContinueUserActivity("com.welape.yuanyin.nowplaying") { activity in
-            guard let songID = activity.userInfo?["songID"] as? String else { return }
-            handleSpotlightItem(.song(id: songID))
+            handleHandoffActivity(activity)
         }
         // SSL trust prompt
         .alert(
@@ -217,6 +217,57 @@ struct ContentView: View {
             if let domain = SSLTrustStore.shared.pendingTrustRequest?.domain {
                 Text("ssl_trust_message \(domain)")
             }
+        }
+    }
+
+    /// Handoff 受方 ── 把 publisher 那边记录的 (当前歌, 队列, 播放位置, 状态)
+    /// 还原到本机播放器上。受方库里找不到的歌跳过, 当前歌也找不到时静默忽略
+    /// (跨设备库未同步的常见情况, 不弹 error 干扰用户)。
+    private func handleHandoffActivity(_ activity: NSUserActivity) {
+        guard let info = activity.userInfo,
+              let songID = info["songID"] as? String else { return }
+
+        // 还原队列。queueIDs 没传时退化成"只播当前歌";有时按顺序解析 ──
+        // 受方 library 现在可能比 publisher 少 (CloudKit 同步未到位 / 不同 source
+        // 启用状态),compactMap 后丢失的歌不影响其它歌正常播。
+        let queueIDs = (info["queueIDs"] as? [String]) ?? [songID]
+        let songsByID = Dictionary(
+            library.visibleSongs.map { ($0.id, $0) },
+            uniquingKeysWith: { lhs, _ in lhs }
+        )
+        let resolvedQueue = queueIDs.compactMap { songsByID[$0] }
+        guard !resolvedQueue.isEmpty,
+              let songIndex = resolvedQueue.firstIndex(where: { $0.id == songID }) else {
+            // 当前歌在受方库里不存在 → 退回纯 song-id 路径,让 spotlight 同
+            // 一套逻辑兜底 (会把整库当队列起播); 至少不会"啥都没发生"。
+            handleSpotlightItem(.song(id: songID))
+            return
+        }
+
+        let song = resolvedQueue[songIndex]
+        player.setQueue(resolvedQueue, startAt: songIndex)
+        if let shuffle = info["shuffleEnabled"] as? Bool { player.shuffleEnabled = shuffle }
+        if let rmRaw = info["repeatMode"] as? String,
+           let rm = RepeatMode(rawValue: rmRaw) {
+            player.repeatMode = rm
+        }
+
+        let snapshotTime = (info["snapshotTime"] as? Double)
+            ?? Date().timeIntervalSinceReferenceDate
+        let baseTime = (info["currentTime"] as? Double) ?? 0
+        let wasPlaying = (info["isPlaying"] as? Bool) ?? true
+        // 仅当 publisher 当时是播放状态才把"经过时间"加上;暂停态就保留
+        // 原 currentTime,用户继续听不会跳过任何内容。
+        let elapsed = wasPlaying
+            ? max(0, Date().timeIntervalSinceReferenceDate - snapshotTime)
+            : 0
+        let resumeTime = baseTime + elapsed
+
+        Task {
+            await player.play(song: song, caller: "Handoff")
+            // play(song:) 必定从 0 开始; 立刻 seek 到接力位置, startPlaying
+            // 沿用 publisher 的状态。wasPlaying=false 时 seek 后停在该点。
+            player.seek(to: resumeTime, startPlaying: wasPlaying)
         }
     }
 
