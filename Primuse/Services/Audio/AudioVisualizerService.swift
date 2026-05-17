@@ -1,25 +1,27 @@
 import Accelerate
 import AVFoundation
 import Foundation
+import os.lock
 
 /// 实时音频频谱可视化器 —— 在 AudioEngine 的 mainMixerNode 上挂 tap, 拿到
 /// 输出 buffer 做 FFT, 把 1024 点频谱压成 16 个频段强度发布给 UI。
 ///
-/// 启停语义:
-/// - `start(engine:)` 在 NowPlayingView onAppear 时调,绑定到当前的 AVAudioEngine
-/// - `stop()` 在 NowPlayingView onDisappear / 后台 时调,卸 tap, 释放计算资源
-/// - 主 player 暂停时 tap 会继续被调 (engine 仍在转),但读到的 buffer 是
-///   静音,FFT 自然产出全 0,UI 自动归零,不需要特殊处理
+/// **音频线程安全**:
+/// tap callback 跑在音频实时线程, 严格限制只做 memcpy + 翻 atomic flag,
+/// 不允许 Swift Array 分配 / 类型绑定 / FFT / MainActor hop ── 这些都会把
+/// 音频线程拖慢甚至抢占,在 iOS 26 上会触发硬崩溃。FFT + 发布到 UI 全部
+/// 在另起的 background Task 里跑。
 ///
-/// 实现:
-/// - FFT 走 vDSP.FFT (radix-2, log2n=10 → 1024 点),Hann window 减少 spectral leakage
-/// - magnitudes -> log scale 转 dB -> 截 [-60dB, 0dB] -> 归一化到 0...1
-/// - 16 频段做 log-spaced bin 累加,贴近人耳感知
-/// - tap callback 在音频线程, 计算完后通过 main actor 派发到 `bandLevels`
+/// 启停语义:
+/// - `start(engine:on:)` 在 NowPlayingView onAppear 时调,绑定到当前的
+///   AVAudioEngine。
+/// - `stop()` 在 NowPlayingView onDisappear / 后台 时调,卸 tap, 释放计算资源。
 @MainActor
 @Observable
 final class AudioVisualizerService {
-    static let bandCount = 16
+    // nonisolated 让 detached Task 和 SwiftUI 视图都能直接读, 不用 hop main actor。
+    nonisolated static let bandCount = 16
+    nonisolated static let fftSize = 1024
 
     /// 0...1 归一化的频段强度。bandLevels.count == bandCount 永远成立。
     /// UI 用 .animation(.linear(duration: 0.07), value: bandLevels) 即可平滑过渡。
@@ -27,36 +29,39 @@ final class AudioVisualizerService {
 
     private weak var engine: AVAudioEngine?
     private var tappedNode: AVAudioMixerNode?
-    private let analyzer = FFTAnalyzer(log2n: 10)
-    /// 上次发布时间, 25Hz 上限节流, 避免 main actor 被刷屏
-    private var lastPublish: Date = .distantPast
+    private let buffer = SharedSampleBuffer(capacity: fftSize)
+    private var pollTask: Task<Void, Never>?
 
     func start(engine: AVAudioEngine, on node: AVAudioMixerNode) {
         guard self.tappedNode == nil else { return }
         self.engine = engine
         self.tappedNode = node
         let format = node.outputFormat(forBus: 0)
-        // bufferSize 1024 跟 FFT size 对齐, hop 一次性吃满, 不需要拼包
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            // 把 channel 0 的 float 样本拷出来 (channelData 是 UnsafePointer,
-            // 离开 tap 闭包就失效, 必须立即复制)
-            guard let chData = buffer.floatChannelData else { return }
-            let count = Int(buffer.frameLength)
-            guard count > 0 else { return }
-            let samples = Array(UnsafeBufferPointer(start: chData[0], count: count))
-            let levels = self.analyzer.bandLevels(samples: samples, bandCount: Self.bandCount)
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let now = Date()
-                if now.timeIntervalSince(self.lastPublish) < 0.04 { return } // ≤ 25Hz
-                self.lastPublish = now
-                self.bandLevels = levels
+
+        // tap 闭包只 memcpy + 翻 flag, 完全不 alloc 不 hop actor。
+        let buffer = self.buffer
+        node.installTap(onBus: 0, bufferSize: AVAudioFrameCount(Self.fftSize), format: format) { audioBuffer, _ in
+            buffer.fill(from: audioBuffer)
+        }
+
+        // 用 detached Task 周期性拉 buffer 做 FFT, 跟音频线程完全解耦。
+        // 25Hz 节流, 落到 main actor 才更新 @Observable bandLevels。
+        let analyzer = FFTAnalyzer(log2n: Int(log2(Double(Self.fftSize))))
+        pollTask = Task.detached(priority: .userInitiated) { [weak self, buffer, analyzer] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(40))
+                guard !Task.isCancelled else { break }
+                guard let samples = buffer.consumeIfReady() else { continue }
+                let levels = analyzer.bandLevels(samples: samples, bandCount: Self.bandCount)
+                await MainActor.run { [weak self] in
+                    self?.bandLevels = levels
+                }
             }
         }
     }
 
     func stop() {
+        pollTask?.cancel(); pollTask = nil
         if let node = tappedNode {
             node.removeTap(onBus: 0)
         }
@@ -66,10 +71,50 @@ final class AudioVisualizerService {
     }
 }
 
-// MARK: - FFT analyzer
+// MARK: - Audio-thread-safe sample buffer
 
-/// 把单声道 Float PCM 样本压成 logspaced 频段强度。完全跑在调用方的线程上
-/// (tap callback = 音频线程), 不能 hop main actor 否则会卡音频渲染。
+/// 共享缓冲: 音频线程写,后台 Task 读。用 os_unfair_lock 替代 Swift actor —
+/// actor hop 在音频线程不允许。Lock 失败时直接 drop frame (轮询 tick 下一帧
+/// 会取最新数据)。
+private final class SharedSampleBuffer: @unchecked Sendable {
+    private var data: [Float]
+    private var hasFresh = false
+    private var lock = os_unfair_lock_s()
+    let capacity: Int
+
+    init(capacity: Int) {
+        self.capacity = capacity
+        self.data = Array(repeating: 0, count: capacity)
+    }
+
+    /// 音频线程调用。AVAudioPCMBuffer 第 0 声道前 capacity 个样本拷进 data。
+    /// 失败 (锁忙 / 格式不对) 直接返回, 不在音频线程做任何复杂的事。
+    func fill(from buffer: AVAudioPCMBuffer) {
+        guard let ch = buffer.floatChannelData else { return }
+        let frames = min(Int(buffer.frameLength), capacity)
+        guard frames > 0 else { return }
+        guard os_unfair_lock_trylock(&lock) else { return }  // 锁忙就放弃这一帧
+        memcpy(&data, ch[0], frames * MemoryLayout<Float>.size)
+        if frames < capacity {
+            // 不足 capacity 时把尾部置零, FFT 自然就少高频能量, 视觉上正常
+            memset(&data[frames], 0, (capacity - frames) * MemoryLayout<Float>.size)
+        }
+        hasFresh = true
+        os_unfair_lock_unlock(&lock)
+    }
+
+    /// 后台 Task 调用。有新数据时返回 snapshot, 否则 nil。
+    func consumeIfReady() -> [Float]? {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        guard hasFresh else { return nil }
+        hasFresh = false
+        return data
+    }
+}
+
+// MARK: - FFT analyzer (跑在 background Task, 不在音频线程)
+
 private final class FFTAnalyzer: @unchecked Sendable {
     private let log2n: vDSP_Length
     private let n: Int
@@ -89,12 +134,9 @@ private final class FFTAnalyzer: @unchecked Sendable {
         guard samples.count >= n, fft != nil else {
             return Array(repeating: 0, count: bandCount)
         }
-        // 取前 n 个样本,加 Hann window 抑制边界 leakage
         var windowed = [Float](repeating: 0, count: n)
         vDSP_vmul(samples, 1, window, 1, &windowed, 1, vDSP_Length(n))
 
-        // vDSP.FFT 要 split complex 输入。把实数序列 pack 成 even/odd:
-        // even index → real, odd index → imag (vDSP "Z" packing 标准做法)
         var real = [Float](repeating: 0, count: n / 2)
         var imag = [Float](repeating: 0, count: n / 2)
         windowed.withUnsafeBytes { ptr in
@@ -108,7 +150,6 @@ private final class FFTAnalyzer: @unchecked Sendable {
             }
         }
 
-        // 原地 FFT
         real.withUnsafeMutableBufferPointer { realBuf in
             imag.withUnsafeMutableBufferPointer { imagBuf in
                 var split = DSPSplitComplex(realp: realBuf.baseAddress!, imagp: imagBuf.baseAddress!)
@@ -116,7 +157,6 @@ private final class FFTAnalyzer: @unchecked Sendable {
             }
         }
 
-        // 计算每个 bin 的 magnitude
         var magnitudes = [Float](repeating: 0, count: n / 2)
         real.withUnsafeMutableBufferPointer { realBuf in
             imag.withUnsafeMutableBufferPointer { imagBuf in
@@ -124,14 +164,10 @@ private final class FFTAnalyzer: @unchecked Sendable {
                 vDSP_zvmags(&split, 1, &magnitudes, 1, vDSP_Length(n / 2))
             }
         }
-        // sqrt + 归一化
         var msqrt = [Float](repeating: 0, count: n / 2)
         var count = Int32(n / 2)
         vvsqrtf(&msqrt, magnitudes, &count)
 
-        // log 频段分箱: 16 段, 30Hz~16kHz 大致跟人耳分辨率匹配。
-        // bin 频率 = i * sampleRate / n; sampleRate 假设 44.1k (mixer 默认),
-        // bin index 64 ~= 2.7kHz, 256 ~= 11kHz 等。直接按 bin 索引 log-spaced 分段。
         let binCount = n / 2
         var bands = [Float](repeating: 0, count: bandCount)
         let minBin = 2
@@ -146,7 +182,6 @@ private final class FFTAnalyzer: @unchecked Sendable {
             var sum: Float = 0
             for i in lo..<upper { sum += msqrt[i] }
             let avg = sum / Float(max(1, upper - lo))
-            // 转 dB, 截 [-60, 0], 归一化到 0...1
             let db = 20 * log10f(max(1e-7, avg))
             let clamped = max(-60, min(0, db))
             bands[b] = (clamped + 60) / 60
