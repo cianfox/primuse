@@ -775,6 +775,9 @@
 "tag_editor_reset" = "恢复为原始信息";
 "tag_editor_reset_confirm" = "放弃你的修改？";
 "tag_editor_footer" = "编辑仅在猿音内生效并通过 iCloud 同步，不会修改原始文件。";
+"tag_editor_cover_section" = "封面";
+"tag_editor_pick_cover" = "从相册中选择…";
+"tag_editor_cover_revert" = "保留原封面";
 "onboarding_welcome_title" = "你的音乐，存在你的服务器";
 "onboarding_welcome_subtitle" = "猿音从你自己的 NAS、云盘和家里的网络播放音乐 —— 不上传任何文件到任何人。";
 "onboarding_sources_title" = "支持任意音乐源";

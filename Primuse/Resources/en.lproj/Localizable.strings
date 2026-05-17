@@ -774,6 +774,9 @@
 "tag_editor_reset" = "Revert to Original";
 "tag_editor_reset_confirm" = "Discard your edits?";
 "tag_editor_footer" = "Edits stay within Primuse and sync via iCloud. The source file is not modified.";
+"tag_editor_cover_section" = "Cover Art";
+"tag_editor_pick_cover" = "Pick from Photos…";
+"tag_editor_cover_revert" = "Keep original cover";
 "onboarding_welcome_title" = "Your music, your servers";
 "onboarding_welcome_subtitle" = "Primuse plays from your NAS, cloud drives, and home network — without uploading a single file to anyone.";
 "onboarding_sources_title" = "Connect any source";
