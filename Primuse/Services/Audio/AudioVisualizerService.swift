@@ -33,16 +33,29 @@ final class AudioVisualizerService {
     private var pollTask: Task<Void, Never>?
 
     func start(engine: AVAudioEngine, on node: AVAudioMixerNode) {
-        guard self.tappedNode == nil else { return }
-        self.engine = engine
-        self.tappedNode = node
+        if let tappedNode {
+            guard tappedNode !== node else { return }
+            stop()
+        }
+
+        guard engine.isRunning else { return }
+
         let format = node.outputFormat(forBus: 0)
+        guard format.sampleRate.isFinite,
+              format.sampleRate > 0,
+              format.channelCount > 0 else {
+            plog("⚠️ Visualizer skipped: invalid mixer format sr=\(format.sampleRate) ch=\(format.channelCount)")
+            return
+        }
+
+        self.engine = engine
 
         // tap 闭包只 memcpy + 翻 flag, 完全不 alloc 不 hop actor。
         let buffer = self.buffer
         node.installTap(onBus: 0, bufferSize: AVAudioFrameCount(Self.fftSize), format: format) { audioBuffer, _ in
             buffer.fill(from: audioBuffer)
         }
+        self.tappedNode = node
 
         // 用 detached Task 周期性拉 buffer 做 FFT, 跟音频线程完全解耦。
         // 25Hz 节流, 落到 main actor 才更新 @Observable bandLevels。

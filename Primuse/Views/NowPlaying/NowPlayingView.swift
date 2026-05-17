@@ -69,14 +69,11 @@ struct NowPlayingView: View {
         }
         .task(id: player.currentSong?.id) { await loadLyrics() }
         .onAppear {
-            // NowPlayingView 出现时挂 visualizer tap; 关掉视图 (mini player)
-            // 时卸,避免 tap 一直跑无谓 CPU。
-            if let engine = audioEngine.engineForVisualizer,
-               let mainMixer = audioEngine.mainMixerForVisualizer {
-                visualizer.start(engine: engine, on: mainMixer)
-            }
+            syncVisualizer()
         }
         .onDisappear { visualizer.stop() }
+        .onChange(of: player.isPlaying) { _, _ in syncVisualizer() }
+        .onChange(of: player.isLoading) { _, _ in syncVisualizer() }
         .sheet(isPresented: $showQueue) {
             QueueView()
                 .presentationDetents([.medium, .large])
@@ -733,6 +730,18 @@ struct NowPlayingView: View {
             isScrapingCurrentSong: isScrapingCurrentSong,
             onScrape: { Task { await scrapeCurrentSong() } }
         )
+    }
+
+    private func syncVisualizer() {
+        // AVAudioEngine taps are only needed once audio is actually flowing.
+        // During long cloud loading the engine can exist before playback starts.
+        guard player.isPlaying, !player.isLoading,
+              let engine = audioEngine.engineForVisualizer,
+              let mainMixer = audioEngine.mainMixerForVisualizer else {
+            visualizer.stop()
+            return
+        }
+        visualizer.start(engine: engine, on: mainMixer)
     }
 
     // MARK: - Helpers
