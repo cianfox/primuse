@@ -1,21 +1,48 @@
 import SwiftUI
 import PrimuseKit
 
-/// iPad sidebar 顶层入口。`rawValue` 跟 iPhone TabView 的 tag 对齐,
-/// 这样 `selectedTab: Int` 同一份 state 两端都能复用,sidebar 切到设置
-/// 等同于 phone 端切 tab 3。
-private enum SidebarItem: Int, CaseIterable, Identifiable, Hashable {
-    case home = 0
-    case library = 1
-    case search = 2
-    case settings = 3
+/// iPad sidebar 选中项。Library 之外的顶级项跟 iPhone TabView 一对一
+/// (rawValueTab 暴露 0/1/2/3 给 `selectedTab` mirror),Library 还细分到
+/// 子列表 (.libraryAlbums / .librarySongs 等) 直接路由 detail,少一层
+/// 点击。
+private enum SidebarItem: Hashable, Identifiable, CaseIterable {
+    case home
+    case library
+    case librarySongs
+    case libraryAlbums
+    case libraryArtists
+    case libraryPlaylists
+    case search
+    case settings
 
-    var id: Int { rawValue }
+    var id: Self { self }
+
+    /// 映射到 iPhone tab 的索引,保证 phone 与 pad 共享 `selectedTab` state
+    /// (sidebar 子项也属于 library 这一档,统一回 1)。
+    var rawValueTab: Int {
+        switch self {
+        case .home: return 0
+        case .library, .librarySongs, .libraryAlbums, .libraryArtists, .libraryPlaylists:
+            return 1
+        case .search: return 2
+        case .settings: return 3
+        }
+    }
+
+    /// 顶级 4 项 + Library 下展开的 4 个子项,在 sidebar 里按分段渲染。
+    static var topLevel: [SidebarItem] { [.home, .library, .search, .settings] }
+    static var libraryChildren: [SidebarItem] {
+        [.librarySongs, .libraryAlbums, .libraryArtists, .libraryPlaylists]
+    }
 
     var titleKey: String.LocalizationValue {
         switch self {
         case .home: return "home_title"
         case .library: return "library_title"
+        case .librarySongs: return "tab_songs"
+        case .libraryAlbums: return "tab_albums"
+        case .libraryArtists: return "tab_artists"
+        case .libraryPlaylists: return "tab_playlists"
         case .search: return "search_title"
         case .settings: return "settings_title"
         }
@@ -25,6 +52,10 @@ private enum SidebarItem: Int, CaseIterable, Identifiable, Hashable {
         switch self {
         case .home: return "house.fill"
         case .library: return "books.vertical"
+        case .librarySongs: return "music.note"
+        case .libraryAlbums: return "square.stack.fill"
+        case .libraryArtists: return "music.mic"
+        case .libraryPlaylists: return "music.note.list"
         case .search: return "magnifyingglass"
         case .settings: return "gearshape"
         }
@@ -40,6 +71,10 @@ struct ContentView: View {
     /// 适配 Stage Manager / 分屏 / 折叠态。
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var selectedTab = 0
+    /// iPad sidebar 当前选中项。iPhone 不用,sidebar 隐藏。值跟 selectedTab
+    /// 保持联动 (sidebar 改 → selectedTab 也改; selectedTab 改 → sidebar
+    /// 跟到对应顶级项, 但子项不自动猜测)。
+    @State private var sidebarSelection: SidebarItem = .home
     @State private var searchText = ""
     @State private var showNowPlaying = false
     /// 跨年自动弹年度报告的状态。1/1 之后用户首次进 app + 上一年听满 2 个月
@@ -93,32 +128,75 @@ struct ContentView: View {
     @ViewBuilder
     private var padRoot: some View {
         NavigationSplitView {
-            // 显式 sidebar style + ForEach + selection — Label 单独配 tag 在
-            // iPad 上有时不响应点击。改用 ForEach 让 SwiftUI 把每一行当真正
-            // 的 list row 渲染,并通过 button-style selection 触发。
-            // iOS 的 List(selection:) 单选签名要求 Binding<Hashable?>。
-            let selection = Binding<Int?>(
-                get: { selectedTab },
-                set: { if let v = $0 { selectedTab = v } }
+            let selection = Binding<SidebarItem?>(
+                get: { sidebarSelection },
+                set: { if let v = $0 {
+                    sidebarSelection = v
+                    selectedTab = v.rawValueTab
+                } }
             )
             List(selection: selection) {
-                ForEach(SidebarItem.allCases) { item in
-                    Label(String(localized: item.titleKey), systemImage: item.icon)
-                        .tag(item.rawValue as Int?)
+                // 顶层 4 项 ── Home / 资料库 / 搜索 / 设置。资料库下面再开 section
+                // 列子项,让 iPad 用户少一层点击直达。
+                Section {
+                    ForEach(SidebarItem.topLevel) { item in
+                        Label(String(localized: item.titleKey), systemImage: item.icon)
+                            .tag(item as SidebarItem?)
+                    }
+                }
+                Section(String(localized: "library_title")) {
+                    ForEach(SidebarItem.libraryChildren) { item in
+                        Label(String(localized: item.titleKey), systemImage: item.icon)
+                            .tag(item as SidebarItem?)
+                    }
                 }
             }
             .listStyle(.sidebar)
             .navigationTitle("Primuse")
             .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         } detail: {
-            // 现有 Home/Library/Settings/Search 自己内部都有 NavigationStack,
-            // 直接挂在 detail 里; 不再额外包 stack 防止双重导航 chrome。
-            switch selectedTab {
-            case 1: LibraryView()
-            case 2: SearchView(searchText: $searchText)
-            case 3: SettingsView()
-            default: HomeView(switchToSettingsTab: { selectedTab = 3 })
-            }
+            padDetail(for: sidebarSelection)
+        }
+    }
+
+    /// 把 sidebar 选项映射到具体 detail 视图。Library 的子项 (Songs / Albums
+    /// / Artists / Playlists) 直接呈现对应的子 list, 并自带一个 NavigationStack
+    /// + 必要的 navigationDestination,让 NavigationLink 还能正常 push 详情页。
+    @ViewBuilder
+    private func padDetail(for item: SidebarItem) -> some View {
+        switch item {
+        case .home:
+            HomeView(switchToSettingsTab: { sidebarSelection = .settings; selectedTab = 3 })
+        case .library:
+            LibraryView()
+        case .librarySongs:
+            librarySubpane(title: "tab_songs") { SongListView(songs: library.visibleSongs) }
+        case .libraryAlbums:
+            librarySubpane(title: "tab_albums") { AlbumGridView() }
+        case .libraryArtists:
+            librarySubpane(title: "tab_artists") { ArtistListView(artists: library.visibleArtists) }
+        case .libraryPlaylists:
+            librarySubpane(title: "tab_playlists") { PlaylistListView() }
+        case .search:
+            SearchView(searchText: $searchText)
+        case .settings:
+            SettingsView()
+        }
+    }
+
+    @ViewBuilder
+    private func librarySubpane<Content: View>(
+        title: LocalizedStringKey,
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
+        NavigationStack {
+            content()
+                .navigationTitle(title)
+                .navigationDestination(for: Album.self) { AlbumDetailView(album: $0) }
+                .navigationDestination(for: Artist.self) { ArtistDetailView(artist: $0) }
+                .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlist: $0) }
+                // SmartPlaylist destination 由 PlaylistListView 自己挂,不在
+                // 这层重复设置,免得 SwiftUI 报"重复 destination"警告。
         }
     }
 
