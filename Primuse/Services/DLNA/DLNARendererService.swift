@@ -14,10 +14,10 @@ private let dlnaLog = Logger(subsystem: "com.welape.yuanyin", category: "DLNA")
 /// - **SSDP**: 监听 239.255.255.250:1900 的 UDP multicast, 回 M-SEARCH; 周期
 ///   广播 alive。
 /// - **HTTP**: 监听 TCP 49152, 提供 device.xml / 服务 SCPD xml / 控制 endpoint。
-/// - **AVTransport 服务**: 实现 SetAVTransportURI / Play / Pause / Stop /
-///   GetTransportInfo / GetPositionInfo 6 个 action; DIDL-Lite metadata 只
-///   读 dc:title / upnp:artist (不读 cover, 因为推过来的 URL 一般是 HTTP
-///   stream, 跟我们自己的 source 不同源, 解 ID3 太重)。
+/// - **AVTransport 服务**: 实现 SetAVTransportURI / SetNextAVTransportURI /
+///   Play / Pause / Stop / Next / Seek / 状态查询; DIDL-Lite metadata 只读
+///   dc:title / upnp:artist (不读 cover, 因为推过来的 URL 一般是 HTTP stream,
+///   跟我们自己的 source 不同源, 解 ID3 太重)。
 /// - **RenderingControl**: 支持 Master channel 的 Get/Set Volume 与
 ///   Get/Set Mute, 并通过 GENA LastChange 同步给控制点。
 ///
@@ -32,10 +32,10 @@ final class DLNARendererService {
     private(set) var isRunning = false
     /// 最近一条状态行,给 settings 显示 "等待发现" / "正在播放 xx" / "错误: xx"。
     private(set) var statusText: String = ""
-    /// 最近 30 条事件 ── 给 Settings 调试面板按时间倒序展示。包含 M-SEARCH 命中、
+    /// 最近 80 条事件 ── 给 Settings 调试面板按时间倒序展示。包含 M-SEARCH 命中、
     /// SOAP 控制调用、GENA 订阅生命周期。环形覆盖, 太老的事件丢掉。
     private(set) var recentEvents: [DebugEvent] = []
-    private static let maxRecentEvents = 30
+    private static let maxRecentEvents = 80
 
     struct DebugEvent: Identifiable, Sendable {
         let id = UUID()
@@ -46,6 +46,16 @@ final class DLNARendererService {
     }
 
     private func logEvent(_ kind: DebugEvent.Kind, _ detail: String) {
+        switch kind {
+        case .discovery:
+            dlnaLog.info("discovery: \(detail, privacy: .public)")
+        case .control:
+            dlnaLog.info("control: \(detail, privacy: .public)")
+        case .event:
+            dlnaLog.info("event: \(detail, privacy: .public)")
+        case .error:
+            dlnaLog.error("error: \(detail, privacy: .public)")
+        }
         recentEvents.insert(
             DebugEvent(timestamp: Date(), kind: kind, detail: detail),
             at: 0
@@ -88,6 +98,15 @@ final class DLNARendererService {
     /// UPnP RenderingControl 的 mute 是独立状态,不能简单等同于 volume=0。
     private var rendererMuted = false
     private var lastNonMutedVolume: Float = 0.6
+    private struct TransportItem: Sendable {
+        let uri: String
+        let metadata: String
+        let title: String
+        let artist: String?
+        let url: URL
+    }
+    private var currentTransportItem: TransportItem?
+    private var nextTransportItem: TransportItem?
 
     private let httpPort: NWEndpoint.Port = 49152
     private static let ssdpMulticastHost: NWEndpoint.Host = "239.255.255.250"
@@ -121,6 +140,7 @@ final class DLNARendererService {
             dlnaLog.notice("DLNA renderer started as \(self.friendlyName) (uuid=\(self.deviceUUID))")
         } catch {
             statusText = String(format: String(localized: "dlna_status_error_format"), error.localizedDescription)
+            logEvent(.error, "start failed: \(error.localizedDescription)")
             dlnaLog.error("DLNA start failed: \(error.localizedDescription)")
             stop()
         }
@@ -145,17 +165,27 @@ final class DLNARendererService {
             withObservationTracking {
                 _ = player.isPlaying
                 _ = player.currentSong?.id
+                _ = player.isAtTrackEnd
                 _ = player.audioEngine.volume
                 _ = rendererMuted
                 _ = lastNonMutedVolume
             } onChange: { [weak self] in
                 Task { @MainActor in
-                    self?.syncRenderingStateFromEngine()
-                    self?.notifyAllSubscribers()
+                    await self?.handlePlayerStateChange()
                     cont.resume()
                 }
             }
         }
+    }
+
+    private func handlePlayerStateChange() async {
+        syncRenderingStateFromEngine()
+        if player.isAtTrackEnd, let next = nextTransportItem {
+            nextTransportItem = nil
+            logEvent(.control, "AVTransport: auto next → \(next.title)")
+            await playTransportItem(next)
+        }
+        notifyAllSubscribers()
     }
 
     private func syncRenderingStateFromEngine() {
@@ -199,6 +229,18 @@ final class DLNARendererService {
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: Self.ssdpPort)
+        listener.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                switch state {
+                case .ready:
+                    self?.logEvent(.discovery, "SSDP unicast listener ready on UDP \(Self.ssdpPort.rawValue)")
+                case .failed(let error):
+                    self?.logEvent(.error, "SSDP unicast listener failed: \(error.localizedDescription)")
+                default:
+                    break
+                }
+            }
+        }
         listener.newConnectionHandler = { [weak self] conn in
             Task { @MainActor in self?.handleSSDPConnection(conn) }
         }
@@ -213,6 +255,18 @@ final class DLNARendererService {
             for: [.hostPort(host: Self.ssdpMulticastHost, port: Self.ssdpPort)]
         )
         let group = NWConnectionGroup(with: multicast, using: .udp)
+        group.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                switch state {
+                case .ready:
+                    self?.logEvent(.discovery, "SSDP multicast group joined \(Self.ssdpMulticastHost):\(Self.ssdpPort.rawValue)")
+                case .failed(let error):
+                    self?.logEvent(.error, "SSDP multicast failed: \(error.localizedDescription)")
+                default:
+                    break
+                }
+            }
+        }
         group.setReceiveHandler(maximumMessageSize: 65535, rejectOversizedMessages: true) { [weak self] msg, content, _ in
             guard let self, let data = content,
                   let request = String(data: data, encoding: .utf8) else { return }
@@ -241,24 +295,18 @@ final class DLNARendererService {
         }
     }
 
+    private var interestedSSDPTargets: [String] {
+        (["ssdp:all"] + usnTypes).map { $0.lowercased() }
+    }
+
     /// Multicast 收到 M-SEARCH 时单播回 200 OK。`NWConnectionGroup` 给的
     /// `message` 里能拿到 reply endpoint,直接走它回。
     private func handleMulticastDatagram(_ request: String, message: NWConnectionGroup.Message) {
         guard request.hasPrefix("M-SEARCH") else { return }
         let lower = request.lowercased()
-        let interestedTargets = [
-            "ssdp:all",
-            "upnp:rootdevice",
-            "urn:schemas-upnp-org:device:mediarenderer:1",
-            "uuid:\(deviceUUID)",
-        ]
-        guard interestedTargets.contains(where: { lower.contains($0) }) else { return }
+        guard interestedSSDPTargets.contains(where: { lower.contains($0) }) else { return }
         // 把单播响应直接走 message.reply,不需要单独建 NWConnection。
-        let st = lower
-            .split(separator: "\r\n")
-            .first { $0.hasPrefix("st:") }
-            .map { String($0.split(separator: ":", maxSplits: 1).last ?? "") }?
-            .trimmingCharacters(in: .whitespaces) ?? "?"
+        let st = headerValue("st", in: request) ?? "?"
         logEvent(.discovery, "M-SEARCH (ST=\(st)) — replied")
         sendSSDPReplies(via: message)
     }
@@ -344,23 +392,21 @@ final class DLNARendererService {
             guard let self, let data, let request = String(data: data, encoding: .utf8) else {
                 connection.cancel(); return
             }
-            // 控制点会发 "M-SEARCH * HTTP/1.1 ... ST: urn:schemas-upnp-org:device:MediaRenderer:1"
-            // 之类。命中 ST = ssdp:all / MediaRenderer:1 / 我们的 device type
-            // 时,回一个 200 OK SSDP 响应。
-            if request.contains("M-SEARCH") {
-                let lower = request.lowercased()
-                let interestedTargets = [
-                    "ssdp:all",
-                    "upnp:rootdevice",
-                    "urn:schemas-upnp-org:device:mediarenderer:1",
-                    "uuid:\(self.deviceUUID)",
-                ]
-                if interestedTargets.contains(where: { lower.contains($0) }) {
-                    Task { await self.replySSDP(to: connection) }
-                    return
+            Task { @MainActor in
+                // 控制点会发 "M-SEARCH * HTTP/1.1 ... ST: urn:schemas-upnp-org:device:MediaRenderer:1"
+                // 之类。命中 ST = ssdp:all / MediaRenderer:1 / service type
+                // 时,回一个 200 OK SSDP 响应。
+                if request.contains("M-SEARCH") {
+                    let lower = request.lowercased()
+                    if self.interestedSSDPTargets.contains(where: { lower.contains($0) }) {
+                        let st = self.headerValue("st", in: request) ?? "?"
+                        self.logEvent(.discovery, "M-SEARCH unicast (ST=\(st)) — replied")
+                        await self.replySSDP(to: connection)
+                        return
+                    }
                 }
+                connection.cancel()
             }
-            connection.cancel()
         }
     }
 
@@ -388,6 +434,18 @@ final class DLNARendererService {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: httpPort)
+        listener.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                switch state {
+                case .ready:
+                    self?.logEvent(.event, "HTTP control server ready on TCP \(self?.httpPort.rawValue ?? 0)")
+                case .failed(let error):
+                    self?.logEvent(.error, "HTTP control server failed: \(error.localizedDescription)")
+                default:
+                    break
+                }
+            }
+        }
         listener.newConnectionHandler = { [weak self] conn in
             Task { @MainActor in self?.handleHTTPConnection(conn) }
         }
@@ -451,6 +509,7 @@ final class DLNARendererService {
         guard parts.count >= 2 else { connection.cancel(); return }
         let method = String(parts[0])
         let path = String(parts[1])
+        logEvent(.control, "HTTP \(method) \(path) from \(remoteDescription(connection))")
 
         switch (method, path) {
         case ("GET", "/device.xml"):
@@ -733,16 +792,22 @@ final class DLNARendererService {
         switch service {
         case "AVTransport":
             let state = player.isPlaying ? "PLAYING" : (player.currentSong != nil ? "PAUSED_PLAYBACK" : "STOPPED")
-            let title = player.currentSong?.title ?? ""
+            let current = currentTransportItem
+            let next = nextTransportItem
             let lastChange = """
             <Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
               <InstanceID val="0">
                 <TransportState val="\(state)"/>
                 <TransportStatus val="OK"/>
-                <CurrentTrackURI val="\(xmlEscape(player.currentSong?.filePath ?? ""))"/>
+                <AVTransportURI val="\(xmlEscape(current?.uri ?? ""))"/>
+                <AVTransportURIMetaData val="\(xmlEscape(didl(for: current)))"/>
+                <NextAVTransportURI val="\(xmlEscape(next?.uri ?? ""))"/>
+                <NextAVTransportURIMetaData val="\(xmlEscape(didl(for: next)))"/>
+                <CurrentTrackURI val="\(xmlEscape(current?.uri ?? player.currentSong?.filePath ?? ""))"/>
                 <CurrentTrack val="1"/>
                 <CurrentTrackDuration val="\(formatTime(player.duration))"/>
-                <CurrentTrackMetaData val="\(xmlEscape(didlForCurrent(title: title)))"/>
+                <CurrentTrackMetaData val="\(xmlEscape(didl(for: current)))"/>
+                <CurrentTransportActions val="\(currentTransportActions().joined(separator: ","))"/>
               </InstanceID>
             </Event>
             """
@@ -796,6 +861,14 @@ final class DLNARendererService {
         """
     }
 
+    private func didl(for item: TransportItem?) -> String {
+        guard let item else { return "" }
+        if item.metadata.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return item.metadata
+        }
+        return didlForCurrent(title: item.title)
+    }
+
     private func xmlEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -813,9 +886,7 @@ final class DLNARendererService {
 
     private func handleAVTransportAction(raw: String, connection: NWConnection) async {
         // SOAPAction header 形如 `"urn:schemas-upnp-org:service:AVTransport:1#Play"`
-        let soapActionLine = raw.split(separator: "\r\n")
-            .first { $0.lowercased().hasPrefix("soapaction:") }
-            .map(String.init) ?? ""
+        let soapActionLine = headerValue("soapaction", in: raw) ?? ""
         let action = soapActionLine.split(separator: "#").last.map(String.init)?
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"\r\n ")) ?? ""
 
@@ -826,17 +897,28 @@ final class DLNARendererService {
         switch action {
         case "SetAVTransportURI":
             // body 里 <CurrentURI>...</CurrentURI>; <CurrentURIMetaData>didl xml</...>
-            let uri = extract(tag: "CurrentURI", from: body)
-            let metadata = extract(tag: "CurrentURIMetaData", from: body)
-            let title = extract(tag: "dc:title", from: metadata)
-            let artist = extract(tag: "upnp:artist", from: metadata) ?? extract(tag: "dc:creator", from: metadata)
-            if let uri, let url = URL(string: uri) {
-                await playRemote(url: url, title: title ?? "Streaming", artist: artist)
-                statusText = String(format: String(localized: "dlna_status_playing_format"), title ?? "Stream")
+            guard let item = transportItem(uriTag: "CurrentURI", metadataTag: "CurrentURIMetaData", from: body) else {
+                logEvent(.error, "AVTransport SetAVTransportURI missing or invalid URI")
+                await sendSOAPError(code: 714, description: "Illegal MIME-Type", on: connection)
+                return
             }
+            logEvent(.control, "Set current URI → \(item.title) (\(item.url.host ?? item.url.scheme ?? "?"))")
+            await playTransportItem(item)
             await sendSOAP(action: "SetAVTransportURI", body: "", on: connection)
+        case "SetNextAVTransportURI":
+            guard let item = transportItem(uriTag: "NextURI", metadataTag: "NextURIMetaData", from: body) else {
+                logEvent(.error, "AVTransport SetNextAVTransportURI missing or invalid URI")
+                await sendSOAPError(code: 714, description: "Illegal MIME-Type", on: connection)
+                return
+            }
+            nextTransportItem = item
+            logEvent(.control, "Set next URI → \(item.title) (\(item.url.host ?? item.url.scheme ?? "?"))")
+            notifyAllSubscribers()
+            await sendSOAP(action: "SetNextAVTransportURI", body: "", on: connection)
         case "Play":
-            if !player.isPlaying {
+            if !player.isPlaying, let current = currentTransportItem, player.currentSong == nil {
+                await playTransportItem(current)
+            } else if !player.isPlaying {
                 player.resume()
             }
             await sendSOAP(action: "Play", body: "", on: connection)
@@ -847,6 +929,16 @@ final class DLNARendererService {
             player.stop()
             statusText = String(localized: "dlna_status_listening")
             await sendSOAP(action: "Stop", body: "", on: connection)
+        case "Next":
+            guard let next = nextTransportItem else {
+                await sendSOAPError(code: 711, description: "Transition not available", on: connection)
+                return
+            }
+            nextTransportItem = nil
+            await playTransportItem(next)
+            await sendSOAP(action: "Next", body: "", on: connection)
+        case "Previous":
+            await sendSOAPError(code: 711, description: "Transition not available", on: connection)
         case "GetTransportInfo":
             let state: String
             if player.isPlaying {
@@ -862,14 +954,29 @@ final class DLNARendererService {
             <CurrentSpeed>1</CurrentSpeed>
             """
             await sendSOAP(action: "GetTransportInfo", body: body, on: connection)
-        case "GetMediaInfo":
+        case "GetTransportSettings":
             let body = """
-            <NrTracks>\(player.currentSong == nil ? 0 : 1)</NrTracks>
+            <PlayMode>NORMAL</PlayMode>
+            <RecQualityMode>NOT_IMPLEMENTED</RecQualityMode>
+            """
+            await sendSOAP(action: "GetTransportSettings", body: body, on: connection)
+        case "GetDeviceCapabilities":
+            let body = """
+            <PlayMedia>NETWORK</PlayMedia>
+            <RecMedia>NOT_IMPLEMENTED</RecMedia>
+            <RecQualityModes>NOT_IMPLEMENTED</RecQualityModes>
+            """
+            await sendSOAP(action: "GetDeviceCapabilities", body: body, on: connection)
+        case "GetMediaInfo":
+            let current = currentTransportItem
+            let next = nextTransportItem
+            let body = """
+            <NrTracks>\(current == nil ? 0 : 1)</NrTracks>
             <MediaDuration>\(formatTime(player.duration))</MediaDuration>
-            <CurrentURI>\(xmlEscape(player.currentSong?.filePath ?? ""))</CurrentURI>
-            <CurrentURIMetaData>\(xmlEscape(didlForCurrent(title: player.currentSong?.title ?? "")))</CurrentURIMetaData>
-            <NextURI></NextURI>
-            <NextURIMetaData></NextURIMetaData>
+            <CurrentURI>\(xmlEscape(current?.uri ?? player.currentSong?.filePath ?? ""))</CurrentURI>
+            <CurrentURIMetaData>\(xmlEscape(didl(for: current)))</CurrentURIMetaData>
+            <NextURI>\(xmlEscape(next?.uri ?? ""))</NextURI>
+            <NextURIMetaData>\(xmlEscape(didl(for: next)))</NextURIMetaData>
             <PlayMedium>NETWORK</PlayMedium>
             <RecordMedium>NOT_IMPLEMENTED</RecordMedium>
             <WriteStatus>NOT_IMPLEMENTED</WriteStatus>
@@ -878,11 +985,12 @@ final class DLNARendererService {
         case "GetPositionInfo":
             let cur = formatTime(player.currentTime)
             let dur = formatTime(player.duration)
+            let current = currentTransportItem
             let body = """
-            <Track>1</Track>
+            <Track>\(current == nil ? 0 : 1)</Track>
             <TrackDuration>\(dur)</TrackDuration>
-            <TrackMetaData>\(xmlEscape(didlForCurrent(title: player.currentSong?.title ?? "")))</TrackMetaData>
-            <TrackURI>\(xmlEscape(player.currentSong?.filePath ?? ""))</TrackURI>
+            <TrackMetaData>\(xmlEscape(didl(for: current)))</TrackMetaData>
+            <TrackURI>\(xmlEscape(current?.uri ?? player.currentSong?.filePath ?? ""))</TrackURI>
             <RelTime>\(cur)</RelTime>
             <AbsTime>\(cur)</AbsTime>
             <RelCount>2147483647</RelCount>
@@ -890,7 +998,11 @@ final class DLNARendererService {
             """
             await sendSOAP(action: "GetPositionInfo", body: body, on: connection)
         case "GetCurrentTransportActions":
-            await sendSOAP(action: "GetCurrentTransportActions", body: "<Actions>Play,Pause,Stop,Seek</Actions>", on: connection)
+            await sendSOAP(
+                action: "GetCurrentTransportActions",
+                body: "<Actions>\(currentTransportActions().joined(separator: ","))</Actions>",
+                on: connection
+            )
         case "Seek":
             if let target = extract(tag: "Target", from: body),
                let seconds = parseTime(target) {
@@ -898,8 +1010,57 @@ final class DLNARendererService {
             }
             await sendSOAP(action: "Seek", body: "", on: connection)
         default:
-            await sendSOAP(action: action, body: "", on: connection)
+            logEvent(.error, "AVTransport unsupported action: \(action)")
+            await sendSOAPError(code: 401, description: "Invalid Action", on: connection)
         }
+    }
+
+    private func currentTransportActions() -> [String] {
+        var actions: [String] = []
+        if currentTransportItem != nil || player.currentSong != nil {
+            actions.append("Play")
+            actions.append("Stop")
+            actions.append("Seek")
+            if player.isPlaying {
+                actions.append("Pause")
+            }
+        }
+        if nextTransportItem != nil {
+            actions.append("Next")
+        }
+        return actions.isEmpty ? ["Play"] : actions
+    }
+
+    private func transportItem(uriTag: String, metadataTag: String, from body: String) -> TransportItem? {
+        guard let rawURI = extract(tag: uriTag, from: body)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              rawURI.isEmpty == false,
+              let url = URL(string: rawURI) else {
+            return nil
+        }
+
+        let metadata = extract(tag: metadataTag, from: body) ?? ""
+        let title = extract(tag: "dc:title", from: metadata)
+            ?? extract(tag: "title", from: metadata)
+            ?? url.deletingPathExtension().lastPathComponent.removingPercentEncoding
+            ?? String(localized: "dlna_stream_title_fallback")
+        let artist = extract(tag: "upnp:artist", from: metadata)
+            ?? extract(tag: "dc:creator", from: metadata)
+            ?? extract(tag: "creator", from: metadata)
+        return TransportItem(
+            uri: rawURI,
+            metadata: metadata,
+            title: title.isEmpty ? String(localized: "dlna_stream_title_fallback") : title,
+            artist: artist,
+            url: url
+        )
+    }
+
+    private func playTransportItem(_ item: TransportItem) async {
+        currentTransportItem = item
+        await playRemote(url: item.url, title: item.title, artist: item.artist)
+        statusText = String(format: String(localized: "dlna_status_playing_format"), item.title)
+        notifyAllSubscribers()
     }
 
     /// 创建一个临时 Song 喂给 player.play(song:from:)。sourceID 用 "dlna"
@@ -977,6 +1138,14 @@ final class DLNARendererService {
               </argumentList>
             </action>
             <action>
+              <name>SetNextAVTransportURI</name>
+              <argumentList>
+                <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+                <argument><name>NextURI</name><direction>in</direction><relatedStateVariable>NextAVTransportURI</relatedStateVariable></argument>
+                <argument><name>NextURIMetaData</name><direction>in</direction><relatedStateVariable>NextAVTransportURIMetaData</relatedStateVariable></argument>
+              </argumentList>
+            </action>
+            <action>
               <name>Play</name>
               <argumentList>
                 <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
@@ -991,6 +1160,18 @@ final class DLNARendererService {
             </action>
             <action>
               <name>Stop</name>
+              <argumentList>
+                <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+              </argumentList>
+            </action>
+            <action>
+              <name>Next</name>
+              <argumentList>
+                <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+              </argumentList>
+            </action>
+            <action>
+              <name>Previous</name>
               <argumentList>
                 <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
               </argumentList>
@@ -1016,6 +1197,23 @@ final class DLNARendererService {
                 <argument><name>PlayMedium</name><direction>out</direction><relatedStateVariable>PlaybackStorageMedium</relatedStateVariable></argument>
                 <argument><name>RecordMedium</name><direction>out</direction><relatedStateVariable>RecordStorageMedium</relatedStateVariable></argument>
                 <argument><name>WriteStatus</name><direction>out</direction><relatedStateVariable>RecordMediumWriteStatus</relatedStateVariable></argument>
+              </argumentList>
+            </action>
+            <action>
+              <name>GetTransportSettings</name>
+              <argumentList>
+                <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+                <argument><name>PlayMode</name><direction>out</direction><relatedStateVariable>CurrentPlayMode</relatedStateVariable></argument>
+                <argument><name>RecQualityMode</name><direction>out</direction><relatedStateVariable>CurrentRecordQualityMode</relatedStateVariable></argument>
+              </argumentList>
+            </action>
+            <action>
+              <name>GetDeviceCapabilities</name>
+              <argumentList>
+                <argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+                <argument><name>PlayMedia</name><direction>out</direction><relatedStateVariable>PossiblePlaybackStorageMedia</relatedStateVariable></argument>
+                <argument><name>RecMedia</name><direction>out</direction><relatedStateVariable>PossibleRecordStorageMedia</relatedStateVariable></argument>
+                <argument><name>RecQualityModes</name><direction>out</direction><relatedStateVariable>PossibleRecordQualityModes</relatedStateVariable></argument>
               </argumentList>
             </action>
             <action>
@@ -1053,12 +1251,19 @@ final class DLNARendererService {
             <stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable>
             <stateVariable sendEvents="no"><name>AVTransportURI</name><dataType>string</dataType></stateVariable>
             <stateVariable sendEvents="no"><name>AVTransportURIMetaData</name><dataType>string</dataType></stateVariable>
+            <stateVariable sendEvents="no"><name>NextAVTransportURI</name><dataType>string</dataType></stateVariable>
+            <stateVariable sendEvents="no"><name>NextAVTransportURIMetaData</name><dataType>string</dataType></stateVariable>
             <stateVariable sendEvents="no"><name>TransportPlaySpeed</name><dataType>string</dataType><allowedValueList><allowedValue>1</allowedValue></allowedValueList></stateVariable>
             <stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekMode</name><dataType>string</dataType><allowedValueList><allowedValue>REL_TIME</allowedValue></allowedValueList></stateVariable>
             <stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekTarget</name><dataType>string</dataType></stateVariable>
             <stateVariable sendEvents="yes"><name>TransportState</name><dataType>string</dataType><allowedValueList><allowedValue>STOPPED</allowedValue><allowedValue>PLAYING</allowedValue><allowedValue>PAUSED_PLAYBACK</allowedValue></allowedValueList></stateVariable>
             <stateVariable sendEvents="yes"><name>TransportStatus</name><dataType>string</dataType><allowedValueList><allowedValue>OK</allowedValue></allowedValueList></stateVariable>
             <stateVariable sendEvents="no"><name>CurrentTransportActions</name><dataType>string</dataType></stateVariable>
+            <stateVariable sendEvents="no"><name>CurrentPlayMode</name><dataType>string</dataType><allowedValueList><allowedValue>NORMAL</allowedValue></allowedValueList></stateVariable>
+            <stateVariable sendEvents="no"><name>CurrentRecordQualityMode</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList></stateVariable>
+            <stateVariable sendEvents="no"><name>PossiblePlaybackStorageMedia</name><dataType>string</dataType><allowedValueList><allowedValue>NETWORK</allowedValue></allowedValueList></stateVariable>
+            <stateVariable sendEvents="no"><name>PossibleRecordStorageMedia</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList></stateVariable>
+            <stateVariable sendEvents="no"><name>PossibleRecordQualityModes</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList></stateVariable>
             <stateVariable sendEvents="no"><name>NumberOfTracks</name><dataType>ui4</dataType></stateVariable>
             <stateVariable sendEvents="no"><name>PlaybackStorageMedium</name><dataType>string</dataType></stateVariable>
             <stateVariable sendEvents="no"><name>RecordStorageMedium</name><dataType>string</dataType></stateVariable>
@@ -1198,10 +1403,59 @@ final class DLNARendererService {
 
     // MARK: - Networking helpers
 
+    private func headerValue(_ name: String, in raw: String) -> String? {
+        let wanted = name.lowercased()
+        return raw.split(separator: "\r\n")
+            .first { line in
+                line.split(separator: ":", maxSplits: 1).first?.lowercased() == wanted
+            }
+            .flatMap { line in
+                line.split(separator: ":", maxSplits: 1).last.map(String.init)?
+                    .trimmingCharacters(in: .whitespaces)
+            }
+    }
+
+    private func remoteDescription(_ connection: NWConnection) -> String {
+        String(describing: connection.endpoint)
+    }
+
     private func sendXML(_ xml: String, on connection: NWConnection) async {
         let data = xml.data(using: .utf8) ?? Data()
         let headers = """
         HTTP/1.1 200 OK\r
+        Content-Type: text/xml; charset=utf-8\r
+        Content-Length: \(data.count)\r
+        Connection: close\r
+        \r
+
+        """
+        let bytes = (headers.data(using: .utf8) ?? Data()) + data
+        connection.send(content: bytes, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
+    }
+
+    private func sendSOAPError(code: Int, description: String, on connection: NWConnection) async {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        <s:Body>
+        <s:Fault>
+        <faultcode>s:Client</faultcode>
+        <faultstring>UPnPError</faultstring>
+        <detail>
+        <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+        <errorCode>\(code)</errorCode>
+        <errorDescription>\(xmlEscape(description))</errorDescription>
+        </UPnPError>
+        </detail>
+        </s:Fault>
+        </s:Body>
+        </s:Envelope>
+        """
+        let data = xml.data(using: .utf8) ?? Data()
+        let headers = """
+        HTTP/1.1 500 Internal Server Error\r
         Content-Type: text/xml; charset=utf-8\r
         Content-Length: \(data.count)\r
         Connection: close\r
@@ -1227,6 +1481,7 @@ final class DLNARendererService {
         case 400: return "Bad Request"
         case 404: return "Not Found"
         case 413: return "Payload Too Large"
+        case 500: return "Internal Server Error"
         default: return "OK"
         }
     }

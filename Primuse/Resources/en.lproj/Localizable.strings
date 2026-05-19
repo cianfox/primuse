@@ -856,6 +856,7 @@
 "dlna_status_listening" = "Waiting for senders";
 "dlna_status_playing_format" = "Casting: %@";
 "dlna_status_error_format" = "Error: %@";
+"dlna_stream_title_fallback" = "Stream";
 "settings_dlna_log_section" = "Live Activity";
 "settings_dlna_log_empty" = "No events yet. Open a control point app and look for Primuse to verify discovery.";
 "diagnostics_title" = "Diagnostic Reports";

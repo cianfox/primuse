@@ -3,7 +3,7 @@ import PrimuseKit
 
 /// DLNA Renderer 模式的设置面 ── toggle 开关 + 当前状态展示 + 实时事件日志。
 /// 开关持久化用 @AppStorage,实际生效由 onChange 调 service.start/stop。
-/// 调试日志直接显示最近 30 条 SSDP / SOAP / GENA 事件,帮用户判断 DLNA
+/// 调试日志直接显示最近的 SSDP / SOAP / GENA 事件,帮用户判断 DLNA
 /// 控制点有没有真的发现 / 推送到本机。
 struct DLNARendererSettingsView: View {
     @Environment(DLNARendererService.self) private var renderer
