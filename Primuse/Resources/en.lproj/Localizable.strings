@@ -680,6 +680,12 @@
 "smart_value_playlist" = "Choose playlist";
 "smart_value_playlist_none" = "Not selected";
 "smart_date_recent_days" = "Within last N days";
+"smart_rule_group" = "Rule Group";
+"smart_rule_group_excluded" = "Excluded Group";
+"smart_rule_group_exclude" = "Exclude this group";
+"smart_rule_group_add" = "Add Rule Group";
+"smart_rule_group_delete" = "Delete Rule Group";
+"smart_rule_group_footer" = "Multiple rule groups apply together. Excluded groups remove matching songs from the result.";
 "smart_playlist_no_rules" = "No rules";
 "smart_playlist_no_matches" = "No matching songs";
 "smart_playlist_no_matches_desc" = "Try adjusting the rules.";

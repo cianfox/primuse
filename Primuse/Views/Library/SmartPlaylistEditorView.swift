@@ -19,8 +19,7 @@ struct SmartPlaylistEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name: String = ""
-    @State private var rules: [SmartPlaylistRule] = []
-    @State private var combinator: SmartPlaylistCombinator = .and
+    @State private var ruleGroups: [SmartPlaylistRuleGroup] = []
     @State private var sortField: SmartPlaylistSortField = .dateAdded
     @State private var sortDirection: SmartPlaylistSortDirection = .descending
     @State private var limitText: String = ""
@@ -41,41 +40,22 @@ struct SmartPlaylistEditorView: View {
                     TextField("smart_playlist_name", text: $name)
                 }
 
-                Section {
-                    ForEach($rules) { $rule in
-                        SmartPlaylistRuleEditorRow(rule: $rule)
-                    }
-                    .onDelete { offsets in
-                        rules.remove(atOffsets: offsets)
-                    }
-
-                    Button {
-                        rules.append(SmartPlaylistRule(
-                            field: .title,
-                            op: .contains,
-                            value: ""
-                        ))
-                    } label: {
-                        Label("smart_rule_add", systemImage: "plus.circle")
-                    }
-                } header: {
-                    Text("smart_rules_section")
+                ForEach($ruleGroups) { $group in
+                    SmartPlaylistRuleGroupEditor(
+                        group: $group,
+                        canDelete: ruleGroups.count > 1,
+                        onDelete: { removeGroup(id: group.id) }
+                    )
                 }
 
-                if rules.count >= 2 {
-                    Section {
-                        Picker("smart_combinator", selection: $combinator) {
-                            Text("smart_combinator_and").tag(SmartPlaylistCombinator.and)
-                            Text("smart_combinator_or").tag(SmartPlaylistCombinator.or)
-                        }
-                        .pickerStyle(.segmented)
-                    } header: {
-                        Text("smart_combinator_section")
-                    } footer: {
-                        Text(combinator == .and
-                             ? "smart_combinator_and_desc"
-                             : "smart_combinator_or_desc")
+                Section {
+                    Button {
+                        ruleGroups.append(Self.defaultGroup())
+                    } label: {
+                        Label("smart_rule_group_add", systemImage: "plus.rectangle.on.rectangle")
                     }
+                } footer: {
+                    Text("smart_rule_group_footer")
                 }
 
                 Section {
@@ -141,11 +121,15 @@ struct SmartPlaylistEditorView: View {
             .onAppear {
                 if let existing {
                     name = existing.name
-                    rules = existing.rules
-                    combinator = existing.combinator
+                    ruleGroups = existing.effectiveRuleGroups
+                    if ruleGroups.isEmpty {
+                        ruleGroups = [Self.defaultGroup()]
+                    }
                     sortField = existing.sortField
                     sortDirection = existing.sortDirection
                     limitText = existing.limit.map(String.init) ?? ""
+                } else if ruleGroups.isEmpty {
+                    ruleGroups = [Self.defaultGroup()]
                 }
             }
         }
@@ -154,13 +138,46 @@ struct SmartPlaylistEditorView: View {
     private func save() {
         var smart = existing ?? SmartPlaylist(name: "")
         smart.name = name.trimmingCharacters(in: .whitespaces)
-        smart.rules = rules
-        smart.combinator = combinator
+        let cleanedGroups = ruleGroups
+            .map { group -> SmartPlaylistRuleGroup in
+                var g = group
+                g.rules = g.rules.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                return g
+            }
+            .filter { !$0.rules.isEmpty }
+        smart.ruleGroups = cleanedGroups.isEmpty ? nil : cleanedGroups
+        if let firstIncluded = cleanedGroups.first(where: { !$0.isExcluded }) {
+            smart.rules = firstIncluded.rules
+            smart.combinator = firstIncluded.combinator
+        } else {
+            smart.rules = []
+            smart.combinator = .and
+        }
         smart.sortField = sortField
         smart.sortDirection = sortDirection
         smart.limit = Int(limitText.trimmingCharacters(in: .whitespaces))
         library.saveSmartPlaylist(smart)
         dismiss()
+    }
+
+    private func removeGroup(id: String) {
+        ruleGroups.removeAll { $0.id == id }
+        if ruleGroups.isEmpty {
+            ruleGroups = [Self.defaultGroup()]
+        }
+    }
+
+    private static func defaultGroup() -> SmartPlaylistRuleGroup {
+        SmartPlaylistRuleGroup(
+            rules: [
+                SmartPlaylistRule(
+                    field: .title,
+                    op: .contains,
+                    value: ""
+                )
+            ],
+            combinator: .and
+        )
     }
 
     private func sortFieldLabel(_ f: SmartPlaylistSortField) -> String {
@@ -169,6 +186,62 @@ struct SmartPlaylistEditorView: View {
 }
 
 // MARK: - Rule editor row
+
+private struct SmartPlaylistRuleGroupEditor: View {
+    @Binding var group: SmartPlaylistRuleGroup
+    let canDelete: Bool
+    let onDelete: () -> Void
+
+    var body: some View {
+        Section {
+            Toggle("smart_rule_group_exclude", isOn: $group.isExcluded)
+
+            if group.rules.count >= 2 {
+                Picker("smart_combinator", selection: $group.combinator) {
+                    Text("smart_combinator_and").tag(SmartPlaylistCombinator.and)
+                    Text("smart_combinator_or").tag(SmartPlaylistCombinator.or)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            ForEach($group.rules) { $rule in
+                SmartPlaylistRuleEditorRow(rule: $rule)
+            }
+            .onDelete { offsets in
+                group.rules.remove(atOffsets: offsets)
+            }
+
+            Button {
+                group.rules.append(SmartPlaylistRule(
+                    field: .title,
+                    op: .contains,
+                    value: ""
+                ))
+            } label: {
+                Label("smart_rule_add", systemImage: "plus.circle")
+            }
+
+            if canDelete {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("smart_rule_group_delete", systemImage: "trash")
+                }
+            }
+        } header: {
+            Label(
+                group.isExcluded ? "smart_rule_group_excluded" : "smart_rule_group",
+                systemImage: group.isExcluded ? "minus.circle" : "line.3.horizontal.decrease.circle"
+            )
+        } footer: {
+            if group.rules.count >= 2 {
+                Text(group.combinator == .and
+                     ? "smart_combinator_and_desc"
+                     : "smart_combinator_or_desc")
+            }
+        }
+    }
+}
 
 /// 单条规则编辑行 ── 卡片式视觉。
 ///

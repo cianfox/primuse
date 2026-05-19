@@ -23,8 +23,10 @@ enum SmartPlaylistEngine {
         let startedAt = Date()
         let totalSongs = library.visibleSongs.count
 
+        let ruleGroups = smart.effectiveRuleGroups
+
         // 空规则集合: 命中 library 全部 (用户可能新建后还没编辑规则就先看个全量)
-        guard !smart.rules.isEmpty else {
+        guard !ruleGroups.isEmpty else {
             let result = sortAndLimit(library.visibleSongs, smart: smart, history: history)
             let elapsed = Date().timeIntervalSince(startedAt)
             plog(String(format: "🎯 SmartPlaylist '%@' match: 0 rules → matched=%d/%d in %.0fms",
@@ -35,18 +37,15 @@ enum SmartPlaylistEngine {
         let stats = PlayStats(history: history)
 
         let matched = library.visibleSongs.filter { song in
-            evaluate(rules: smart.rules,
-                     combinator: smart.combinator,
-                     song: song,
-                     stats: stats,
-                     library: library)
+            evaluate(groups: ruleGroups, song: song, stats: stats, library: library)
         }
         let result = sortAndLimit(matched, smart: smart, history: history)
         let elapsed = Date().timeIntervalSince(startedAt)
-        plog(String(format: "🎯 SmartPlaylist '%@' match: rules=%d combinator=%@ sortBy=%@ limit=%@ → matched=%d/%d (truncated to %d) in %.0fms",
+        let ruleCount = ruleGroups.reduce(0) { $0 + $1.rules.count }
+        plog(String(format: "🎯 SmartPlaylist '%@' match: groups=%d rules=%d sortBy=%@ limit=%@ → matched=%d/%d (truncated to %d) in %.0fms",
                     smart.name,
-                    smart.rules.count,
-                    smart.combinator.rawValue,
+                    ruleGroups.count,
+                    ruleCount,
                     smart.sortField.rawValue,
                     smart.limit.map(String.init) ?? "none",
                     matched.count, totalSongs, result.count,
@@ -55,6 +54,25 @@ enum SmartPlaylistEngine {
     }
 
     // MARK: - Rule evaluation
+
+    private static func evaluate(
+        groups: [SmartPlaylistRuleGroup],
+        song: Song,
+        stats: PlayStats,
+        library: MusicLibrary
+    ) -> Bool {
+        groups.allSatisfy { group in
+            guard !group.rules.isEmpty else { return true }
+            let matched = evaluate(
+                rules: group.rules,
+                combinator: group.combinator,
+                song: song,
+                stats: stats,
+                library: library
+            )
+            return group.isExcluded ? !matched : matched
+        }
+    }
 
     private static func evaluate(
         rules: [SmartPlaylistRule],

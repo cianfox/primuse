@@ -69,8 +69,7 @@ public enum SmartPlaylistOperator: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// 多条规则之间用 AND 还是 OR 串。复杂嵌套 (AND 内嵌 OR) 不在 v1 范围内 ──
-/// 用户能用 OR 多条覆盖 90% 场景, 后续要再加。
+/// 多条规则之间用 AND 还是 OR 串。
 public enum SmartPlaylistCombinator: String, Codable, Sendable {
     case and
     case or
@@ -117,13 +116,38 @@ public struct SmartPlaylistRule: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+public struct SmartPlaylistRuleGroup: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var rules: [SmartPlaylistRule]
+    public var combinator: SmartPlaylistCombinator
+    /// true = 排除组。组内先按 combinator 命中, 最终结果取反。
+    public var isExcluded: Bool
+
+    public init(
+        id: String = UUID().uuidString,
+        rules: [SmartPlaylistRule] = [],
+        combinator: SmartPlaylistCombinator = .and,
+        isExcluded: Bool = false
+    ) {
+        self.id = id
+        self.rules = rules
+        self.combinator = combinator
+        self.isExcluded = isExcluded
+    }
+}
+
 // MARK: - Smart Playlist
 
 public struct SmartPlaylist: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var name: String
+    /// Legacy v1 flat rules. Kept for decoding older snapshots and for older
+    /// clients that do not yet understand grouped rules.
     public var rules: [SmartPlaylistRule]
     public var combinator: SmartPlaylistCombinator
+    /// v2 grouped rules. Multiple groups are ANDed together; excluded groups
+    /// act as NOT(group). nil/empty means fall back to legacy flat rules.
+    public var ruleGroups: [SmartPlaylistRuleGroup]?
     /// 匹配上限 (nil = 不限)。命中超过此数时按 sortField 截断。
     public var limit: Int?
     public var sortField: SmartPlaylistSortField
@@ -139,6 +163,7 @@ public struct SmartPlaylist: Codable, Identifiable, Hashable, Sendable {
         name: String,
         rules: [SmartPlaylistRule] = [],
         combinator: SmartPlaylistCombinator = .and,
+        ruleGroups: [SmartPlaylistRuleGroup]? = nil,
         limit: Int? = nil,
         sortField: SmartPlaylistSortField = .dateAdded,
         sortDirection: SmartPlaylistSortDirection = .descending,
@@ -151,6 +176,7 @@ public struct SmartPlaylist: Codable, Identifiable, Hashable, Sendable {
         self.name = name
         self.rules = rules
         self.combinator = combinator
+        self.ruleGroups = ruleGroups
         self.limit = limit
         self.sortField = sortField
         self.sortDirection = sortDirection
@@ -158,6 +184,22 @@ public struct SmartPlaylist: Codable, Identifiable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
         self.deletedAt = deletedAt
+    }
+
+    public var effectiveRuleGroups: [SmartPlaylistRuleGroup] {
+        if let ruleGroups, !ruleGroups.isEmpty {
+            return ruleGroups
+        }
+        if rules.isEmpty {
+            return []
+        }
+        return [
+            SmartPlaylistRuleGroup(
+                rules: rules,
+                combinator: combinator,
+                isExcluded: false
+            )
+        ]
     }
 }
 

@@ -164,15 +164,23 @@ struct SmartPlaylistDetailView: View {
     // MARK: - Rule summary
 
     private func rulesSummary(_ smart: SmartPlaylist) -> String {
-        if smart.rules.isEmpty {
+        let groups = smart.effectiveRuleGroups
+        if groups.isEmpty {
             return String(localized: "smart_playlist_no_rules")
         }
-        let join = smart.combinator == .and
-            ? String(localized: "smart_playlist_combinator_and")
-            : String(localized: "smart_playlist_combinator_or")
-        return smart.rules
-            .map { ruleLabel($0) }
-            .joined(separator: " \(join) ")
+        return groups.map { group in
+            let join = group.combinator == .and
+                ? String(localized: "smart_playlist_combinator_and")
+                : String(localized: "smart_playlist_combinator_or")
+            let body = group.rules
+                .map { ruleLabel($0) }
+                .joined(separator: " \(join) ")
+            if group.isExcluded {
+                return "\(String(localized: "smart_rule_group_excluded")): \(body)"
+            }
+            return body
+        }
+        .joined(separator: " · ")
     }
 
     private func ruleLabel(_ rule: SmartPlaylistRule) -> String {

@@ -681,6 +681,12 @@
 "smart_value_playlist" = "选择歌单";
 "smart_value_playlist_none" = "未选择";
 "smart_date_recent_days" = "最近 N 天内";
+"smart_rule_group" = "规则组";
+"smart_rule_group_excluded" = "排除规则组";
+"smart_rule_group_exclude" = "排除这个规则组";
+"smart_rule_group_add" = "添加规则组";
+"smart_rule_group_delete" = "删除规则组";
+"smart_rule_group_footer" = "多个规则组之间会同时生效；开启排除后，该组命中的歌曲会被排除。";
 "smart_playlist_no_rules" = "暂无规则";
 "smart_playlist_no_matches" = "没有匹配的歌曲";
 "smart_playlist_no_matches_desc" = "调整规则后再来看看。";
