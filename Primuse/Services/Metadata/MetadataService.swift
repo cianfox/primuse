@@ -47,17 +47,22 @@ actor MetadataService {
 
         // url.lastPathComponent 在 scrape 路径下是 cache 的 sanitized 名
         // 丑名字。caller 传原始文件名当 fallbackTitle 优先用。
-        let urlBasedFallback = url.deletingPathExtension().lastPathComponent
-        let titleFallback = fallbackTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            ? fallbackTitle!
-            : urlBasedFallback
+        let rawURLBasedFallback = url.deletingPathExtension().lastPathComponent
+        let urlBasedFallback = FileMetadataReader.repairLegacyChineseMojibake(rawURLBasedFallback)
+        let repairedFallbackTitle = fallbackTitle.map(FileMetadataReader.repairLegacyChineseMojibake)
+        let titleFallback: String = if let repairedFallbackTitle,
+                                       !repairedFallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            repairedFallbackTitle
+        } else {
+            urlBasedFallback
+        }
 
         // 防御: 历史上 FileMetadataReader 在没 TIT2 时会自动把 url basename
         // 塞进 embedded.title。这里再校一次, 万一别的读取路径返回 sanitized
         // 名 (如 "_music_xxx") 也当成空, 走真正的 fallback。
         let trustedEmbeddedTitle: String? = {
             guard let t = embedded.title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
-            return t == urlBasedFallback ? nil : embedded.title
+            return t == rawURLBasedFallback || t == urlBasedFallback ? nil : embedded.title
         }()
 
         var result = SongMetadata(

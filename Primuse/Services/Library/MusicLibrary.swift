@@ -1506,6 +1506,7 @@ final class MusicLibrary {
         }
 
         songs = snapshot.songs
+        let repairedLegacyTextCount = repairLegacyChineseMetadataTextInSnapshot()
         allPlaylists = snapshot.playlists
         allSmartPlaylists = snapshot.smartPlaylists ?? []
         playlistSongIDs = snapshot.playlistSongIDs ?? [:]
@@ -1529,6 +1530,50 @@ final class MusicLibrary {
         }
         // init 阶段直接同步 rebuild ── UI 还没起来, 不需要走异步 schedule。
         rebuildIndexSync()
+        if repairedLegacyTextCount > 0 {
+            plog("📚 repaired legacy Chinese metadata text for \(repairedLegacyTextCount) song(s)")
+            persistNow()
+        }
+    }
+
+    private func repairLegacyChineseMetadataTextInSnapshot() -> Int {
+        var repairedCount = 0
+
+        for index in songs.indices {
+            var song = songs[index]
+            if Self.repairLegacyChineseMetadataText(in: &song) {
+                MusicLibrary.fillDerivedIDs(&song)
+                songs[index] = song
+                repairedCount += 1
+            }
+        }
+
+        return repairedCount
+    }
+
+    private static func repairLegacyChineseMetadataText(in song: inout Song) -> Bool {
+        var changed = false
+        changed = repairLegacyChineseText(&song.title) || changed
+        changed = repairLegacyChineseText(&song.artistName) || changed
+        changed = repairLegacyChineseText(&song.albumTitle) || changed
+        changed = repairLegacyChineseText(&song.genre) || changed
+        return changed
+    }
+
+    private static func repairLegacyChineseText(_ text: inout String) -> Bool {
+        let repaired = FileMetadataReader.repairLegacyChineseMojibake(text)
+        guard repaired != text else { return false }
+        text = repaired
+        return true
+    }
+
+    private static func repairLegacyChineseText(_ text: inout String?) -> Bool {
+        guard var value = text else { return false }
+        let repaired = FileMetadataReader.repairLegacyChineseMojibake(value)
+        guard repaired != value else { return false }
+        value = repaired
+        text = value
+        return true
     }
 
     private var persistTask: Task<Void, Never>?
