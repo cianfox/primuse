@@ -21,8 +21,8 @@ final class WatchPlayerStore: NSObject, WCSessionDelegate {
     var isLoading: Bool = false
     var duration: TimeInterval = 0
     var currentTime: TimeInterval = 0
-    /// 跟随 iPhone 推过来的 ThemeService accentColor; 默认品牌紫。
-    var accent: Color = Color(red: 0.392, green: 0.318, blue: 0.976)
+    /// 跟随 iPhone 推过来的 ThemeService accentColor; 默认深海青。
+    var accent: Color = Color(red: 0.078, green: 0.490, blue: 0.541)
     var currentLyric: String = ""
     var queueCount: Int = 0
     var coverImage: UIImage?
@@ -299,8 +299,8 @@ struct ContextSnapshot: Sendable {
         currentTimeAnchor = ctx["currentTimeAnchor"] as? Double ?? Date().timeIntervalSince1970
         queueCount = ctx["queueCount"] as? Int ?? 0
         currentLyric = ctx["currentLyric"] as? String ?? ""
-        accentR = ctx["accentR"] as? Double ?? 0.392
-        accentG = ctx["accentG"] as? Double ?? 0.318
-        accentB = ctx["accentB"] as? Double ?? 0.976
+        accentR = ctx["accentR"] as? Double ?? 0.078
+        accentG = ctx["accentG"] as? Double ?? 0.490
+        accentB = ctx["accentB"] as? Double ?? 0.541
     }
 }

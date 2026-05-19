@@ -234,9 +234,9 @@ final class WatchSessionBridge: NSObject {
 
     // MARK: - Helpers
 
-    /// 拿当前 ThemeService 的 accent 拆成 RGB Double。读不到时退回品牌紫色。
+    /// 拿当前 ThemeService 的 accent 拆成 RGB Double。读不到时退回默认深海青。
     private func currentAccentRGB() -> (Double, Double, Double) {
-        let color = theme?.accentColor ?? Color(red: 0.392, green: 0.318, blue: 0.976)
+        let color = theme?.accentColor ?? ThemeService.defaultAccent
         let ui = UIColor(color)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         ui.getRed(&r, green: &g, blue: &b, alpha: &a)

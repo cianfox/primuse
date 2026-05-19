@@ -29,44 +29,7 @@ final class PrimuseAppDelegate: NSObject, UIApplicationDelegate {
     /// iOS fires this when the device is idle and on a network connection,
     /// giving us several minutes of CPU time to keep scanning.
     private func registerBackgroundScanResume() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: ScanService.backgroundTaskIdentifier,
-            using: nil
-        ) { task in
-            Task { @MainActor in
-                let services = AppServices.shared
-                let scanService = services.scanService
-                let backfill = services.metadataBackfill
-
-                task.expirationHandler = {
-                    Task { @MainActor in
-                        scanService.cancelAllActiveScans()
-                        backfill.stop()
-                    }
-                }
-
-                // Resume any interrupted scans, then run backfill until the
-                // task expires or work runs out. Both phases use HTTP Range
-                // / list-only API calls — safe for iOS background quotas.
-                scanService.resumePendingScans(
-                    sourceManager: services.sourceManager,
-                    library: services.musicLibrary,
-                    sourceStore: services.sourcesStore,
-                    scraperService: services.scraperService
-                )
-                await scanService.waitForActiveScansToComplete()
-
-                backfill.start()
-                await backfill.waitUntilIdle()
-
-                // If anything still has a checkpoint or pending bare songs,
-                // ask iOS to wake us again later.
-                scanService.scheduleBackgroundResumeIfNeeded(
-                    backfillPending: backfill.hasPendingWork
-                )
-                task.setTaskCompleted(success: true)
-            }
-        }
+        BackgroundScanResumeTask.register()
     }
 
     func application(
@@ -94,6 +57,74 @@ final class PrimuseAppDelegate: NSObject, UIApplicationDelegate {
             return Self.playMediaHandler
         }
         return nil
+    }
+}
+
+private enum BackgroundScanResumeTask {
+    static func register() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: ScanService.backgroundTaskIdentifier,
+            using: nil
+        ) { task in
+            handle(task)
+        }
+    }
+
+    private static func handle(_ task: BGTask) {
+        let completion = BackgroundTaskCompletion(task)
+        task.expirationHandler = {
+            completion.complete(success: false)
+            Task { @MainActor in
+                let services = AppServices.shared
+                services.scanService.cancelAllActiveScans()
+                services.metadataBackfill.stop()
+            }
+        }
+
+        Task { @MainActor in
+            let services = AppServices.shared
+            let scanService = services.scanService
+            let backfill = services.metadataBackfill
+
+            // Resume any interrupted scans, then run backfill until the
+            // task expires or work runs out. Both phases use HTTP Range
+            // / list-only API calls — safe for iOS background quotas.
+            scanService.resumePendingScans(
+                sourceManager: services.sourceManager,
+                library: services.musicLibrary,
+                sourceStore: services.sourcesStore,
+                scraperService: services.scraperService
+            )
+            await scanService.waitForActiveScansToComplete()
+
+            backfill.start()
+            await backfill.waitUntilIdle()
+
+            // If anything still has a checkpoint or pending bare songs,
+            // ask iOS to wake us again later.
+            scanService.scheduleBackgroundResumeIfNeeded(
+                backfillPending: backfill.hasPendingWork
+            )
+            completion.complete(success: true)
+        }
+    }
+}
+
+private final class BackgroundTaskCompletion: @unchecked Sendable {
+    private let task: BGTask
+    private let lock = NSLock()
+    private var didComplete = false
+
+    init(_ task: BGTask) {
+        self.task = task
+    }
+
+    func complete(success: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didComplete else { return }
+        didComplete = true
+        task.setTaskCompleted(success: success)
     }
 }
 

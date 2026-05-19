@@ -16,16 +16,16 @@ final class ThemeService {
     private(set) var colorID: String = "default"
 
     /// User-chosen base accent (driven by selected app icon). When set, this
-    /// replaces the static brand purple as the fallback whenever a song's
+    /// replaces the static brand color as the fallback whenever a song's
     /// cover art isn't actively driving the theme.
     private(set) var baseAccent: Color = ThemeService.defaultAccent
     private(set) var baseDarkAccent: Color = ThemeService.defaultDarkAccent
 
     // MARK: - Defaults
 
-    /// Fallback accent when nothing is playing (current brand blue-purple)
-    nonisolated static let defaultAccent = Color(red: 0.392, green: 0.318, blue: 0.976)       // #6451F9
-    nonisolated static let defaultDarkAccent = Color(red: 0.22, green: 0.15, blue: 0.56)
+    /// Fallback accent when nothing is playing (deep sea teal)
+    nonisolated static let defaultAccent = Color(red: 0.078, green: 0.490, blue: 0.541)       // #147D8A
+    nonisolated static let defaultDarkAccent = Color(red: 0.043, green: 0.267, blue: 0.294)   // #0B444B
 
     // MARK: - Cover directory (via MetadataAssetStore)
 

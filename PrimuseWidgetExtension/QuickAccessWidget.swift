@@ -22,7 +22,7 @@ struct QuickAccessProvider: TimelineProvider {
         completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
     }
 
-    /// 画廊预览用的假专辑列表 —— 4 张,覆盖 medium (头图 + 3 缩略) 和
+    /// 画廊预览用的假专辑列表 —— 5 张,覆盖 medium (头图 + 3 缩略) 和
     /// large (头图 + 4 缩略) 两种 size 的需要。封面留 nil,WidgetCoverImageView
     /// 会落回 placeholderGradient 渐变占位。
     private static let demoAlbums: [RecentAlbumEntry] = [
@@ -30,6 +30,7 @@ struct QuickAccessProvider: TimelineProvider {
         RecentAlbumEntry(id: "demo-2", title: "OK Computer", artistName: "Radiohead", coverImageName: nil),
         RecentAlbumEntry(id: "demo-3", title: "Kind of Blue", artistName: "Miles Davis", coverImageName: nil),
         RecentAlbumEntry(id: "demo-4", title: "Nevermind", artistName: "Nirvana", coverImageName: nil),
+        RecentAlbumEntry(id: "demo-5", title: "Rumours", artistName: "Fleetwood Mac", coverImageName: nil),
     ]
 }
 
@@ -73,13 +74,13 @@ struct QuickAccessWidgetView: View {
     }
 }
 
-// MARK: - Medium / Large (Apple Music 风)
+// MARK: - Medium / Large
 //
 // 设计目标:
 // - 主专辑封面占左侧主导地位, 不再加 pill / eyebrow / "继续上次的氛围" 这类
 //   装饰文字
 // - 副专辑用最朴素的小方格 + 单行字, 而不是套 panel 边框
-// - 背景用第一张专辑的封面模糊扩散, 不再画 gradient
+// - 背景用第一张专辑的封面模糊扩散, 占位图改为多色唱片感渐变
 
 private struct MediumQuickAccessView: View {
     let albums: [RecentAlbumEntry]
@@ -88,47 +89,51 @@ private struct MediumQuickAccessView: View {
     private var others: [RecentAlbumEntry] { Array(albums.dropFirst().prefix(3)) }
 
     var body: some View {
-        ZStack {
-            // 模糊封面铺底
-            RecentAlbumCoverView(entry: featured, cornerRadius: 0, placeholderIndex: 0)
-                .scaleEffect(1.18)
-                .blur(radius: 30)
-                .overlay(Color.black.opacity(0.42))
+        GeometryReader { geometry in
+            let coverSide = min(112, max(88, geometry.size.height - 32))
 
-            HStack(spacing: 14) {
-                RecentAlbumCoverView(entry: featured, cornerRadius: 12, placeholderIndex: 0)
-                    .frame(width: 112, height: 112)
+            ZStack {
+                RecentAlbumCoverView(entry: featured, cornerRadius: 0, placeholderIndex: 0)
+                    .scaleEffect(1.18)
+                    .blur(radius: 30)
+                    .overlay(Color.black.opacity(0.42))
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("最近播放")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .textCase(.uppercase)
-                        .tracking(0.6)
-                    Text(featured.title)
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text(featured.artistName)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.70))
-                        .lineLimit(1)
+                HStack(spacing: 14) {
+                    RecentAlbumCoverView(entry: featured, cornerRadius: 12, placeholderIndex: 0)
+                        .frame(width: coverSide, height: coverSide)
 
-                    Spacer(minLength: 4)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("最近播放")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .textCase(.uppercase)
+                            .tracking(0.6)
+                        Text(featured.title)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.86)
+                        Text(featured.artistName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.70))
+                            .lineLimit(1)
 
-                    HStack(spacing: 8) {
-                        ForEach(Array(others.enumerated()), id: \.element.id) { i, album in
-                            RecentAlbumCoverView(entry: album, cornerRadius: 6, placeholderIndex: i + 1)
-                                .frame(width: 34, height: 34)
+                        Spacer(minLength: 4)
+
+                        HStack(spacing: 8) {
+                            ForEach(Array(others.enumerated()), id: \.element.id) { i, album in
+                                RecentAlbumCoverView(entry: album, cornerRadius: 6, placeholderIndex: i + 1)
+                                    .frame(width: 34, height: 34)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
             }
-            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -139,46 +144,54 @@ private struct LargeQuickAccessView: View {
     private var others: [RecentAlbumEntry] { Array(albums.dropFirst().prefix(4)) }
 
     var body: some View {
-        ZStack {
-            RecentAlbumCoverView(entry: featured, cornerRadius: 0, placeholderIndex: 0)
-                .scaleEffect(1.18)
-                .blur(radius: 38)
-                .overlay(Color.black.opacity(0.46))
+        GeometryReader { geometry in
+            let contentWidth = max(0, geometry.size.width - 36)
+            let coverSide = min(contentWidth, max(132, geometry.size.height * 0.48))
+            let thumbSide = min(58, max(38, (contentWidth - 30) / 4))
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("最近播放")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .textCase(.uppercase)
-                    .tracking(0.6)
+            ZStack {
+                RecentAlbumCoverView(entry: featured, cornerRadius: 0, placeholderIndex: 0)
+                    .scaleEffect(1.18)
+                    .blur(radius: 38)
+                    .overlay(Color.black.opacity(0.46))
 
-                RecentAlbumCoverView(entry: featured, cornerRadius: 14, placeholderIndex: 0)
-                    .aspectRatio(1, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("最近播放")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .textCase(.uppercase)
+                        .tracking(0.6)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(featured.title)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(featured.artistName)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.70))
-                        .lineLimit(1)
-                }
+                    RecentAlbumCoverView(entry: featured, cornerRadius: 14, placeholderIndex: 0)
+                        .frame(width: coverSide, height: coverSide)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-                Spacer(minLength: 0)
-
-                HStack(spacing: 10) {
-                    ForEach(Array(others.enumerated()), id: \.element.id) { i, album in
-                        RecentAlbumCoverView(entry: album, cornerRadius: 8, placeholderIndex: i + 1)
-                            .aspectRatio(1, contentMode: .fit)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(featured.title)
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.86)
+                        Text(featured.artistName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.70))
+                            .lineLimit(1)
                     }
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 10) {
+                        ForEach(Array(others.enumerated()), id: \.element.id) { i, album in
+                            RecentAlbumCoverView(entry: album, cornerRadius: 8, placeholderIndex: i + 1)
+                                .frame(width: thumbSide, height: thumbSide)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(18)
             }
-            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -186,46 +199,42 @@ private struct LargeQuickAccessView: View {
 
 private struct MediumQuickAccessEmptyState: View {
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "square.stack.fill")
-                .font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("暂无最近播放")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("开始播放后,最近专辑会出现在这里")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(2)
+        WidgetCanvas(padding: 18) {
+            HStack(spacing: 16) {
+                WidgetEmptyStateIcon(systemName: "square.stack.fill", size: 64)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("暂无最近播放")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("开始播放后,最近专辑会出现在这里")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(2)
+                }
+                Spacer()
             }
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(20)
-        .background(WidgetDesign.canvasBase)
     }
 }
 
 private struct LargeQuickAccessEmptyState: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "square.stack.fill")
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            VStack(alignment: .leading, spacing: 6) {
-                Text("暂无最近播放")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("最近播放过的专辑会自动同步到桌面")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(3)
+        WidgetCanvas(padding: 22) {
+            VStack(alignment: .leading, spacing: 14) {
+                WidgetEmptyStateIcon(systemName: "square.stack.fill", size: 78)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("暂无最近播放")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("最近播放过的专辑会自动同步到桌面")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(3)
+                }
+                Spacer()
             }
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(22)
-        .background(WidgetDesign.canvasBase)
     }
 }

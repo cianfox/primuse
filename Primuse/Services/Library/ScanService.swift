@@ -137,7 +137,7 @@ final class ScanService {
 
     /// Identifier used for BGProcessingTask scheduling.
     /// Must match `BGTaskSchedulerPermittedIdentifiers` in Info.plist.
-    static let backgroundTaskIdentifier = "com.welape.yuanyin.scan-resume"
+    nonisolated static let backgroundTaskIdentifier = "com.welape.yuanyin.scan-resume"
 
     /// 扫描期间向 library 批量提交的阈值。改大可以显著降低 main actor 上
     /// rebuildIndex / persistSnapshot 的频率, 避免 1w+ 首库 scale 时出现

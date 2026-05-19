@@ -93,13 +93,13 @@ struct NowPlayingWidgetView: View {
     }
 }
 
-// MARK: - Home Screen widgets (Apple Music 风)
+// MARK: - Home Screen widgets
 //
 // 设计目标:
-// - 封面主导, 文字最少, 装饰最少 (没 pill, 没 mini stat, 没 panel 套盒)
+// - 封面主导, 文字最少, 装饰最少
 // - 单一进度条贴在底部, 极细 + 半透明白
 // - 文字粗细对比强: 标题用 .bold(.body), 艺术家用 .secondary
-// - 整体留白多, 让封面颜色成为视觉主角
+// - 没有封面时落回多色唱片占位, 不再整块品牌紫
 
 private struct SmallNowPlayingView: View {
     let state: PlaybackState
@@ -144,50 +144,54 @@ private struct MediumNowPlayingView: View {
     let state: PlaybackState
 
     var body: some View {
-        ZStack {
-            // 模糊封面铺底
-            WidgetCoverImageView(
-                coverImageName: state.coverImageName,
-                cornerRadius: 0,
-                placeholderIndex: 0
-            )
-            .scaleEffect(1.18)
-            .blur(radius: 30)
-            .overlay(Color.black.opacity(0.40))
+        GeometryReader { geometry in
+            let coverSide = min(112, max(88, geometry.size.height - 32))
 
-            HStack(spacing: 16) {
+            ZStack {
                 WidgetCoverImageView(
                     coverImageName: state.coverImageName,
-                    cornerRadius: 12,
+                    cornerRadius: 0,
                     placeholderIndex: 0
                 )
-                .frame(width: 112, height: 112)
+                .scaleEffect(1.18)
+                .blur(radius: 30)
+                .overlay(Color.black.opacity(0.40))
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Spacer()
-                    Text(state.songTitle ?? "未知歌曲")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text(state.artistName ?? "未知艺术家")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.78))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    ProgressLine(value: state.currentTime, total: state.duration)
-                    HStack {
-                        Text(formatTime(state.currentTime))
+                HStack(spacing: 16) {
+                    WidgetCoverImageView(
+                        coverImageName: state.coverImageName,
+                        cornerRadius: 12,
+                        placeholderIndex: 0
+                    )
+                    .frame(width: coverSide, height: coverSide)
+
+                    VStack(alignment: .leading, spacing: 4) {
                         Spacer()
-                        Text(formatTime(state.duration))
+                        Text(state.songTitle ?? "未知歌曲")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.86)
+                        Text(state.artistName ?? "未知艺术家")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        ProgressLine(value: state.currentTime, total: state.duration)
+                        HStack {
+                            Text(formatTime(state.currentTime))
+                            Spacer()
+                            Text(formatTime(state.duration))
+                        }
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.55))
                     }
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
             }
-            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -195,52 +199,56 @@ private struct LargeNowPlayingView: View {
     let state: PlaybackState
 
     var body: some View {
-        ZStack {
-            WidgetCoverImageView(
-                coverImageName: state.coverImageName,
-                cornerRadius: 0,
-                placeholderIndex: 0
-            )
-            .scaleEffect(1.18)
-            .blur(radius: 36)
-            .overlay(Color.black.opacity(0.42))
+        GeometryReader { geometry in
+            let contentWidth = max(0, geometry.size.width - 40)
+            let coverSide = min(contentWidth, max(132, geometry.size.height * 0.52))
 
-            VStack(spacing: 18) {
-                // 封面 ── 不拉到 100%, 留 6:5 比例, 让标题有呼吸空间
+            ZStack {
                 WidgetCoverImageView(
                     coverImageName: state.coverImageName,
-                    cornerRadius: 14,
+                    cornerRadius: 0,
                     placeholderIndex: 0
                 )
-                .aspectRatio(1, contentMode: .fit)
-                .frame(maxWidth: .infinity)
+                .scaleEffect(1.18)
+                .blur(radius: 36)
+                .overlay(Color.black.opacity(0.42))
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(state.songTitle ?? "未知歌曲")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text(state.artistName ?? "未知艺术家")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.78))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(spacing: 14) {
+                    WidgetCoverImageView(
+                        coverImageName: state.coverImageName,
+                        cornerRadius: 14,
+                        placeholderIndex: 0
+                    )
+                    .frame(width: coverSide, height: coverSide)
 
-                VStack(spacing: 6) {
-                    ProgressLine(value: state.currentTime, total: state.duration)
-                    HStack {
-                        Text(formatTime(state.currentTime))
-                        Spacer()
-                        Text(formatTime(state.duration))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(state.songTitle ?? "未知歌曲")
+                            .font(.system(size: 21, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.82)
+                        Text(state.artistName ?? "未知艺术家")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(1)
                     }
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(spacing: 6) {
+                        ProgressLine(value: state.currentTime, total: state.duration)
+                        HStack {
+                            Text(formatTime(state.currentTime))
+                            Spacer()
+                            Text(formatTime(state.duration))
+                        }
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.55))
+                    }
                 }
+                .padding(20)
             }
-            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -248,67 +256,61 @@ private struct LargeNowPlayingView: View {
 
 private struct SmallEmptyStateView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Spacer()
-            Image(systemName: "music.note")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            Text("尚未播放")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-            Text("打开猿音继续")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.62))
+        WidgetCanvas(padding: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Spacer()
+                WidgetEmptyStateIcon(systemName: "music.note", size: 42)
+                Text("尚未播放")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("打开猿音继续")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.62))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(14)
-        .background(WidgetDesign.canvasBase)
     }
 }
 
 private struct MediumEmptyStateView: View {
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "music.note")
-                .font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("尚未播放")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("打开猿音继续上次的旋律")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(2)
+        WidgetCanvas(padding: 18) {
+            HStack(spacing: 16) {
+                WidgetEmptyStateIcon(systemName: "music.note", size: 64)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("尚未播放")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("打开猿音继续上次的旋律")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(2)
+                }
+                Spacer()
             }
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(20)
-        .background(WidgetDesign.canvasBase)
     }
 }
 
 private struct LargeEmptyStateView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "music.note")
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            VStack(alignment: .leading, spacing: 6) {
-                Text("尚未播放")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                Text("连接你的音乐源,这里会显示当前歌曲和播放进度。")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(3)
+        WidgetCanvas(padding: 22) {
+            VStack(alignment: .leading, spacing: 14) {
+                WidgetEmptyStateIcon(systemName: "music.note", size: 78)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("尚未播放")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("连接你的音乐源,这里会显示当前歌曲和播放进度。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(3)
+                }
+                Spacer()
             }
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(22)
-        .background(WidgetDesign.canvasBase)
     }
 }
 
