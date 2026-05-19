@@ -20,6 +20,62 @@ struct SongFileDeletionResult: Sendable {
     }
 }
 
+enum SourceDiagnosticStatus: Sendable {
+    case passed
+    case warning
+    case failed
+}
+
+struct SourceDiagnosticCheck: Identifiable, Sendable {
+    let id: UUID
+    let status: SourceDiagnosticStatus
+    let title: String
+    let message: String
+    let suggestion: String
+
+    init(status: SourceDiagnosticStatus, title: String, message: String, suggestion: String = "") {
+        self.id = UUID()
+        self.status = status
+        self.title = title
+        self.message = message
+        self.suggestion = suggestion
+    }
+}
+
+struct SourceDiagnosticReport: Identifiable, Sendable {
+    let id: UUID
+    let sourceID: String
+    let sourceName: String
+    let startedAt: Date
+    let finishedAt: Date
+    let checks: [SourceDiagnosticCheck]
+
+    init(source: MusicSource, startedAt: Date, checks: [SourceDiagnosticCheck]) {
+        self.id = UUID()
+        self.sourceID = source.id
+        self.sourceName = source.name
+        self.startedAt = startedAt
+        self.finishedAt = Date()
+        self.checks = checks
+    }
+
+    var blockingFailure: SourceDiagnosticCheck? {
+        checks.first { $0.status == .failed }
+    }
+
+    var summaryStatus: SourceDiagnosticStatus {
+        if checks.contains(where: { $0.status == .failed }) { return .failed }
+        if checks.contains(where: { $0.status == .warning }) { return .warning }
+        return .passed
+    }
+}
+
+private struct SourceDiagnosticAdvice: Sendable {
+    let title: String
+    let message: String
+    let suggestion: String
+}
+
 @MainActor
 @Observable
 final class SourceManager {
@@ -212,6 +268,461 @@ final class SourceManager {
             connectors[source.id] = connector
         }
         return connector
+    }
+
+    func diagnose(source: MusicSource, directories explicitDirectories: [String]? = nil) async -> SourceDiagnosticReport {
+        let startedAt = Date()
+        var checks = configurationChecks(for: source, explicitDirectories: explicitDirectories)
+        if checks.contains(where: { $0.status == .failed }) {
+            return SourceDiagnosticReport(source: source, startedAt: startedAt, checks: checks)
+        }
+
+        let connector = connector(for: source)
+        do {
+            try await Self.withTimeout(seconds: 15) {
+                try await connector.connect()
+            }
+            checks.append(SourceDiagnosticCheck(
+                status: .passed,
+                title: String(localized: "source_diag_connection_title"),
+                message: String(localized: "source_diag_connection_ok")
+            ))
+        } catch {
+            let recovered = await SSLTrustStore.shared.handleSSLErrorIfNeeded(error)
+            if recovered {
+                do {
+                    try await Self.withTimeout(seconds: 15) {
+                        try await connector.connect()
+                    }
+                    checks.append(SourceDiagnosticCheck(
+                        status: .passed,
+                        title: String(localized: "source_diag_connection_title"),
+                        message: String(localized: "source_diag_connection_ok")
+                    ))
+                } catch {
+                    checks.append(diagnosticCheck(for: error, source: source, title: String(localized: "source_diag_connection_title")))
+                    return SourceDiagnosticReport(source: source, startedAt: startedAt, checks: checks)
+                }
+            } else {
+                checks.append(diagnosticCheck(for: error, source: source, title: String(localized: "source_diag_connection_title")))
+                return SourceDiagnosticReport(source: source, startedAt: startedAt, checks: checks)
+            }
+        }
+
+        let roots = diagnosticProbeRoots(for: source, explicitDirectories: explicitDirectories)
+        if roots.isEmpty {
+            checks.append(SourceDiagnosticCheck(
+                status: .warning,
+                title: String(localized: "source_diag_directory_title"),
+                message: String(localized: "source_diag_select_dirs"),
+                suggestion: String(localized: "source_diag_select_dirs_suggestion")
+            ))
+        } else {
+            do {
+                var visibleItems = 0
+                for root in roots.prefix(3) {
+                    let items = try await Self.withTimeout(seconds: 20) {
+                        try await connector.listFiles(at: root)
+                    }
+                    visibleItems += items.count
+                }
+
+                checks.append(SourceDiagnosticCheck(
+                    status: visibleItems == 0 ? .warning : .passed,
+                    title: String(localized: "source_diag_directory_title"),
+                    message: visibleItems == 0
+                        ? String(format: String(localized: "source_diag_directory_empty_format"), visibleItems)
+                        : String(format: String(localized: "source_diag_directory_ok_format"), visibleItems),
+                    suggestion: visibleItems == 0 ? String(localized: "source_diag_directory_empty_suggestion") : ""
+                ))
+            } catch {
+                checks.append(diagnosticCheck(for: error, source: source, title: String(localized: "source_diag_directory_title")))
+                return SourceDiagnosticReport(source: source, startedAt: startedAt, checks: checks)
+            }
+        }
+
+        checks.append(SourceDiagnosticCheck(
+            status: checks.contains(where: { $0.status == .warning }) ? .warning : .passed,
+            title: String(localized: "source_diag_scan_ready_title"),
+            message: String(localized: checks.contains(where: { $0.status == .warning }) ? "source_diag_scan_ready_warning" : "source_diag_scan_ready_ok")
+        ))
+        return SourceDiagnosticReport(source: source, startedAt: startedAt, checks: checks)
+    }
+
+    func scanFailureMessage(for error: Error, source: MusicSource) -> String {
+        let advice = Self.advice(for: error, source: source)
+        return "\(advice.title): \(advice.message) · \(advice.suggestion)"
+    }
+
+    func scanFailureMessage(for report: SourceDiagnosticReport) -> String {
+        guard let failure = report.blockingFailure else {
+            return String(localized: "source_diag_scan_ready_warning")
+        }
+        if failure.suggestion.isEmpty {
+            return "\(failure.title): \(failure.message)"
+        }
+        return "\(failure.title): \(failure.message) · \(failure.suggestion)"
+    }
+
+    private func configurationChecks(
+        for source: MusicSource,
+        explicitDirectories: [String]?
+    ) -> [SourceDiagnosticCheck] {
+        var checks: [SourceDiagnosticCheck] = []
+
+        if source.type.requiresHost, trimmed(source.host).isEmpty {
+            checks.append(SourceDiagnosticCheck(
+                status: .failed,
+                title: String(localized: "source_diag_config_title"),
+                message: String(localized: "source_diag_config_missing_host"),
+                suggestion: String(localized: "source_diag_config_missing_host_suggestion")
+            ))
+        }
+
+        switch source.type {
+        case .local:
+            if trimmed(source.basePath).isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .failed,
+                    title: String(localized: "source_diag_config_title"),
+                    message: String(localized: "source_diag_config_missing_local_path"),
+                    suggestion: String(localized: "source_diag_config_missing_local_path_suggestion")
+                ))
+            }
+        case .smb:
+            if trimmed(source.shareName).isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .warning,
+                    title: String(localized: "source_diag_config_title"),
+                    message: String(localized: "source_diag_config_missing_share"),
+                    suggestion: String(localized: "source_diag_config_missing_share_suggestion")
+                ))
+            }
+        case .nfs:
+            if trimmed(source.exportPath).isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .warning,
+                    title: String(localized: "source_diag_config_title"),
+                    message: String(localized: "source_diag_config_missing_export"),
+                    suggestion: String(localized: "source_diag_config_missing_export_suggestion")
+                ))
+            }
+        case .s3:
+            if trimmed(source.basePath).isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .failed,
+                    title: String(localized: "source_diag_config_title"),
+                    message: String(localized: "source_diag_config_missing_bucket"),
+                    suggestion: String(localized: "source_diag_config_missing_bucket_suggestion")
+                ))
+            }
+        default:
+            break
+        }
+
+        checks.append(contentsOf: credentialChecks(for: source))
+
+        let selectedDirectories = explicitDirectories ?? decodeSelectedDirectories(source.extraConfig)
+        if source.type.isMediaServer == false, selectedDirectories.isEmpty {
+            checks.append(SourceDiagnosticCheck(
+                status: .warning,
+                title: String(localized: "source_diag_directory_title"),
+                message: String(localized: "source_diag_select_dirs"),
+                suggestion: String(localized: "source_diag_select_dirs_suggestion")
+            ))
+        }
+
+        if checks.contains(where: { $0.title == String(localized: "source_diag_config_title") }) == false {
+            checks.append(SourceDiagnosticCheck(
+                status: .passed,
+                title: String(localized: "source_diag_config_title"),
+                message: String(localized: "source_diag_config_ok")
+            ))
+        }
+        if checks.contains(where: { $0.title == String(localized: "source_diag_auth_title") }) == false {
+            checks.append(SourceDiagnosticCheck(
+                status: .passed,
+                title: String(localized: "source_diag_auth_title"),
+                message: String(localized: "source_diag_auth_ok")
+            ))
+        }
+
+        return checks
+    }
+
+    private func credentialChecks(for source: MusicSource) -> [SourceDiagnosticCheck] {
+        guard source.type.requiresCredentials, source.authType != .none else { return [] }
+
+        let secret = KeychainService.getPassword(for: source.id) ?? ""
+        let username = trimmed(source.username)
+        var checks: [SourceDiagnosticCheck] = []
+
+        switch source.authType {
+        case .password:
+            if source.type.supportsAnonymous, username.isEmpty, secret.isEmpty {
+                return []
+            }
+            if username.isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .failed,
+                    title: String(localized: "source_diag_auth_title"),
+                    message: String(localized: "source_diag_auth_missing_username"),
+                    suggestion: String(localized: "source_diag_auth_missing_username_suggestion")
+                ))
+            }
+            if secret.isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .failed,
+                    title: String(localized: "source_diag_auth_title"),
+                    message: String(localized: "source_diag_auth_missing_secret"),
+                    suggestion: String(localized: "source_diag_auth_missing_secret_suggestion")
+                ))
+            }
+        case .sshKey, .apiKey, .cookie:
+            if secret.isEmpty {
+                checks.append(SourceDiagnosticCheck(
+                    status: .failed,
+                    title: String(localized: "source_diag_auth_title"),
+                    message: String(localized: "source_diag_auth_missing_secret"),
+                    suggestion: String(localized: "source_diag_auth_missing_secret_suggestion")
+                ))
+            }
+        case .oauth, .none:
+            break
+        }
+
+        return checks
+    }
+
+    private func diagnosticProbeRoots(for source: MusicSource, explicitDirectories: [String]?) -> [String] {
+        let selectedDirectories = explicitDirectories ?? decodeSelectedDirectories(source.extraConfig)
+        if selectedDirectories.isEmpty == false {
+            return selectedDirectories
+        }
+
+        switch source.type {
+        case .s3:
+            return [""]
+        default:
+            return ["/"]
+        }
+    }
+
+    private func diagnosticCheck(for error: Error, source: MusicSource, title: String) -> SourceDiagnosticCheck {
+        let advice = Self.advice(for: error, source: source)
+        return SourceDiagnosticCheck(
+            status: .failed,
+            title: title,
+            message: advice.message,
+            suggestion: advice.suggestion
+        )
+    }
+
+    private static func advice(for error: Error, source: MusicSource) -> SourceDiagnosticAdvice {
+        if let cloudError = error as? CloudDriveError {
+            switch cloudError {
+            case .notAuthenticated, .tokenExpired, .tokenRefreshFailed(_):
+                return SourceDiagnosticAdvice(
+                    title: String(localized: "source_diag_advice_oauth_title"),
+                    message: String(localized: "source_diag_advice_oauth_message"),
+                    suggestion: String(localized: "source_diag_advice_oauth_suggestion")
+                )
+            case .rateLimited:
+                return SourceDiagnosticAdvice(
+                    title: String(localized: "source_diag_advice_rate_title"),
+                    message: String(localized: "source_diag_advice_rate_message"),
+                    suggestion: String(localized: "source_diag_advice_rate_suggestion")
+                )
+            case .fileNotFound(let path):
+                return pathAdvice(path: path)
+            case .apiError(let code, let message):
+                if code == 401 || code == 403 { return authAdvice() }
+                if code == 404 { return pathAdvice(path: message) }
+                if code == 429 { return Self.advice(for: CloudDriveError.rateLimited, source: source) }
+                return serverAdvice(message: "HTTP \(code) \(message)")
+            case .invalidResponse:
+                return serverAdvice(message: String(localized: "source_diag_advice_invalid_response"))
+            }
+        }
+
+        if let sourceError = error as? SourceError {
+            switch sourceError {
+            case .authenticationFailed:
+                return authAdvice()
+            case .timeout:
+                return timeoutAdvice()
+            case .pathNotFound(let path), .fileNotFound(let path):
+                return pathAdvice(path: path)
+            case .connectionFailed(let message):
+                return advice(forMessage: message, source: source)
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorUserAuthenticationRequired, NSURLErrorUserCancelledAuthentication:
+                return authAdvice()
+            case NSURLErrorTimedOut:
+                return timeoutAdvice()
+            case NSURLErrorNotConnectedToInternet,
+                 NSURLErrorCannotFindHost,
+                 NSURLErrorCannotConnectToHost,
+                 NSURLErrorNetworkConnectionLost,
+                 NSURLErrorDNSLookupFailed,
+                 NSURLErrorInternationalRoamingOff,
+                 NSURLErrorDataNotAllowed:
+                return networkAdvice()
+            case NSURLErrorServerCertificateUntrusted,
+                 NSURLErrorServerCertificateHasBadDate,
+                 NSURLErrorServerCertificateHasUnknownRoot,
+                 NSURLErrorServerCertificateNotYetValid,
+                 NSURLErrorSecureConnectionFailed:
+                return SourceDiagnosticAdvice(
+                    title: String(localized: "source_diag_advice_certificate_title"),
+                    message: String(localized: "source_diag_advice_certificate_message"),
+                    suggestion: String(localized: "source_diag_advice_certificate_suggestion")
+                )
+            default:
+                break
+            }
+        }
+
+        if nsError.domain == NSPOSIXErrorDomain {
+            switch nsError.code {
+            case Int(EACCES), Int(EPERM):
+                return authAdvice()
+            case Int(ETIMEDOUT):
+                return timeoutAdvice()
+            case Int(ECONNREFUSED), Int(EHOSTUNREACH), Int(ENETUNREACH), Int(ENOTCONN), Int(ECONNRESET):
+                return networkAdvice()
+            case Int(ENOENT):
+                return pathAdvice(path: nsError.localizedDescription)
+            default:
+                break
+            }
+        }
+
+        return advice(forMessage: error.localizedDescription, source: source)
+    }
+
+    private static func advice(forMessage message: String, source: MusicSource) -> SourceDiagnosticAdvice {
+        let lower = message.lowercased()
+        if lower.contains("auth")
+            || lower.contains("password")
+            || lower.contains("credential")
+            || lower.contains("401")
+            || lower.contains("403")
+            || lower.contains("登录")
+            || lower.contains("密码") {
+            return authAdvice()
+        }
+        if lower.contains("timeout") || lower.contains("timed out") || lower.contains("超时") {
+            return timeoutAdvice()
+        }
+        if lower.contains("not found")
+            || lower.contains("no such file")
+            || lower.contains("404")
+            || lower.contains("path")
+            || lower.contains("不存在") {
+            return pathAdvice(path: message)
+        }
+        if lower.contains("refused")
+            || lower.contains("unreachable")
+            || lower.contains("offline")
+            || lower.contains("cannot connect")
+            || lower.contains("no upnp")
+            || lower.contains("不可达")
+            || lower.contains("拒绝") {
+            return networkAdvice()
+        }
+        if lower.contains("rate") || lower.contains("limit") || lower.contains("限流") {
+            return SourceDiagnosticAdvice(
+                title: String(localized: "source_diag_advice_rate_title"),
+                message: String(localized: "source_diag_advice_rate_message"),
+                suggestion: String(localized: "source_diag_advice_rate_suggestion")
+            )
+        }
+        return serverAdvice(message: message.isEmpty ? source.type.displayName : message)
+    }
+
+    private static func authAdvice() -> SourceDiagnosticAdvice {
+        SourceDiagnosticAdvice(
+            title: String(localized: "source_diag_advice_auth_title"),
+            message: String(localized: "source_diag_advice_auth_message"),
+            suggestion: String(localized: "source_diag_advice_auth_suggestion")
+        )
+    }
+
+    private static func timeoutAdvice() -> SourceDiagnosticAdvice {
+        SourceDiagnosticAdvice(
+            title: String(localized: "source_diag_advice_timeout_title"),
+            message: String(localized: "source_diag_advice_timeout_message"),
+            suggestion: String(localized: "source_diag_advice_timeout_suggestion")
+        )
+    }
+
+    private static func networkAdvice() -> SourceDiagnosticAdvice {
+        SourceDiagnosticAdvice(
+            title: String(localized: "source_diag_advice_network_title"),
+            message: String(localized: "source_diag_advice_network_message"),
+            suggestion: String(localized: "source_diag_advice_network_suggestion")
+        )
+    }
+
+    private static func pathAdvice(path: String) -> SourceDiagnosticAdvice {
+        let detail = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = detail.isEmpty
+            ? String(localized: "source_diag_advice_path_message")
+            : String(format: String(localized: "source_diag_advice_path_message_format"), detail)
+        return SourceDiagnosticAdvice(
+            title: String(localized: "source_diag_advice_path_title"),
+            message: message,
+            suggestion: String(localized: "source_diag_advice_path_suggestion")
+        )
+    }
+
+    private static func serverAdvice(message: String) -> SourceDiagnosticAdvice {
+        SourceDiagnosticAdvice(
+            title: String(localized: "source_diag_advice_server_title"),
+            message: message,
+            suggestion: String(localized: "source_diag_advice_server_suggestion")
+        )
+    }
+
+    private func decodeSelectedDirectories(_ config: String?) -> [String] {
+        guard let config,
+              let data = config.data(using: .utf8),
+              let directories = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return directories
+    }
+
+    private func trimmed(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private nonisolated static func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                let nanoseconds = UInt64(max(0.1, seconds) * 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanoseconds)
+                throw SourceError.timeout
+            }
+
+            guard let result = try await group.next() else {
+                throw SourceError.timeout
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     /// Custom URL scheme that signals "play this song via streaming

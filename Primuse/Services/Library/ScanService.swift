@@ -93,7 +93,7 @@ final class ScanService {
 
         scanStates[source.id] = ScanState(
             isScanning: true,
-            currentFile: checkpoint?.currentFile ?? "",
+            currentFile: String(localized: "source_diag_preparing_scan"),
             scannedCount: resumeCount,
             totalCount: resumeTotal
         )
@@ -106,12 +106,26 @@ final class ScanService {
                 endBackgroundTask(for: source.id)
             }
 
+            let preflight = await sourceManager.diagnose(source: source, directories: normalizedDirs)
+            if preflight.blockingFailure != nil {
+                scanStates[source.id] = ScanState(
+                    isScanning: false,
+                    currentFile: sourceManager.scanFailureMessage(for: preflight),
+                    scannedCount: resumeCount,
+                    totalCount: resumeTotal
+                )
+                return
+            }
+
+            scanStates[source.id]?.currentFile = checkpoint?.currentFile ?? ""
+
             switch source.type {
             case .synology:
                 await scanSynology(
                     source: source,
                     directories: normalizedDirs,
                     resumeSongs: resumeSongs,
+                    sourceManager: sourceManager,
                     library: library,
                     sourceStore: sourceStore,
                     scraperService: scraperService
@@ -238,6 +252,7 @@ final class ScanService {
         source: MusicSource,
         directories: [String],
         resumeSongs: [Song],
+        sourceManager: SourceManager,
         library: MusicLibrary,
         sourceStore: SourcesStore,
         scraperService: MusicScraperService?
@@ -282,6 +297,7 @@ final class ScanService {
                             source: source,
                             directories: directories,
                             resumeSongs: resumeSongs,
+                            sourceManager: sourceManager,
                             library: library,
                             sourceStore: sourceStore,
                             scraperService: scraperService
@@ -291,7 +307,10 @@ final class ScanService {
                 }
                 scanStates[source.id] = ScanState(
                     isScanning: false,
-                    currentFile: loginResult.errorMessage ?? "Login failed"
+                    currentFile: sourceManager.scanFailureMessage(
+                        for: SourceError.connectionFailed(loginResult.errorMessage ?? "Login failed"),
+                        source: source
+                    )
                 )
                 return
             }
@@ -362,6 +381,7 @@ final class ScanService {
                     source: source,
                     directories: directories,
                     resumeSongs: resumeSongs,
+                    sourceManager: sourceManager,
                     library: library,
                     sourceStore: sourceStore,
                     scraperService: scraperService
@@ -370,7 +390,7 @@ final class ScanService {
             }
             scanStates[source.id] = ScanState(
                 isScanning: false,
-                currentFile: error.localizedDescription
+                currentFile: sourceManager.scanFailureMessage(for: error, source: source)
             )
         }
     }
@@ -472,7 +492,7 @@ final class ScanService {
             }
             scanStates[source.id] = ScanState(
                 isScanning: false,
-                currentFile: error.localizedDescription
+                currentFile: sourceManager.scanFailureMessage(for: error, source: source)
             )
         }
     }

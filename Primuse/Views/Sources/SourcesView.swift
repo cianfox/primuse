@@ -11,6 +11,7 @@ struct SourcesView: View {
     @State private var showAddSource = false
     @State private var editingSource: MusicSource?
     @State private var connectingSource: MusicSource?
+    @State private var diagnosingSource: MusicSource?
     @State private var cloudDirectoryNameRefreshID = UUID()
 
     var body: some View {
@@ -38,6 +39,9 @@ struct SourcesView: View {
             }
             .sheet(item: $connectingSource) { source in
                 connectionSheet(for: source)
+            }
+            .sheet(item: $diagnosingSource) { source in
+                SourceDiagnosticsView(source: source)
             }
             .onReceive(NotificationCenter.default.publisher(for: CloudDirectoryNameStore.didChangeNotification)) { _ in
                 cloudDirectoryNameRefreshID = UUID()
@@ -184,6 +188,14 @@ struct SourcesView: View {
             HStack(spacing: 10) {
                 if source.type.isMediaServer {
                     // Media servers scan all libraries directly — no directory selection needed
+                    Button { diagnosingSource = source } label: {
+                        Label("source_diagnostics_short", systemImage: "stethoscope")
+                            .font(.caption).fontWeight(.medium)
+                            .frame(maxWidth: .infinity).padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.secondary)
+
                     Button {
                         scanService.scanSource(
                             source,
@@ -211,6 +223,14 @@ struct SourcesView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(dirs.isEmpty ? .accentColor : .secondary)
+
+                    Button { diagnosingSource = source } label: {
+                        Label("source_diagnostics_short", systemImage: "stethoscope")
+                            .font(.caption).fontWeight(.medium)
+                            .frame(maxWidth: .infinity).padding(.vertical, 7)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.secondary)
 
                     if !dirs.isEmpty {
                         Button {
@@ -246,12 +266,14 @@ struct SourcesView: View {
                 )
             }
             Button { editingSource = source } label: { Label("edit", systemImage: "pencil") }
+            Button { diagnosingSource = source } label: { Label("source_diagnostics", systemImage: "stethoscope") }
             Divider()
             Button(role: .destructive) { deleteSource(source) } label: { Label("delete", systemImage: "trash") }
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { deleteSource(source) } label: { Label("delete", systemImage: "trash") }
             Button { editingSource = source } label: { Label("edit", systemImage: "pencil") }.tint(.orange)
+            Button { diagnosingSource = source } label: { Label("source_diagnostics_short", systemImage: "stethoscope") }.tint(.blue)
             Button {
                 toggleSourceEnabled(source)
             } label: {
@@ -382,5 +404,142 @@ struct SourcesView: View {
 
     private func encodeDirs(_ dirs: [String]) -> String? {
         (try? JSONEncoder().encode(dirs)).flatMap { String(data: $0, encoding: .utf8) }
+    }
+}
+
+private struct SourceDiagnosticsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(SourceManager.self) private var sourceManager
+
+    let source: MusicSource
+    @State private var report: SourceDiagnosticReport?
+    @State private var isRunning = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if isRunning {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("source_diag_running")
+                                .font(.body)
+                        }
+                        .padding(.vertical, 4)
+                    } else if let report {
+                        summaryRow(report)
+                    }
+                }
+
+                if let report {
+                    Section("source_diag_checks") {
+                        ForEach(report.checks) { check in
+                            diagnosticRow(check)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("source_diagnostics")
+            .toolbarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("done") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task { await runDiagnostics() }
+                    } label: {
+                        Label("source_diag_run_again", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRunning)
+                }
+            }
+            .task {
+                if report == nil {
+                    await runDiagnostics()
+                }
+            }
+            .refreshable {
+                await runDiagnostics()
+            }
+        }
+    }
+
+    private func summaryRow(_ report: SourceDiagnosticReport) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: iconName(for: report.summaryStatus))
+                .font(.title3)
+                .foregroundStyle(tint(for: report.summaryStatus))
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(summaryTitle(for: report.summaryStatus))
+                    .font(.headline)
+                Text(String(format: String(localized: "source_diag_summary_detail_format"), report.sourceName, elapsedText(report)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func diagnosticRow(_ check: SourceDiagnosticCheck) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: iconName(for: check.status))
+                .font(.body)
+                .foregroundStyle(tint(for: check.status))
+                .frame(width: 24)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(check.title)
+                    .font(.body)
+                    .fontWeight(.medium)
+                Text(check.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !check.suggestion.isEmpty {
+                    Text(check.suggestion)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func runDiagnostics() async {
+        isRunning = true
+        defer { isRunning = false }
+        report = await sourceManager.diagnose(source: source)
+    }
+
+    private func elapsedText(_ report: SourceDiagnosticReport) -> String {
+        let elapsed = max(0.1, report.finishedAt.timeIntervalSince(report.startedAt))
+        return String(format: "%.1fs", elapsed)
+    }
+
+    private func summaryTitle(for status: SourceDiagnosticStatus) -> String {
+        switch status {
+        case .passed: String(localized: "source_diag_summary_ok")
+        case .warning: String(localized: "source_diag_summary_warning")
+        case .failed: String(localized: "source_diag_summary_failed")
+        }
+    }
+
+    private func iconName(for status: SourceDiagnosticStatus) -> String {
+        switch status {
+        case .passed: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private func tint(for status: SourceDiagnosticStatus) -> Color {
+        switch status {
+        case .passed: .green
+        case .warning: .orange
+        case .failed: .red
+        }
     }
 }
