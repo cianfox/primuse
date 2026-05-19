@@ -6,11 +6,10 @@ import SwiftUI
 /// 1. **Visual consistency** — every empty state across the app
 ///    looks like it came from the same designer instead of N
 ///    different `ContentUnavailableView` flavors.
-/// 2. **Asset-optional** — the call site names an image asset (e.g.
-///    "EmptyStateNoSongs"); if that asset is in the bundle, it
-///    renders. If not, the matching SF Symbol shows. So we can
-///    ship code first and add custom illustrations later without a
-///    second pass.
+/// 2. **Lightweight by default** — the old bitmap `imageName` parameter
+///    is still accepted for source compatibility, but empty states now
+///    render as compact SF Symbol compositions. Search/library/tool
+///    surfaces should feel like app UI, not a gallery of one-off posters.
 /// 3. **Action-aware** — supports an optional CTA button so views
 ///    that have a recovery path ("add a source", "create a
 ///    playlist") get a single tap to fix the empty state.
@@ -23,7 +22,6 @@ import SwiftUI
 struct EmptyStateView: View {
     let titleKey: LocalizedStringKey
     let descriptionKey: LocalizedStringKey?
-    let imageName: String?
     let systemImage: String
     let actionLabel: LocalizedStringKey?
     let action: (() -> Void)?
@@ -38,10 +36,10 @@ struct EmptyStateView: View {
     ) {
         self.titleKey = titleKey
         self.descriptionKey = descriptionKey
-        self.imageName = imageName
         self.systemImage = systemImage
         self.actionLabel = actionLabel
         self.action = action
+        _ = imageName
     }
 
     var body: some View {
@@ -74,24 +72,46 @@ struct EmptyStateView: View {
         .padding(.vertical, 32)
     }
 
-    /// Try the named asset first. `UIImage(named:)` is bundle-checked
-    /// so a missing asset cleanly falls through to the SF Symbol —
-    /// this is what lets us merge the empty-state code before all
-    /// the AI illustrations exist.
-    @ViewBuilder
     private var illustration: some View {
-        if let imageName, UIImage(named: imageName) != nil {
-            Image(imageName)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                .shadow(color: .black.opacity(0.10), radius: 10, y: 5)
-        } else {
-            Image(systemName: systemImage)
-                .font(.system(size: 52))
-                .foregroundStyle(.tertiary)
-                .frame(width: 88, height: 88)
+        EmptyStateGlyph(systemImage: systemImage)
+    }
+}
+
+private struct EmptyStateGlyph: View {
+    let systemImage: String
+
+    private var accentSymbol: String {
+        switch systemImage {
+        case "magnifyingglass":
+            "music.note"
+        case "music.note", "music.note.list":
+            "waveform"
+        case "square.stack":
+            "music.note"
+        case "music.mic":
+            "person.wave.2"
+        case "trash":
+            "arrow.uturn.backward"
+        default:
+            "sparkles"
         }
+    }
+
+    var body: some View {
+        ZStack {
+            Image(systemName: accentSymbol)
+                .font(.system(size: 24, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary.opacity(0.28))
+                .offset(x: 28, y: -22)
+
+            Image(systemName: systemImage)
+                .font(.system(size: 54, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+                .offset(x: -3, y: 4)
+        }
+        .frame(width: 112, height: 88)
+        .accessibilityHidden(true)
     }
 }

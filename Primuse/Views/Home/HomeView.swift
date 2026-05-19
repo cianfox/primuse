@@ -671,28 +671,16 @@ struct HomeView: View {
 
     private var emptyView: some View {
         VStack(spacing: 20) {
-            Spacer().frame(height: 24)
-            // Custom illustration (vinyl + waveform + aurora glow)
-            // replaces the previous SF Symbol. Image fills its own
-            // square with a deep-navy / off-white background
-            // depending on luminosity, so it carries its own canvas
-            // — clip to a rounded rect so it doesn't bleed into the
-            // page background.
-            Image("EmptyStateNoSources")
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 220)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
-            VStack(spacing: 8) {
-                Text("welcome_title").font(.title2).fontWeight(.bold)
-                Text("home_empty_desc").font(.body).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center).padding(.horizontal, 40)
-            }
-            Button { switchToSettingsTab?() } label: {
-                Label("manage_sources", systemImage: "externaldrive.badge.plus")
-                    .fontWeight(.semibold).frame(maxWidth: .infinity).padding(.vertical, 14)
-            }.buttonStyle(.borderedProminent).padding(.horizontal, 40)
+            Spacer(minLength: 24)
+            EmptyStateView(
+                titleKey: "welcome_title",
+                descriptionKey: "home_empty_desc",
+                imageName: "EmptyStateNoSources",
+                systemImage: "externaldrive.badge.plus",
+                actionLabel: "manage_sources",
+                action: { switchToSettingsTab?() }
+            )
+            .padding(.horizontal, 24)
             Spacer()
         }.frame(maxWidth: .infinity)
     }
