@@ -32,8 +32,8 @@ actor MetadataService {
     /// `trustedSource`: 是否把结果直接写入 hash cache。
     /// - true（默认）: LibraryScanner / Backfill 路径,数据来自 embedded/sidecar,可信。
     /// - false: ScraperService 路径,可能错配,**不写 cache**。
-    ///   等 sidecar 真正写到 source 成功后,由 ScraperService 自己回写 cache。
-    ///   这样 hash cache 永远只是 sidecar 的镜像,杜绝错配数据污染缓存。
+    ///   由 ScraperService 在用户确认/应用刮削结果时写入本地 cache；dry-run
+    ///   路径只返回预期文件名,不会提前污染现有缓存。
     func loadMetadata(
         for url: URL,
         cacheKey: String? = nil,
@@ -116,8 +116,8 @@ actor MetadataService {
                 if trustedSource {
                     result.coverArtFileName = await assetStore.storeCover(coverArtData, for: cacheKey)
                 } else {
-                    // 仅占位 ref,不写 cache 文件 —— 留给 ScraperService 在 sidecar
-                    // 写到 source 成功后再回写,确保 hash cache 永远不存错配数据。
+                    // 仅占位 ref,不写 cache 文件 —— dry-run 预览和直接刮削都需要
+                    // 先知道最终 ref,实际写入由 ScraperService 在应用结果时完成。
                     result.coverArtFileName = assetStore.expectedCoverFileName(for: cacheKey)
                 }
             }
