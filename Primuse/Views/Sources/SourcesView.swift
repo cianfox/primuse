@@ -189,9 +189,7 @@ struct SourcesView: View {
                 if source.type.isMediaServer {
                     // Media servers scan all libraries directly — no directory selection needed
                     Button { diagnosingSource = source } label: {
-                        Label("source_diagnostics_short", systemImage: "stethoscope")
-                            .font(.caption).fontWeight(.medium)
-                            .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        sourceActionLabel("source_diagnostics_short", systemImage: "stethoscope")
                     }
                     .buttonStyle(.bordered)
                     .tint(.secondary)
@@ -205,29 +203,25 @@ struct SourcesView: View {
                             scraperService: scraperService
                         )
                     } label: {
-                        Label(scanning?.canResume == true ? "resume_scan" : "scan",
-                              systemImage: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass")
-                            .font(.caption).fontWeight(.medium)
-                            .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        sourceActionLabel(
+                            scanning?.canResume == true ? "resume_scan" : "scan",
+                            systemImage: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass"
+                        )
                     }
                     .buttonStyle(.bordered).tint(.green)
                     .disabled(scanning?.isScanning == true)
                 } else {
                     Button { connectingSource = source } label: {
-                        Label(
-                            dirs.isEmpty ? String(localized: "connect_select_dirs") : String(localized: "manage_dirs"),
+                        sourceActionLabel(
+                            dirs.isEmpty ? "connect_select_dirs" : "manage_dirs",
                             systemImage: dirs.isEmpty ? "link" : "folder.badge.gear"
                         )
-                        .font(.caption).fontWeight(.medium)
-                        .frame(maxWidth: .infinity).padding(.vertical, 7)
                     }
                     .buttonStyle(.bordered)
                     .tint(dirs.isEmpty ? .accentColor : .secondary)
 
                     Button { diagnosingSource = source } label: {
-                        Label("source_diagnostics_short", systemImage: "stethoscope")
-                            .font(.caption).fontWeight(.medium)
-                            .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        sourceActionLabel("source_diagnostics_short", systemImage: "stethoscope")
                     }
                     .buttonStyle(.bordered)
                     .tint(.secondary)
@@ -242,10 +236,10 @@ struct SourcesView: View {
                                 scraperService: scraperService
                             )
                         } label: {
-                            Label(scanning?.canResume == true ? "resume_scan" : "scan",
-                                  systemImage: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass")
-                                .font(.caption).fontWeight(.medium)
-                                .frame(maxWidth: .infinity).padding(.vertical, 7)
+                            sourceActionLabel(
+                                scanning?.canResume == true ? "resume_scan" : "scan",
+                                systemImage: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass"
+                            )
                         }
                         .buttonStyle(.bordered).tint(.green)
                         .disabled(scanning?.isScanning == true)
@@ -287,6 +281,17 @@ struct SourcesView: View {
     }
 
     // MARK: - Helpers
+
+    private func sourceActionLabel(_ title: LocalizedStringKey, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .fontWeight(.medium)
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .allowsTightening(true)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .padding(.vertical, 7)
+    }
 
     private var sources: [MusicSource] {
         sourceStore.sources
