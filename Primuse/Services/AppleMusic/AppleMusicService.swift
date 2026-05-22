@@ -92,11 +92,35 @@ final class AppleMusicService {
     /// 的 AudioPlayerService 不参与, 跟我们当前播放的 NAS / 云盘歌互不干扰
     /// (但同一时间只能有一个 audio session active, 系统会自动让 Apple Music
     /// 暂停 / 抢占我们的)。
+    ///
+    /// 之前历史上有过点 row 必闪退的情况, 两个根因:
+    /// 1. Info.plist 缺 `NSAppleMusicUsageDescription` → 调 MusicKit 会被 OS
+    ///    直接 SIGABORT, 不走 catch。已通过 project.yml 把权限说明加回来。
+    /// 2. 用户没有 Apple Music 订阅 / 区域不支持时, ApplicationMusicPlayer
+    ///    的 queue 设置 + play() 在某些 iOS 版本会触发底层 assert。这里先
+    ///    用 `MusicSubscription.current` 探一下能力, 不能播就直接给 UI 报
+    ///    错而不是冒险调 player。
     func play(_ song: MusicKit.Song) async {
         lastPlaybackError = nil
-        let player = ApplicationMusicPlayer.shared
-        player.queue = ApplicationMusicPlayer.Queue(for: [song])
+
+        // 订阅探测 — 没订阅 / 不支持时直接 bail, 避免触发 player 的边界 case。
         do {
+            let subscription = try await MusicSubscription.current
+            guard subscription.canPlayCatalogContent else {
+                lastPlaybackError = subscription.canBecomeSubscriber
+                    ? String(localized: "apple_music_needs_subscription")
+                    : String(localized: "apple_music_unavailable")
+                return
+            }
+        } catch {
+            appleMusicLog.error("Apple Music subscription check failed: \(error.localizedDescription)")
+            lastPlaybackError = error.localizedDescription
+            return
+        }
+
+        let player = ApplicationMusicPlayer.shared
+        do {
+            player.queue = ApplicationMusicPlayer.Queue(for: [song])
             try await player.play()
         } catch {
             appleMusicLog.error("Apple Music play failed: \(error.localizedDescription)")

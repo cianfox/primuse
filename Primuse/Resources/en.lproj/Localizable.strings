@@ -274,6 +274,8 @@
 "similar_empty_hint" = "None of Last.fm's recommendations matched your library.";
 "similar_source_lastfm" = "Recommendations from Last.fm";
 "similar_section_lastfm" = "Listeners also like (Last.fm)";
+"apple_music_needs_subscription" = "An active Apple Music subscription is required to play this track in Primuse. Subscribe in the Apple Music app and try again.";
+"apple_music_unavailable" = "Apple Music streaming isn't available for this account or region.";
 "rg_mode" = "Mode";
 "rg_mode_track" = "Track";
 "rg_mode_album" = "Album";

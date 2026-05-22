@@ -274,6 +274,8 @@
 "similar_empty_hint" = "Last.fm 给的推荐都不在你的资料库里。";
 "similar_source_lastfm" = "推荐数据来自 Last.fm";
 "similar_section_lastfm" = "听众也喜欢 (Last.fm)";
+"apple_music_needs_subscription" = "需要 Apple Music 订阅才能在猿音里播放，可以去 Apple Music App 开通后再试。";
+"apple_music_unavailable" = "当前账号或地区不支持 Apple Music 订阅播放。";
 "rg_mode" = "模式";
 "rg_mode_track" = "单曲";
 "rg_mode_album" = "专辑";
