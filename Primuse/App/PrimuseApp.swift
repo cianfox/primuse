@@ -25,6 +25,16 @@ final class PrimuseAppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    /// 系统在用户从 iMessage / 邮件 / Files 点开 .ck 分享链接时调这里, 把
+    /// CKShare metadata 传给 app。我们转交给 CloudKitSyncService.acceptShare
+    /// 完成 share 接受 + 启动 participant 侧的 sharedEngine。
+    func application(_ application: UIApplication,
+                     userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
+        Task { @MainActor in
+            await Self.sync?.acceptShare(metadata: cloudKitShareMetadata)
+        }
+    }
+
     /// Register a BGProcessingTask handler that resumes any interrupted scans.
     /// iOS fires this when the device is idle and on a network connection,
     /// giving us several minutes of CPU time to keep scanning.

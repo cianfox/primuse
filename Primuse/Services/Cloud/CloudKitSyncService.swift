@@ -79,16 +79,23 @@ final class CloudKitSyncService {
         }
     }
 
-    /// 当前应该用哪个 zone 写指定 recordType。共享开关 + 类型双决定:
+    /// 当前应该用哪个 zone 写指定 recordType + id。三层决定:
     /// - 未启用 family sharing → 一律 PrimuseSync
-    /// - 启用 + 共享类型 → family zone
-    /// - 启用 + 非共享类型 → 仍 PrimuseSync
+    /// - 启用 + 非共享类型 (history / scraperConfig) → PrimuseSync
+    /// - 启用 + 共享类型 + 例外 record id → PrimuseSync
+    ///   (「我喜欢」每人独立, 不进家庭共享; 升级前已在 PrimuseSync 的 record
+    ///   也继续在那里, 不强制迁)
+    /// - 启用 + 共享类型 + 普通 id → familyZoneID
     @MainActor
-    static func zoneFor(recordType: String) -> CKRecordZone.ID {
-        if Self.familySharingEnabled, recordTypeIsShareable(recordType) {
-            return Self.familyZoneID
+    static func zoneFor(recordType: String, id: String) -> CKRecordZone.ID {
+        guard Self.familySharingEnabled, recordTypeIsShareable(recordType) else {
+            return Self.zoneID
         }
-        return Self.zoneID
+        // Playlist 类型按 id 例外: 「我喜欢」每人独立
+        if recordType == RecordType.playlist, id == MusicLibrary.likedSongsPlaylistID {
+            return Self.zoneID
+        }
+        return Self.familyZoneID
     }
 
     /// Singleton ID used for the playback-history record (one per user).
@@ -226,6 +233,153 @@ final class CloudKitSyncService {
                 plog("CloudKitSync: CKError code=\(ck.code.rawValue) (\(ck.code)) userInfo=\(ck.userInfo)")
             }
             self.status = mapToSyncStatus(error)
+        }
+
+        // 如果之前是 participant (接受过别人家庭包), 启动 shared DB engine
+        // 拉 owner 那侧 family zone 的最新 record。
+        if Self.familySharingEnabled, isParticipantOfShare {
+            await startSharedDatabaseEngine()
+        }
+    }
+
+    // MARK: - Family Sharing
+
+    /// Participant 端的第二个 sync engine, 监听 .sharedCloudDatabase。
+    /// owner 端不需要 (owner 写自己的 privateDB + family zone, 走 privateEngine)。
+    private(set) var sharedEngine: CKSyncEngine?
+
+    /// 标记是不是 participant (接受过别人的 share)。owner 自己也算开了 family,
+    /// 但 owner 不需要 sharedEngine, 走 privateEngine 就行。
+    /// 用 UserDefaults 持久 ── CKContainer 没暴露简便的 "我接受过哪些 share"。
+    @MainActor
+    private var isParticipantOfShare: Bool {
+        get { UserDefaults.standard.bool(forKey: "primuse.familySharing.isParticipant") }
+        set { UserDefaults.standard.set(newValue, forKey: "primuse.familySharing.isParticipant") }
+    }
+
+    /// Owner 启用家庭共享 ── 在 family zone 建一个 holder record + CKShare,
+    /// 返回 CKShare 让 UI 用 UICloudSharingController 弹邀请发到 iMessage / 邮件。
+    /// 之后 shareable record (playlist / source / cloud account 等) 会自动走
+    /// family zone, participant 接受后能看到。
+    /// 「我喜欢」playlist 例外仍在 PrimuseSync (zoneFor 已经处理), 不会被 share。
+    @MainActor
+    func enableFamilySharing() async throws -> CKShare {
+        guard let db = configuredDatabase() else {
+            throw NSError(domain: "Primuse.Cloud", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "CloudKit unavailable"])
+        }
+
+        // 1. ensure family zone on server
+        let zone = CKRecordZone(zoneID: Self.familyZoneID)
+        do {
+            _ = try await db.save(zone)
+        } catch let err as CKError where err.code == .serverRecordChanged {
+            // 已存在, ignore
+        } catch {
+            plog("⚠️ ensure family zone failed: \(error.localizedDescription)")
+        }
+
+        // 2. holder record (CKShare 必须依附一个 rootRecord, 我们用 placeholder
+        //    holder; 真正 share 整个 family zone 的所有 record 通过 rootRecord
+        //    的关联做)
+        let holderID = CKRecord.ID(recordName: "primuse.family.holder",
+                                    zoneID: Self.familyZoneID)
+        let holder = CKRecord(recordType: "FamilyHolder", recordID: holderID)
+        holder["createdAt"] = Date() as CKRecordValue
+
+        // 3. CKShare ── participant 默认读写 (用户选的)
+        let share = CKShare(rootRecord: holder)
+        share[CKShare.SystemFieldKey.title] = "Primuse Family" as CKRecordValue
+        share.publicPermission = .none
+
+        // 4. 一对原子保存
+        let (results, _) = try await db.modifyRecords(saving: [holder, share], deleting: [])
+        for (_, result) in results {
+            if case .failure(let err) = result {
+                throw err
+            }
+        }
+
+        // 5. 标记 enabled, owner 不需要 sharedEngine
+        Self.familySharingEnabled = true
+        isParticipantOfShare = false
+
+        // 6. migration: shareable record 重新 push, recordID 算到 family zone
+        scheduleInitialUpload()
+        plog("☁️ Family sharing enabled, share created")
+        return share
+    }
+
+    /// Owner 解散家庭包 / participant 退出。
+    /// owner: 删 CKShare record, family zone 里的数据保留 (server-side; 用户
+    /// 关掉 sharing 不应该丢数据, 后续重新启用能直接恢复)。后续 shareable
+    /// record 写回 PrimuseSync zone。
+    /// participant: 仅清本地状态; CloudKit 不暴露 "退出 share" 简便 API, 等
+    /// owner 主动移除或解散。
+    @MainActor
+    func disableFamilySharing() async {
+        if let db = configuredDatabase() {
+            let holderID = CKRecord.ID(recordName: "primuse.family.holder",
+                                        zoneID: Self.familyZoneID)
+            // 删 holder 会级联清掉 CKShare (CKShare 是 holder 的关联)
+            _ = try? await db.deleteRecord(withID: holderID)
+        }
+        Self.familySharingEnabled = false
+        isParticipantOfShare = false
+        sharedEngine = nil
+        plog("☁️ Family sharing disabled")
+    }
+
+    /// Participant 接受 share ── 系统 SceneDelegate 收到 .ck 链接转过来, 我们
+    /// 用 CKAcceptSharesOperation 完成接受, 然后启动 sharedEngine 拉 owner 那
+    /// 边的 family zone 数据进本地 library。
+    @MainActor
+    func acceptShare(metadata: CKShare.Metadata) async {
+        guard let container else {
+            plog("⚠️ acceptShare: CloudKit container not ready")
+            return
+        }
+        let op = CKAcceptSharesOperation(shareMetadatas: [metadata])
+        op.qualityOfService = .userInitiated
+        let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            op.acceptSharesResultBlock = { result in
+                switch result {
+                case .success:
+                    cont.resume(returning: true)
+                case .failure(let err):
+                    plog("⚠️ acceptShare failed: \(err.localizedDescription)")
+                    cont.resume(returning: false)
+                }
+            }
+            container.add(op)
+        }
+        guard ok else { return }
+        Self.familySharingEnabled = true
+        isParticipantOfShare = true
+        await startSharedDatabaseEngine()
+        plog("☁️ Family share accepted, participant engine started")
+    }
+
+    /// Participant 端 sharedEngine 启动 ── 跟 privateEngine 并行, 监听
+    /// .sharedCloudDatabase 的 family zone 变化。delegate (CKSyncEngineDelegate)
+    /// 共用 self, handleEvent 内部按 syncEngine 区分。
+    @MainActor
+    private func startSharedDatabaseEngine() async {
+        guard sharedEngine == nil, let container else { return }
+        let sharedDB = container.sharedCloudDatabase
+        var config = CKSyncEngine.Configuration(
+            database: sharedDB,
+            stateSerialization: loadSharedStateSerialization(),
+            delegate: self
+        )
+        config.automaticallySync = true
+        let eng = CKSyncEngine(config)
+        sharedEngine = eng
+        do {
+            try await eng.fetchChanges()
+            plog("☁️ Shared engine initial fetchChanges OK")
+        } catch {
+            plog("⚠️ Shared engine fetchChanges failed: \(error.localizedDescription)")
         }
     }
 
@@ -570,8 +724,9 @@ final class CloudKitSyncService {
 
     private func recordID(recordType: String, id: String) -> CKRecord.ID {
         // 共享 record 进 family zone (启用家庭共享时), 个人 record 始终 PrimuseSync。
+        // 「我喜欢」playlist 按 id 例外仍走 PrimuseSync。
         CKRecord.ID(recordName: "\(recordType)/\(id)",
-                    zoneID: Self.zoneFor(recordType: recordType))
+                    zoneID: Self.zoneFor(recordType: recordType, id: id))
     }
 
     /// On first start, push everything we have locally — including soft-deleted
@@ -600,6 +755,21 @@ final class CloudKitSyncService {
     fileprivate func saveStateSerialization(_ state: CKSyncEngine.State.Serialization) {
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: stateURL, options: .atomic)
+    }
+
+    /// Shared engine 的 state 文件单独存, 跟 private engine 的 fetch cursor 不冲突。
+    private var sharedStateURL: URL {
+        stateURL.deletingLastPathComponent().appendingPathComponent("cloudkit-shared-engine-state.bin")
+    }
+
+    private func loadSharedStateSerialization() -> CKSyncEngine.State.Serialization? {
+        guard let data = try? Data(contentsOf: sharedStateURL) else { return nil }
+        return try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: data)
+    }
+
+    fileprivate func saveSharedStateSerialization(_ state: CKSyncEngine.State.Serialization) {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        try? data.write(to: sharedStateURL, options: .atomic)
     }
 
     // MARK: - Record system fields cache
@@ -975,7 +1145,15 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
     nonisolated func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
         switch event {
         case .stateUpdate(let event):
-            await MainActor.run { self.saveStateSerialization(event.stateSerialization) }
+            await MainActor.run {
+                // private engine 跟 sharedEngine state 分开存, 否则下次启动
+                // 一个 engine 用错 state cursor 会重 fetch 全量。
+                if syncEngine === self.sharedEngine {
+                    self.saveSharedStateSerialization(event.stateSerialization)
+                } else {
+                    self.saveStateSerialization(event.stateSerialization)
+                }
+            }
         case .fetchedRecordZoneChanges(let event):
             for modification in event.modifications {
                 await MainActor.run { self.applyRemoteRecord(modification.record) }

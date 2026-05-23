@@ -1,4 +1,6 @@
+import CloudKit
 import SwiftUI
+import UIKit
 import PrimuseKit
 
 struct SettingsView: View {
@@ -95,6 +97,12 @@ struct SettingsView: View {
                         CloudSyncSettingsView()
                     } label: {
                         Label("icloud_sync_title", systemImage: "icloud")
+                    }
+
+                    NavigationLink {
+                        FamilySharingSettingsView()
+                    } label: {
+                        Label("family_sharing_title", systemImage: "person.2.fill")
                     }
 
                     NavigationLink {
@@ -1204,4 +1212,178 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Family Sharing Settings
+
+/// 家庭共享设置入口。
+/// - 未启用: 显示"创建家庭包"按钮 → enableFamilySharing 拿到 CKShare → 弹
+///   UICloudSharingController 让用户发邀请
+/// - 已启用 (owner / participant 通用): 显示状态 + "查看 / 邀请" + "解散 /
+///   退出" (destructive)
+struct FamilySharingSettingsView: View {
+    @Environment(CloudKitSyncService.self) private var sync
+    @State private var familyEnabled = CloudKitSyncService.familySharingEnabled
+    @State private var pendingShare: CKShare?
+    @State private var pendingContainer: CKContainer?
+    @State private var showSharingController = false
+    @State private var errorMessage: String?
+    @State private var isBusy = false
+
+    var body: some View {
+        Form {
+            Section {
+                if familyEnabled {
+                    HStack {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                        Text("family_sharing_active")
+                            .font(.subheadline)
+                    }
+                    Button {
+                        Task { await openExistingShare() }
+                    } label: {
+                        Label("family_sharing_manage", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                    .disabled(isBusy)
+
+                    Button(role: .destructive) {
+                        Task { await disable() }
+                    } label: {
+                        Label("family_sharing_leave", systemImage: "person.crop.circle.badge.xmark")
+                    }
+                    .disabled(isBusy)
+                } else {
+                    Button {
+                        Task { await enable() }
+                    } label: {
+                        Label("family_sharing_create", systemImage: "person.2.badge.plus")
+                    }
+                    .disabled(isBusy)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            } footer: {
+                Text("family_sharing_footer")
+                    .font(.footnote)
+            }
+
+            Section {
+                row("family_sharing_shared_playlists", value: "✓")
+                row("family_sharing_shared_smart", value: "✓")
+                row("family_sharing_shared_sources", value: "✓")
+                row("family_sharing_shared_apple_mirror", value: "✓")
+                Divider()
+                row("family_sharing_private_liked", value: "—")
+                row("family_sharing_private_history", value: "—")
+                row("family_sharing_private_settings", value: "—")
+            } header: {
+                Text("family_sharing_scope_header")
+            } footer: {
+                Text("family_sharing_scope_footer")
+                    .font(.footnote)
+            }
+        }
+        .navigationTitle("family_sharing_title")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showSharingController) {
+            if let share = pendingShare, let container = pendingContainer {
+                CloudSharingControllerView(share: share, container: container) {
+                    showSharingController = false
+                    familyEnabled = CloudKitSyncService.familySharingEnabled
+                }
+            }
+        }
+    }
+
+    private func row(_ key: LocalizedStringKey, value: String) -> some View {
+        HStack {
+            Text(key)
+                .font(.subheadline)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+    }
+
+    @MainActor
+    private func enable() async {
+        isBusy = true
+        errorMessage = nil
+        defer { isBusy = false }
+        do {
+            let share = try await sync.enableFamilySharing()
+            pendingShare = share
+            pendingContainer = CKContainer(identifier: CloudKitSyncService.containerID)
+            familyEnabled = true
+            showSharingController = true
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func openExistingShare() async {
+        isBusy = true
+        defer { isBusy = false }
+        // 重新启用一次拿到当前 share, 让用户能看到成员 / 重新发邀请。
+        // enableFamilySharing 是幂等的 ── zone / holder 已在时只追加邀请逻辑。
+        do {
+            let share = try await sync.enableFamilySharing()
+            pendingShare = share
+            pendingContainer = CKContainer(identifier: CloudKitSyncService.containerID)
+            showSharingController = true
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func disable() async {
+        isBusy = true
+        defer { isBusy = false }
+        await sync.disableFamilySharing()
+        familyEnabled = false
+    }
+}
+
+/// SwiftUI 包 UICloudSharingController ── Apple 提供的 share 邀请 UI, 自带
+/// iMessage / 邮件 / 复制链接发送、成员列表、权限调整、移除成员等全套功能。
+struct CloudSharingControllerView: UIViewControllerRepresentable {
+    let share: CKShare
+    let container: CKContainer
+    let onDismiss: () -> Void
+
+    func makeUIViewController(context: Context) -> UICloudSharingController {
+        let vc = UICloudSharingController(share: share, container: container)
+        vc.delegate = context.coordinator
+        vc.availablePermissions = [.allowReadWrite, .allowPrivate]
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UICloudSharingController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onDismiss: onDismiss) }
+
+    final class Coordinator: NSObject, UICloudSharingControllerDelegate {
+        let onDismiss: () -> Void
+        init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
+
+        func cloudSharingControllerDidStopSharing(_ csc: UICloudSharingController) {
+            onDismiss()
+        }
+        func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) {}
+        func cloudSharingController(_ csc: UICloudSharingController, failedToSaveShareWithError error: Error) {
+            plog("⚠️ UICloudSharingController save failed: \(error.localizedDescription)")
+        }
+        func itemTitle(for csc: UICloudSharingController) -> String? {
+            "Primuse Family"
+        }
+    }
 }
