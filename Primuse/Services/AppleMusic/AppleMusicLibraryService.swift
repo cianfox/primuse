@@ -215,6 +215,25 @@ final class AppleMusicLibraryService {
         return URL(string: "music://music.apple.com/search?term=\(encoded)")
     }
 
+    /// 拉这首 Apple Music 歌的官方歌词 ── **当前永远返回 nil**。
+    ///
+    /// 不是没写实现, 是 Apple 在 MusicKit Swift API 里**没有把 lyrics 暴露给
+    /// 第三方 app**: Song 的 PartialMusicAsyncProperty 只支持
+    /// .albums / .artists / .composers / .genres / .musicVideos / .station /
+    /// .audioVariants, 编译期就拿不到 .lyrics keypath (MusicKit JS web 端才有
+    /// lyrics endpoint)。
+    ///
+    /// 留这个入口 + 文件末尾的 TTMLLyricsParser 是基础设施 ── 等 Apple 之后开放
+    /// (或我们能拿到私有 entitlement), 把这函数的实现填回去就 work, NowPlayingView
+    /// 不用动。
+    ///
+    /// 当前 UI 走的路径: 这里 return nil → NowPlayingView setLyrics([]) → 显示
+    /// emptyLyricsView 的"在 Apple Music 中查看歌词"按钮跳转 Apple Music app。
+    func fetchLyrics(forAmID amID: String) async throws -> [LyricLine]? {
+        _ = amID   // 抑制 unused warning
+        return nil
+    }
+
     /// 把 ApplicationMusicPlayer 返回的 Song 规范化到 user library 版本。
     /// ApplicationMusicPlayer.queue.currentEntry.item 给的常常是 catalog Song
     /// (id 是纯数字), 跟我们 sync 拉回来的 user library Song (id `i.*`) 不一样,
@@ -395,5 +414,132 @@ final class AppleMusicLibraryService {
     nonisolated private static func hashSongID(sourceID: String, path: String) -> String {
         let hash = SHA256.hash(data: Data("\(sourceID):\(path)".utf8))
         return hash.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// W3C TTML 子集 ── Apple Music 歌词只用了
+///   <p begin="HH:MM:SS.fff" end="...">行文本</p>
+///   <p begin="..."><span begin="...">字</span><span begin="...">字</span></p>
+/// 复杂 styling / ruby / agent 角色全部 ignore, 不影响时间轴歌词渲染。
+/// 字级 syllable 的 end 在 TTML 里常常缺失, 用下一字 start 推; 末字给 0.5s 缓冲。
+private final class TTMLLyricsParser: NSObject, XMLParserDelegate {
+    private var lines: [LyricLine] = []
+    private var currentLineBegin: TimeInterval = 0
+    private var currentText = ""
+    private var currentSyllables: [LyricSyllable] = []
+    private var currentSpanBegin: TimeInterval = 0
+    private var currentSpanText = ""
+    private var insideP = false
+    private var insideSpan = false
+
+    static func parse(_ ttml: String) -> [LyricLine] {
+        guard let data = ttml.data(using: .utf8) else { return [] }
+        let delegate = TTMLLyricsParser()
+        let xml = XMLParser(data: data)
+        xml.delegate = delegate
+        xml.parse()
+        return delegate.lines.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?,
+                attributes attributeDict: [String: String]) {
+        let name = Self.localName(qName ?? elementName)
+        switch name {
+        case "p":
+            insideP = true
+            currentText = ""
+            currentSyllables = []
+            currentLineBegin = attributeDict["begin"].map(Self.parseTimestamp) ?? 0
+        case "span":
+            guard insideP else { return }
+            insideSpan = true
+            currentSpanText = ""
+            currentSpanBegin = attributeDict["begin"].map(Self.parseTimestamp) ?? currentLineBegin
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if insideSpan {
+            currentSpanText += string
+        } else if insideP {
+            currentText += string
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName qName: String?) {
+        let name = Self.localName(qName ?? elementName)
+        switch name {
+        case "span":
+            guard insideSpan else { return }
+            let text = currentSpanText.trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty {
+                currentSyllables.append(LyricSyllable(
+                    text: text,
+                    start: currentSpanBegin,
+                    end: currentSpanBegin   // 末位先填 begin, 下面 normalize 时改成下一字 start
+                ))
+                currentText += text
+            }
+            insideSpan = false
+        case "p":
+            guard insideP else { return }
+            let line = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty {
+                let normalized = normalizeSyllableEnds(currentSyllables)
+                lines.append(LyricLine(
+                    timestamp: currentLineBegin,
+                    text: line,
+                    syllables: normalized.isEmpty ? nil : normalized
+                ))
+            }
+            insideP = false
+            currentText = ""
+            currentSyllables = []
+        default:
+            break
+        }
+    }
+
+    private func normalizeSyllableEnds(_ syllables: [LyricSyllable]) -> [LyricSyllable] {
+        guard !syllables.isEmpty else { return [] }
+        guard syllables.count > 1 else {
+            let only = syllables[0]
+            return [LyricSyllable(text: only.text, start: only.start, end: only.start + 0.5)]
+        }
+        var result: [LyricSyllable] = []
+        for i in 0..<syllables.count - 1 {
+            result.append(LyricSyllable(
+                text: syllables[i].text,
+                start: syllables[i].start,
+                end: syllables[i + 1].start
+            ))
+        }
+        let last = syllables[syllables.count - 1]
+        result.append(LyricSyllable(text: last.text, start: last.start, end: last.start + 0.5))
+        return result
+    }
+
+    /// 剥 XML namespace 前缀, "tt:p" → "p"。
+    private static func localName(_ qName: String) -> String {
+        if let colon = qName.firstIndex(of: ":") {
+            return String(qName[qName.index(after: colon)...]).lowercased()
+        }
+        return qName.lowercased()
+    }
+
+    /// TTML 时间戳: "HH:MM:SS.fff" / "MM:SS.fff" / "SS.fff" / "1.5s" / "1500ms"。
+    static func parseTimestamp(_ s: String) -> TimeInterval {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasSuffix("ms"), let v = Double(trimmed.dropLast(2)) { return v / 1000 }
+        if trimmed.hasSuffix("s"), let v = Double(trimmed.dropLast()) { return v }
+        var seconds: Double = 0
+        for part in trimmed.split(separator: ":") {
+            seconds = seconds * 60 + (Double(part) ?? 0)
+        }
+        return seconds
     }
 }
