@@ -3,6 +3,7 @@ import PrimuseKit
 
 struct ArtistDetailView: View {
     @Environment(MusicLibrary.self) private var library
+    @Environment(AudioPlayerService.self) private var player
     @Environment(SourcesStore.self) private var sourcesStore
     @Environment(MetadataBackfillService.self) private var backfill
     let artist: Artist
@@ -18,7 +19,7 @@ struct ArtistDetailView: View {
     }
 
     private let columns = [
-        GridItem(.adaptive(minimum: 150), spacing: 16)
+        GridItem(.adaptive(minimum: 100), spacing: 12)
     ]
 
     var body: some View {
@@ -47,7 +48,7 @@ struct ArtistDetailView: View {
                             .fontWeight(.semibold)
                             .padding(.horizontal)
 
-                        LazyVGrid(columns: columns, spacing: 16) {
+                        LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(albums) { album in
                                 NavigationLink(value: album) {
                                     AlbumCardView(album: album)
@@ -71,10 +72,15 @@ struct ArtistDetailView: View {
                             ForEach(songs) { song in
                                 SongRowView(
                                     song: song,
+                                    isPlaying: player.currentSong?.id == song.id,
                                     context: SongRowView.context(for: song, sourcesStore: sourcesStore, backfill: backfill)
                                 )
                                 .padding(.horizontal)
                                 .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    playSong(song)
+                                }
                                 Divider().padding(.leading, 50)
                             }
                         }
@@ -83,5 +89,12 @@ struct ArtistDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func playSong(_ song: Song) {
+        let queue = songs.filteredPlayable()
+        guard let index = queue.firstIndex(where: { $0.id == song.id }) else { return }
+        player.setQueue(queue, startAt: index)
+        Task { await player.play(song: song) }
     }
 }
