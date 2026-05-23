@@ -1,8 +1,5 @@
 import Foundation
 import MusicKit
-import OSLog
-
-private let appleMusicLog = Logger(subsystem: "com.welape.yuanyin", category: "AppleMusic")
 
 /// Apple Music 桥 ── 仅做"在搜索里多挂一组结果 + 调系统播放器开播"这件事,
 /// 不试图把 Apple Music 歌混进 MusicLibrary。原因:
@@ -37,28 +34,59 @@ final class AppleMusicService {
     /// 最近一次播放调用如果失败 (未订阅 / 国家不可用 / 网络),把错误信息
     /// 暴露给 UI 弹 banner。成功后被清空。
     private(set) var lastPlaybackError: String?
+    /// 最近一次搜索的错误信息 — UI 可以用它给用户解释 "为什么 Apple
+    /// Music 段没结果"。nil 表示搜索成功 / 还没搜索过。
+    private(set) var lastSearchError: String?
+    /// 最近一次成功搜索拿到的命中数 — 用来区分 "搜索失败" 和 "结果就是 0"。
+    private(set) var lastSearchHitCount: Int = -1
+    /// 当前正在 Apple Music 侧播放的歌 — UI 用来在 mini player / NowPlayingAccessory
+    /// 显示。Apple Music 是 ApplicationMusicPlayer 系统侧播放, 跟我们自己的
+    /// AudioPlayerService.currentSong 是两套, 不能合并。
+    private(set) var nowPlayingSong: MusicKit.Song?
+    /// Apple Music 是否正在播放 (从 ApplicationMusicPlayer.playbackStatus 转过来)。
+    private(set) var isAppleMusicPlaying: Bool = false
 
     private var searchTask: Task<Void, Never>?
+    private var playbackStatusObservation: Task<Void, Never>?
 
     init() {
         self.authState = Self.mapStatus(MusicAuthorization.currentStatus)
+        plog("AppleMusicService init: authState=\(String(describing: self.authState))")
     }
 
     /// 入口走的是系统弹的授权对话框,首次调有动效, 后续调直接返回现状态。
     func requestAuthorization() async {
         let status = await MusicAuthorization.request()
         self.authState = Self.mapStatus(status)
-        appleMusicLog.notice("Apple Music auth status: \(String(describing: status))")
+        plog("Apple Music auth status: \(String(describing: status))")
     }
 
     /// 触发对 Apple Music catalog 的搜索。200ms debounce 跟 SearchView 自己的
     /// debounce 错开 (这边再叠 200ms 防止用户连击触发多次 catalog 调用)。
     /// 未授权时直接清结果,不试着 silently request 授权 (避免无端弹窗)。
     func search(query: String) {
+        // 用户可能在外部 (iOS Settings) 修改了授权状态, 重读一次以保持同步。
+        // 比 init 时只读一次更可靠 — 用户首次启动 → 去设置授权 → 回 app 搜索
+        // 这条路径下 authState 不会陷在 notDetermined。
+        let live = Self.mapStatus(MusicAuthorization.currentStatus)
+        if live != authState {
+            plog("Apple Music authState refresh: \(String(describing: self.authState)) → \(String(describing: live))")
+            authState = live
+        }
+
         searchTask?.cancel()
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard authState == .authorized, !trimmed.isEmpty else {
+        guard authState == .authorized else {
             searchResults = []
+            lastSearchError = nil
+            lastSearchHitCount = -1
+            plog("Apple Music search skipped: not authorized (\(String(describing: self.authState)))")
+            return
+        }
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            lastSearchError = nil
+            lastSearchHitCount = -1
             return
         }
         searchTask = Task { [weak self] in
@@ -77,13 +105,18 @@ final class AppleMusicService {
             let response = try await request.response()
             if !Task.isCancelled {
                 self.searchResults = Array(response.songs)
+                self.lastSearchError = nil
+                self.lastSearchHitCount = response.songs.count
+                plog("Apple Music search '\(term)' → \(response.songs.count) results")
             }
         } catch is CancellationError {
             // user 继续打字,旧 query 失效,沉默丢弃
         } catch {
-            appleMusicLog.error("Apple Music search failed: \(error.localizedDescription)")
+            plog("⚠️Apple Music search failed for '\(term)': \(error.localizedDescription)")
             if !Task.isCancelled {
                 self.searchResults = []
+                self.lastSearchError = error.localizedDescription
+                self.lastSearchHitCount = -1
             }
         }
     }
@@ -102,6 +135,11 @@ final class AppleMusicService {
     ///    错而不是冒险调 player。
     func play(_ song: MusicKit.Song) async {
         lastPlaybackError = nil
+        // 让猿音自家播放器先停掉, audio session 让给 ApplicationMusicPlayer。
+        // 否则: 本地正在播 → 用户点 Apple Music row → ApplicationMusicPlayer 接管
+        // audio session, 但 AudioPlayerService.currentSong 还在, mini player
+        // 一直显示本地歌, 看不出切换了 (Apple Music 才是当前的实际播放)。
+        NotificationCenter.default.post(name: .primuseAppleMusicWillPlay, object: nil)
 
         // 订阅探测 — 没订阅 / 不支持时直接 bail, 避免触发 player 的边界 case。
         do {
@@ -113,18 +151,83 @@ final class AppleMusicService {
                 return
             }
         } catch {
-            appleMusicLog.error("Apple Music subscription check failed: \(error.localizedDescription)")
+            plog("⚠️Apple Music subscription check failed: \(error.localizedDescription)")
             lastPlaybackError = error.localizedDescription
             return
         }
 
         let player = ApplicationMusicPlayer.shared
+        // 乐观先把 nowPlayingSong 设上 — MusicKit 的 play() 在 iOS 26 上经常误抛
+        // MPMusicPlayerControllerErrorDomain error 2 (即便音频实际已经开始播),
+        // 不能等 try 成功才设, 否则 UI 永远不显示 mini player。
+        nowPlayingSong = song
+        isAppleMusicPlaying = true
+        observePlaybackStatusIfNeeded()
         do {
             player.queue = ApplicationMusicPlayer.Queue(for: [song])
             try await player.play()
         } catch {
-            appleMusicLog.error("Apple Music play failed: \(error.localizedDescription)")
-            lastPlaybackError = error.localizedDescription
+            // MusicKit 已知 quirk: error 2 (`MPMusicPlayerControllerErrorDomain
+            // error 2`) 经常在播放实际成功的情况下被抛, 不当 failure 处理。
+            // 其他 error 才暴露给 UI。
+            let ns = error as NSError
+            let isSpuriousMPError2 = ns.domain == "MPMusicPlayerControllerErrorDomain" && ns.code == 2
+            if isSpuriousMPError2 {
+                plog("Apple Music play threw spurious MPError 2, ignoring (audio likely playing)")
+            } else {
+                plog("⚠️Apple Music play failed: \(error.localizedDescription)")
+                lastPlaybackError = error.localizedDescription
+                // 不清 nowPlayingSong — 让 mini player 保留, 用户能看到自己点了
+                // 哪首歌, 并通过 lastPlaybackError UI 看到错误原因。否则用户
+                // 体验是 "点了没反应" + 没 mini player + 看不到任何错误。
+                isAppleMusicPlaying = false
+            }
+        }
+    }
+
+    /// 暂停 / 恢复 Apple Music 系统侧播放。Mini player 控制转发用。
+    func togglePlayPauseAppleMusic() {
+        if ApplicationMusicPlayer.shared.state.playbackStatus == .playing {
+            ApplicationMusicPlayer.shared.pause()
+            isAppleMusicPlaying = false
+        } else {
+            Task { @MainActor [weak self] in
+                // Task 内重新取 shared 引用, 避免 Swift 6 报 non-Sendable 跨边界。
+                do { try await ApplicationMusicPlayer.shared.play() } catch {
+                    plog("⚠️Apple Music resume failed: \(error.localizedDescription)")
+                }
+                self?.isAppleMusicPlaying = ApplicationMusicPlayer.shared.state.playbackStatus == .playing
+            }
+        }
+    }
+
+    /// 下一首 — 当前实现一首一首播 (queue 只塞一首歌), 所以 skip 实际等同 stop。
+    /// 后续可以扩展成顺播多首。
+    func stopAppleMusic() {
+        ApplicationMusicPlayer.shared.stop()
+        nowPlayingSong = nil
+        isAppleMusicPlaying = false
+    }
+
+    /// 监听 ApplicationMusicPlayer.state.playbackStatus 变化, 把状态同步到本类的
+    /// isAppleMusicPlaying / nowPlayingSong (后者只用 stop 时清空)。
+    /// 用 polling 0.5s 一次 — ApplicationMusicPlayer 是 Combine ObservableObject
+    /// 但跨 actor 订阅麻烦, polling 简单可靠且开销可以忽略。
+    private func observePlaybackStatusIfNeeded() {
+        guard playbackStatusObservation == nil else { return }
+        playbackStatusObservation = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self else { return }
+                let status = ApplicationMusicPlayer.shared.state.playbackStatus
+                let nowPlaying = status == .playing
+                if self.isAppleMusicPlaying != nowPlaying {
+                    self.isAppleMusicPlaying = nowPlaying
+                }
+                // 不在这里 reset nowPlayingSong。原本切歌的瞬间 status 可能短暂
+                // 变 .stopped, mini player 立刻消失 → 用户体感"部分歌不显示"。
+                // 用户显式 stopAppleMusic() 才清空 nowPlayingSong。
+            }
         }
     }
 

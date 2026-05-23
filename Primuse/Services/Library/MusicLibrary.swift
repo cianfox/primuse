@@ -1879,6 +1879,10 @@ extension Notification.Name {
     /// 请求全屏打开 NowPlayingView。SearchView 点歌词命中结果时会触发, 让
     /// 用户立刻看到歌词上下文 + auto-seek 到命中行。
     static let primuseRequestShowNowPlaying = Notification.Name("primuse.requestShowNowPlaying")
+    /// Apple Music 即将开始 / 接管系统侧播放。AudioPlayerService 收到要停掉
+    /// 自家 player + 清 currentSong, 让 mini player 切换到 AppleMusicAccessory,
+    /// audio session 让给 ApplicationMusicPlayer。
+    static let primuseAppleMusicWillPlay = Notification.Name("primuse.appleMusicWillPlay")
     static let primusePlaylistsDidChange = Notification.Name("primuse.playlistsDidChange")
     static let primusePlaylistDidDelete = Notification.Name("primuse.playlistDidDelete")
     static let primuseSmartPlaylistsDidChange = Notification.Name("primuse.smartPlaylistsDidChange")

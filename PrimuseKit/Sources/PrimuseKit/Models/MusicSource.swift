@@ -8,6 +8,7 @@ public enum SourceCategory: String, Codable, Sendable, CaseIterable {
     case `protocol`
     case mediaServer
     case cloudDrive
+    case streaming
     case local
 
     public var displayName: String {
@@ -16,6 +17,7 @@ public enum SourceCategory: String, Codable, Sendable, CaseIterable {
         case .protocol: return "Protocol"
         case .mediaServer: return "Media Server"
         case .cloudDrive: return "Cloud Drive"
+        case .streaming: return "Streaming"
         case .local: return "Local"
         }
     }
@@ -53,6 +55,9 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
     case oneDrive
     case dropbox
 
+    // Streaming
+    case appleMusic
+
     // Local
     case local
 
@@ -81,6 +86,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .googleDrive: return "Google Drive"
         case .oneDrive: return "OneDrive"
         case .dropbox: return "Dropbox"
+        case .appleMusic: return "Apple Music"
         case .local: return "Local"
         }
     }
@@ -106,6 +112,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .googleDrive: return "cloud.fill"
         case .oneDrive: return "cloud.fill"
         case .dropbox: return "cloud.fill"
+        case .appleMusic: return "music.note"
         case .local: return "iphone"
         }
     }
@@ -120,6 +127,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .webdav, .smb, .ftp, .sftp, .nfs, .upnp, .s3: return .protocol
         case .jellyfin, .emby, .plex: return .mediaServer
         case .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox: return .cloudDrive
+        case .appleMusic: return .streaming
         case .local: return .local
         }
     }
@@ -145,6 +153,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .googleDrive: return 0
         case .oneDrive: return 0
         case .dropbox: return 0
+        case .appleMusic: return 0
         case .local: return 0
         }
     }
@@ -158,7 +167,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
 
     public var requiresHost: Bool {
         switch self {
-        case .local, .upnp, .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox: return false
+        case .local, .upnp, .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox, .appleMusic: return false
         default: return true
         }
     }
@@ -173,7 +182,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
 
     public var requiresCredentials: Bool {
         switch self {
-        case .local, .upnp, .nfs, .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox: return false
+        case .local, .upnp, .nfs, .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox, .appleMusic: return false
         default: return true
         }
     }
@@ -220,6 +229,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .googleDrive: return "Google OAuth"
         case .oneDrive: return "Microsoft Graph"
         case .dropbox: return "Dropbox API v2"
+        case .appleMusic: return "Apple Music"
         case .local: return "iPhone Storage"
         }
     }

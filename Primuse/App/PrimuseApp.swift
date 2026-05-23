@@ -145,6 +145,7 @@ struct PrimuseApp: App {
     @State private var updateChecker: AppUpdateChecker
     @State private var coverTintProvider: CoverTintProvider
     @State private var appleMusic: AppleMusicService
+    @State private var appleMusicLibrary: AppleMusicLibraryService
     @State private var dlnaRenderer: DLNARendererService
     @State private var visualizer: AudioVisualizerService
 
@@ -174,6 +175,7 @@ struct PrimuseApp: App {
         _updateChecker = State(initialValue: services.updateChecker)
         _coverTintProvider = State(initialValue: services.coverTintProvider)
         _appleMusic = State(initialValue: services.appleMusic)
+        _appleMusicLibrary = State(initialValue: services.appleMusicLibrary)
         _dlnaRenderer = State(initialValue: services.dlnaRenderer)
         _visualizer = State(initialValue: services.visualizer)
     }
@@ -199,6 +201,7 @@ struct PrimuseApp: App {
                 .environment(updateChecker)
                 .environment(coverTintProvider)
                 .environment(appleMusic)
+                .environment(appleMusicLibrary)
                 .environment(dlnaRenderer)
                 .environment(visualizer)
                 .task {

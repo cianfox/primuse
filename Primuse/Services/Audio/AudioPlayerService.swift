@@ -241,6 +241,44 @@ final class AudioPlayerService {
             self?.setupRemoteCommands()
             self?.setupAudioSessionCallbacks()
         }
+
+        // Apple Music 路径 (SearchView 直接点 catalog row) 不走我们的 play(song:),
+        // 用 notification 解耦让 player 主动让出 audio session + 清 currentSong,
+        // 这样 mini player 才能切到 AppleMusicAccessory。
+        NotificationCenter.default.addObserver(
+            forName: .primuseAppleMusicWillPlay,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.yieldToAppleMusic()
+            }
+        }
+    }
+
+    /// 让出 audio session 给 Apple Music 系统播放器 — 停掉所有内部播放状态。
+    ///
+    /// 关键: 必须先 bump playID 让正在 in-flight 的 SFB `dataPlayedBack`
+    /// completion handler 看到 guard 失败直接 return。否则我们调
+    /// `stopPlayback()` 时, SFB lastBuffer 被认为 "完整播放完" → 触发
+    /// `handleTrackEnd()` → 自动跳到队列下一首本地歌 → mini player 又切
+    /// 回本地, 用户体感是"Apple Music 一闪而过又变回本地播放"。
+    private func yieldToAppleMusic() {
+        guard currentSong != nil || isPlaying else { return }
+        // 关键 — 先 bump playID, 让旧 callback 的 guard playID == id 全 fail。
+        playID = UUID()
+        decodingTask?.cancel(); decodingTask = nil
+        cancelGaplessTasks()
+        crossfadeDecodingTask?.cancel(); crossfadeDecodingTask = nil
+        audioEngine.stopPlayback()
+        audioEngine.stopCrossfadeNode()
+        stopTimeUpdater()
+        currentSong = nil
+        currentTime = 0
+        duration = 0
+        isLoading = false
+        isPlaying = false
+        plog("⏸ yielded audio session to Apple Music (playID bumped)")
     }
 
     func applySpatialAudioSettings() {
@@ -361,6 +399,14 @@ final class AudioPlayerService {
         let callerFile = (caller as NSString).lastPathComponent
         plog("▶️ play(song: \(song.title)) playID=\(id.uuidString.prefix(8)) FROM=\(callerFile):\(callerLine)")
 
+        // Apple Music 歌走系统侧 ApplicationMusicPlayer (DRM 流不能经
+        // AVAudioEngine 解), 跨 player 切换 — 先停我们自己的播放器再让
+        // AppleMusicService 接手, audio session 系统自动 hand-off。
+        if song.sourceID == AppleMusicLibraryService.systemSourceID {
+            await playAppleMusicSong(song)
+            return
+        }
+
         // 切到新歌前主动触发上一首的 streaming session finalize, 让它有机会
         // 把 .partial 转成 final (如果缺口在 50MB 自动补齐阈值内)。
         if let prev = currentSong, prev.id != song.id {
@@ -398,6 +444,26 @@ final class AudioPlayerService {
             isLoading = false
             await autoAdvanceAfterFailure()
         }
+    }
+
+    /// Apple Music 歌路由 — 把猿音自家播放器停掉, 让 AppleMusicLibraryService
+    /// 通过 ApplicationMusicPlayer 接手 DRM 流播放。currentSong 清空, 让 UI
+    /// 知道猿音侧没在播 (Apple Music mini player 会从 appleMusic.nowPlayingSong
+    /// 驱动)。
+    private func playAppleMusicSong(_ song: Song) async {
+        // 停猿音侧
+        decodingTask?.cancel(); decodingTask = nil
+        cancelGaplessTasks()
+        crossfadeDecodingTask?.cancel(); crossfadeDecodingTask = nil
+        audioEngine.stopPlayback()
+        audioEngine.stopCrossfadeNode()
+        stopTimeUpdater()
+        currentSong = nil
+        currentTime = 0
+        duration = 0
+        isLoading = false
+        isPlaying = false
+        await AppServices.shared.appleMusicLibrary.play(primuseSong: song)
     }
 
     func play(song: Song, from url: URL) async {

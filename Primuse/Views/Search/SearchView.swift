@@ -24,6 +24,9 @@ struct SearchView: View {
     /// 当前已经渲染的结果对应的 query。如果它与 searchText 不一致, 说明
     /// 屏幕上还是上一轮的旧结果, ContentUnavailableView 不该出来。
     @State private var renderedQuery: String = ""
+    /// 自增 generation token — 防止旧 task 的 defer 覆盖新一轮 performSearch
+    /// 设的 isSearching 状态。task 完成时只在 gen 还匹配时才 reset。
+    @State private var searchGeneration: Int = 0
 
     var body: some View {
         NavigationStack {
@@ -42,10 +45,11 @@ struct SearchView: View {
                     } else {
                         recentSearchView
                     }
-                } else if searchResults.isEmpty && matchingAlbums.isEmpty {
-                    // 搜索中 (或 query 还没追上渲染) 时不立刻 "无匹配", 否则
-                    // 200ms+ 的窗口里会先闪 ContentUnavailableView 再蹦出结果。
-                    // 等 worker 完成且 renderedQuery == searchText 才判定真的无匹配。
+                } else if searchResults.isEmpty && matchingAlbums.isEmpty && appleMusic.searchResults.isEmpty {
+                    // 本地 + Apple Music 都没结果时才走 "无匹配" 视图。之前的
+                    // bug: 本地 0 + Apple Music 25 也会被这条分支吃掉, Apple
+                    // Music section 一起不显示, 用户搜长 query "街角的晚风"
+                    // 时表现成 "搜不到任何结果"。
                     if isSearching || renderedQuery != searchText {
                         searchingPlaceholder
                     } else {
@@ -61,6 +65,14 @@ struct SearchView: View {
             .onSubmit(of: .search) {
                 addRecentSearch(searchText)
             }
+            // SearchView 用自己的 NavigationStack, 没继承 ContentView 那边的
+            // album / artist 目的地, 需要自己再挂一遍。
+            .navigationDestination(for: PrimuseKit.Album.self) { album in
+                AlbumDetailView(album: album)
+            }
+            .navigationDestination(for: PrimuseKit.Artist.self) { artist in
+                ArtistDetailView(artist: artist)
+            }
         }
         .onAppear(perform: loadRecentSearches)
         .onReceive(NotificationCenter.default.publisher(for: CloudKVSSync.externalChangeNotification)) { note in
@@ -74,8 +86,12 @@ struct SearchView: View {
             appleMusic.search(query: newValue)
         }
         .onChange(of: library.searchRevision) { _, _ in
+            // 只 invalidate 歌词缓存 — 不立即重跑 performSearch。
+            // 后台 backfill / scan 会频繁翻 searchRevision (一批 50 首一次),
+            // 之前每次都触发 cancel + restart, 永远没 task 能跑完, 搜索条
+            // 卡在 loading。改成 lazy: 等用户下次输入或者 query 没变也无所谓
+            // (用户感知就是结果稍微 stale 而已, 而不是卡死)。
             lyricsSearchCache = LibrarySearchCache()
-            performSearch(query: searchText)
         }
         .onDisappear {
             searchTask?.cancel()
@@ -138,16 +154,18 @@ struct SearchView: View {
                 }
             }
 
-            // Albums matching
+            // Albums matching — 点 row 跳到 AlbumDetailView (整张专辑曲目列表)。
             if !matchingAlbums.isEmpty {
                 Section("tab_albums") {
                     ForEach(matchingAlbums.prefix(5)) { album in
-                        HStack(spacing: 12) {
-                            CachedArtworkView(albumID: album.id, albumTitle: album.title,
-                                              artistName: album.artistName, size: 44, cornerRadius: 6)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(album.title).font(.subheadline).lineLimit(1)
-                                Text(album.artistName ?? "").font(.caption).foregroundStyle(.secondary)
+                        NavigationLink(value: album) {
+                            HStack(spacing: 12) {
+                                CachedArtworkView(albumID: album.id, albumTitle: album.title,
+                                                  artistName: album.artistName, size: 44, cornerRadius: 6)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(album.title).font(.subheadline).lineLimit(1)
+                                    Text(album.artistName ?? "").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -161,41 +179,53 @@ struct SearchView: View {
             songSection(kind: .lyrics, titleKey: "search_section_lyrics")
             songSection(kind: .fuzzy, titleKey: "search_section_fuzzy")
 
-            // Apple Music — 只在用户已授权且查到结果时显示。未授权状态走
-            // Settings 入口让用户主动 opt-in,不在搜索这条路径里弹系统授权
-            // 对话框 (用户搜歌时被弹会很迷)。
-            if appleMusic.authState == .authorized {
-                if !appleMusic.searchResults.isEmpty {
-                    Section {
-                        ForEach(appleMusic.searchResults, id: \.id) { song in
-                            appleMusicRow(song)
-                        }
-                    } header: {
-                        HStack {
-                            Image(systemName: "applelogo")
-                            Text("search_section_apple_music")
-                        }
-                    }
-                } else if appleMusic.isSearching {
-                    Section {
-                        HStack {
-                            ProgressView().controlSize(.small)
-                            Text("search_apple_music_loading")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if let err = appleMusic.lastPlaybackError {
-                    Section {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-            }
+            // Apple Music — 即使没结果也显示 section 标题, 让用户一眼看到
+            // "为什么没有 Apple Music 推荐" (未授权 / 搜索失败 / 真没结果)。
+            appleMusicSection
         }
         .listStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var appleMusicSection: some View {
+        Section {
+            switch appleMusic.authState {
+            case .notDetermined:
+                Label("apple_music_notice_notDetermined", systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .denied, .restricted:
+                Label("apple_music_notice_denied", systemImage: "lock.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .authorized:
+                if appleMusic.isSearching {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("search_apple_music_loading").font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if let err = appleMusic.lastSearchError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.red)
+                } else if appleMusic.searchResults.isEmpty {
+                    if appleMusic.lastSearchHitCount == 0 {
+                        Label("apple_music_notice_no_results", systemImage: "magnifyingglass")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    // hitCount == -1 表示还没搜过, 不显示状态 (避免空 section)
+                } else {
+                    ForEach(appleMusic.searchResults, id: \.id) { song in
+                        appleMusicRow(song)
+                    }
+                }
+                if let err = appleMusic.lastPlaybackError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
+            }
+        } header: {
+            HStack {
+                Image(systemName: "applelogo")
+                Text("search_section_apple_music")
+            }
+        }
     }
 
     /// 一组按 matchKind 过滤的歌曲 Section。空组直接 noop, 不显示标题。
@@ -272,9 +302,20 @@ struct SearchView: View {
         let albumsSnapshot = library.visibleAlbums
         let cacheSnapshot = lyricsSearchCache
 
+        searchGeneration += 1
+        let myGen = searchGeneration
         isSearching = true
 
         searchTask = Task {
+            // 不管成功 / 取消 / 出错都要把 isSearching 关回去, 否则 UI 卡在
+            // loading 状态。用 generation 防止旧 task 的 defer 覆盖新一轮
+            // performSearch 设的状态 — 新 task 已 bump generation 时, 旧 task
+            // defer 看到 gen 不匹配就不动 state。
+            defer {
+                if myGen == searchGeneration {
+                    isSearching = false
+                }
+            }
             // Debounce 200ms
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
