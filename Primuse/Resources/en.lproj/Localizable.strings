@@ -898,6 +898,17 @@
 "settings_dlna_section" = "DLNA Receiver";
 "settings_dlna_enable" = "Accept casts from this network";
 "settings_dlna_footer" = "Other devices on the same Wi-Fi (VLC, Synology Audio Station, Plex, Hi-Fi Cast, etc.) will see Primuse as a media renderer and can push audio for playback.";
+"settings_dlna_keepalive" = "Receive in background";
+"settings_dlna_keepalive_footer" = "When enabled, Primuse keeps accepting pushes from other devices even when it's in the background and not playing music. Trade-off: the lock screen / Control Center will show Primuse as playing, and battery use rises slightly.";
+"cast_to_device" = "Cast to device";
+"cast_casting_to_format" = "Casting to: %@";
+"cast_picker_title" = "Playback device";
+"cast_local_device" = "This iPhone";
+"cast_local_subtitle" = "Play on this device";
+"cast_lan_devices" = "Local network devices";
+"cast_scanning" = "Searching for devices…";
+"cast_dlna_required_hint" = "The device must support the UPnP/DLNA renderer protocol and be on the same Wi-Fi as your iPhone.";
+"refresh" = "Refresh";
 "dlna_status_listening" = "Waiting for senders";
 "dlna_status_playing_format" = "Casting: %@";
 "dlna_status_error_format" = "Error: %@";

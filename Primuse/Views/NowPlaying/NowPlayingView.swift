@@ -28,6 +28,7 @@ struct NowPlayingView: View {
     @State private var scrapeAlertMessage: String?
     @State private var showScrapeOptions = false
     @State private var showAddToPlaylist = false
+    @State private var showCastPicker = false
     @State private var showSongInfo = false
     @State private var showSleepTimer = false
     @State private var showDeleteConfirm = false
@@ -138,6 +139,11 @@ struct NowPlayingView: View {
                 SimilarSongsSheet(seed: song)
                     .presentationDetents([.large])
             }
+        }
+        .sheet(isPresented: $showCastPicker) {
+            CastDevicePickerSheet()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .confirmationDialog(String(localized: "sleep_timer"), isPresented: $showSleepTimer) {
             Button("5 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 5) }
@@ -724,6 +730,21 @@ struct NowPlayingView: View {
                 }
             }
 
+            // 投屏 ── Apple Music DRM 流没法 push, 自动 disable; 当前在投屏时
+            // menu 文案变成 "停止投屏" + 显示目标设备名。
+            Section {
+                Button { showCastPicker = true } label: {
+                    if let renderer = player.castingRenderer {
+                        Label(String(format: String(localized: "cast_casting_to_format"),
+                                     renderer.friendlyName),
+                              systemImage: "airplayaudio")
+                    } else {
+                        Label(String(localized: "cast_to_device"), systemImage: "airplayaudio")
+                    }
+                }
+                .disabled(player.currentSong == nil || player.isAppleMusicMode)
+            }
+
             // 阅读偏好（仅歌词模式可见）—— Picker(.menu) submenu 形式
             if showLyrics {
                 Section {
@@ -869,6 +890,38 @@ struct NowPlayingView: View {
     private func loadLyrics() async {
         guard let song = player.currentSong else { setLyrics([]); return }
         let loadStart = Date()
+
+        // Apple Music 走 MusicKit 原生 catalog 歌词, 不经刮削链路。先查
+        // MetadataAssetStore songID cache 命中直接显示 (cache 一份避免每次切
+        // 歌都走 catalog 网络); miss 再问 MusicKit, 拿到 TTML 解析后写回 cache。
+        // 全失败 → setLyrics([]) 让 emptyLyricsView 显示"在 Apple Music 中查
+        // 看歌词"按钮 fallback。
+        if song.sourceID == AppleMusicLibraryService.systemSourceID {
+            if let cached = await MetadataAssetStore.shared.cachedLyrics(forSongID: song.id),
+               !cached.isEmpty {
+                plog(String(format: "📜 Apple Music lyrics cache hit '%@' (%d lines)",
+                            song.title, cached.count))
+                setLyrics(cached)
+                return
+            }
+            do {
+                if let lyrics = try await AppServices.shared.appleMusicLibrary
+                    .fetchLyrics(forAmID: song.filePath),
+                   !lyrics.isEmpty {
+                    _ = await MetadataAssetStore.shared.cacheLyrics(lyrics, forSongID: song.id, force: true)
+                    plog(String(format: "📜 Apple Music lyrics fetched '%@' in %.0fms (%d lines)",
+                                song.title, Date().timeIntervalSince(loadStart) * 1000, lyrics.count))
+                    setLyrics(lyrics)
+                    return
+                } else {
+                    plog("📜 Apple Music lyrics: no official lyrics for '\(song.title)'")
+                }
+            } catch {
+                plog("⚠️Apple Music lyrics fetch failed for '\(song.title)': \(error.localizedDescription)")
+            }
+            setLyrics([])
+            return
+        }
 
         // Tier 1a: songID hash cache —— 即使 NAS path 也读 (stale-while-revalidate)。
         // 历史污染 cache 现在通过 trustedSource:false + sidecar 写后回写 cache
@@ -2001,6 +2054,118 @@ fileprivate struct PlaybackProgressBar: View {
                 Text("-\(max(0, player.duration - player.currentTime).formattedDuration)")
             }
             .font(.caption2).foregroundStyle(.white.opacity(0.5)).monospacedDigit()
+        }
+    }
+}
+
+// MARK: - Cast Device Picker
+
+/// 投屏目标设备选择。读 DLNARendererService.discoveredRenderers, 显示 LAN 内
+/// 所有 MediaRenderer; 顶部"本机播放"项 = 取消投屏 (stopCasting); 选中其它项
+/// = startCasting。当前已投屏的设备旁打 checkmark。
+struct CastDevicePickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AudioPlayerService.self) private var player
+    @Environment(DLNARendererService.self) private var renderer
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        Task { await player.stopCasting(); dismiss() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "iphone")
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("cast_local_device")
+                                    .font(.body)
+                                Text("cast_local_subtitle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if !player.isCastingMode {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                let remoteRenderers = renderer.discoveredRenderers.values.sorted { $0.friendlyName < $1.friendlyName }
+                if remoteRenderers.isEmpty {
+                    Section {
+                        VStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("cast_scanning")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("cast_dlna_required_hint")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    }
+                } else {
+                    Section {
+                        ForEach(remoteRenderers) { dev in
+                            Button {
+                                Task { await player.startCasting(to: dev); dismiss() }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "tv.and.hifispeaker.fill")
+                                        .frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(dev.friendlyName)
+                                            .font(.body)
+                                            .lineLimit(1)
+                                        if let model = dev.modelName {
+                                            Text(dev.manufacturer.map { "\($0) · \(model)" } ?? model)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        } else {
+                                            Text(dev.host)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if player.castingRenderer?.udn == dev.udn {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: {
+                        Text("cast_lan_devices")
+                    }
+                }
+            }
+            .navigationTitle("cast_picker_title")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: { renderer.refreshRemoteRenderers() }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .accessibilityLabel(Text("refresh"))
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(String(localized: "done")) { dismiss() }
+                }
+            }
+            .task {
+                // 进 sheet 立刻主动扫一遍, 不等下一次周期触发
+                renderer.refreshRemoteRenderers()
+            }
         }
     }
 }

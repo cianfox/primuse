@@ -169,6 +169,21 @@ final class AudioPlayerService {
     /// mirror task 写自己字段时设为 true, 让 didSet 跳过"再写回 Apple Music"
     /// 的副作用, 避免 mirror → setRepeat/setShuffle → polling → mirror 的回环。
     private var isMirroringFromAppleMusic = false
+
+    // MARK: - DLNA Casting (推到外部 Renderer)
+
+    /// 当前正在投屏的 RemoteRenderer。nil = 本机播放。
+    /// 跟 isAppleMusicMode 一样作为路由开关: togglePlayPause / next / previous /
+    /// seek 检测到 isCastingMode 后走 RemoteRendererController 而不是 audioEngine。
+    private(set) var castingRenderer: RemoteRenderer?
+
+    /// 跟当前 castingRenderer 对应的 SOAP controller。生命周期跟 castingRenderer 绑定。
+    private var castingController: RemoteRendererController?
+
+    /// 1Hz 轮询 GetPositionInfo + GetTransportInfo 同步进度 / 播放状态。
+    private var castingPositionTask: Task<Void, Never>?
+
+    var isCastingMode: Bool { castingRenderer != nil }
     private var appleMusicMirrorTask: Task<Void, Never>?
 
     // MARK: - Shuffle Order
@@ -249,6 +264,7 @@ final class AudioPlayerService {
     private static let midStreamErrorGrace: TimeInterval = 3
     private static let firstBufferTimeoutSeconds = 35
     private static let remoteFallbackFirstBufferTimeoutSeconds = 20
+    private static let dlnaSourceID = "dlna"
 
     let playbackSettings: PlaybackSettingsStore
 
@@ -474,6 +490,13 @@ final class AudioPlayerService {
             return
         }
 
+        // Cast 模式 ── 走 RemoteRendererController 推到远端 renderer, 不动
+        // 本地 audioEngine。next/previous 走到这里时同样路由。
+        if castingController != nil {
+            await castSong(song)
+            return
+        }
+
         // 上一首是 Apple Music → 切到本地: 先停 mirror task 并让系统侧停掉,
         // 避免 mirror 继续把 currentSong 改回 Apple Music 那首。
         if isAppleMusicMode {
@@ -690,6 +713,15 @@ final class AudioPlayerService {
                     plog("▶️ Decoder: HTTPRangePlaybackSource (reason: scheme=\(url.scheme ?? "?"), range-based HTTP streaming) cache=\(playbackSettings.audioCacheEnabled) outputFormat: sr=\(outputFormat.sampleRate) ch=\(outputFormat.channelCount)")
                     activeDecoderKind = .httpStream
                     stream = nativeDecoder.decode(from: inputSource, outputFormat: outputFormat, onResolveSourceLength: makeResolveLengthCallback(for: song))
+                } else if isDLNACast(song), assetReaderDecoder.canDecode(url: url) {
+                    // DLNA control points often push CGI/progressive URLs
+                    // with no Content-Length. Full-download fallback waits
+                    // for EOF before decoding, which leaves the sender stuck
+                    // on loading. Let AVFoundation open the remote asset
+                    // progressively before trying the legacy full download.
+                    plog("▶️ Decoder: AVAssetReader (reason: DLNA URL has no range/fileSize, progressive remote fallback) outputFormat: sr=\(outputFormat.sampleRate) ch=\(outputFormat.channelCount)")
+                    await playWithFallbackDecoder(song: song, url: url, outputFormat: outputFormat, playID: id)
+                    return
                 } else {
                     // Fallback for legacy rows / arbitrary URLs where fileSize is
                     // unknown. This preserves compatibility but still logs clearly
@@ -757,9 +789,14 @@ final class AudioPlayerService {
                 guard !Task.isCancelled, playID == id else { return }
                 plog("⚠️ Native decode failed for '\(song.title)': \(error.localizedDescription)")
                 if activeDecoderKind == .httpStream {
-                    plog("↳ HTTP range decode failed before first buffer; falling back to full download")
-                    let cacheURL = playbackSettings.audioCacheEnabled ? sourceManager?.cacheURL(for: song) : nil
-                    await playWithStreamingDownload(song: song, url: url, outputFormat: outputFormat, playID: id, cacheURL: cacheURL)
+                    if isDLNACast(song), assetReaderDecoder.canDecode(url: url) {
+                        plog("↳ HTTP range decode failed before first buffer; trying DLNA progressive AssetReader fallback")
+                        await playWithFallbackDecoder(song: song, url: url, outputFormat: outputFormat, playID: id)
+                    } else {
+                        plog("↳ HTTP range decode failed before first buffer; falling back to full download")
+                        let cacheURL = playbackSettings.audioCacheEnabled ? sourceManager?.cacheURL(for: song) : nil
+                        await playWithStreamingDownload(song: song, url: url, outputFormat: outputFormat, playID: id, cacheURL: cacheURL)
+                    }
                 } else if !isCloudStream {
                     await playWithFallbackDecoder(song: song, url: url, outputFormat: outputFormat, playID: id)
                 } else {
@@ -822,7 +859,7 @@ final class AudioPlayerService {
             // Cloud streaming already writes to the same cache file as
             // it goes — duplicating via cacheInBackground would just
             // race two writers on the same path.
-            if playbackSettings.audioCacheEnabled, !isCloudStream, activeDecoderKind != .httpStream {
+            if playbackSettings.audioCacheEnabled, !isCloudStream, activeDecoderKind != .httpStream, !isDLNACast(song) {
                 sourceManager?.cacheInBackground(song: song, cacheEnabled: playbackSettings.audioCacheEnabled)
             }
 
@@ -1285,7 +1322,9 @@ final class AudioPlayerService {
             }
 
             // Background-cache file for offline playback
-            sourceManager?.cacheInBackground(song: song, cacheEnabled: playbackSettings.audioCacheEnabled)
+            if !isDLNACast(song) {
+                sourceManager?.cacheInBackground(song: song, cacheEnabled: playbackSettings.audioCacheEnabled)
+            }
 
             // Decode remaining buffers with track-end detection
             decodingTask = Task { [id, iteratorBox] in
@@ -1447,9 +1486,149 @@ final class AudioPlayerService {
         updatePlaybackState()
     }
 
+    // MARK: - Casting (DLNA Controller 路径)
+
+    /// 开始投屏到远端 renderer ── 本地立刻停, 把当前歌推过去续播 (从当前
+    /// 进度起 seek)。后续 togglePlayPause / next / previous / seek 全部路由到
+    /// RemoteRendererController。Apple Music DRM 歌无法投屏, 调用前 caller 应
+    /// 自己 disable 按钮。
+    func startCasting(to renderer: RemoteRenderer) async {
+        guard !isAppleMusicMode else {
+            plog("⚠️ Cast: Apple Music DRM songs cannot be cast, ignored")
+            return
+        }
+        let resumeSong = currentSong
+        let resumeTime = currentTime
+        let wasPlaying = isPlaying
+
+        // 1. 本地停 (audioEngine + decoding task), audio session 让出去
+        decodingTask?.cancel(); decodingTask = nil
+        cancelGaplessTasks()
+        crossfadeDecodingTask?.cancel(); crossfadeDecodingTask = nil
+        audioEngine.stopPlayback()
+        audioEngine.stopCrossfadeNode()
+        stopTimeUpdater()
+        isPlaying = false
+
+        // 2. 切换 cast 状态 + 启动 controller
+        castingRenderer = renderer
+        castingController = RemoteRendererController(renderer: renderer)
+        plog("📡 Cast: started → \(renderer.friendlyName)")
+
+        // 3. 推当前歌到 renderer + seek 到 resumeTime + 自动 play
+        if let song = resumeSong {
+            await castSong(song, startAt: resumeTime, autoPlay: wasPlaying)
+        }
+        // 4. 启动 1Hz 状态轮询
+        startCastingPolling()
+    }
+
+    /// 停投屏 ── controller stop + 本地从同一首歌当前进度续播 (用户期望)。
+    /// 如果 controller 已经断 / 出错, 也强制清状态。
+    func stopCasting() async {
+        castingPositionTask?.cancel(); castingPositionTask = nil
+        let controller = castingController
+        let resumeSong = currentSong
+        let resumeTime = currentTime
+        castingRenderer = nil
+        castingController = nil
+
+        if let controller {
+            try? await controller.stop()
+        }
+        plog("📡 Cast: stopped, resuming local from \(resumeTime)s")
+
+        if let song = resumeSong {
+            await play(song: song)
+            if resumeTime > 1 {
+                // play 完成后再 seek; 给一点 buffer 时间
+                try? await Task.sleep(for: .milliseconds(300))
+                seek(to: resumeTime, startPlaying: false)
+            }
+        }
+    }
+
+    /// cast 模式下播指定歌 ── 解析 URL → 推 SetAVTransportURI → Play → 可选 Seek。
+    /// 失败不抛错, 只 log + 保持 cast 状态让用户能手动重试。
+    private func castSong(_ song: Song, startAt seconds: TimeInterval = 0, autoPlay: Bool = true) async {
+        guard let controller = castingController else { return }
+        currentSong = song
+        currentTime = seconds
+        duration = song.duration.sanitizedDuration
+        do {
+            let uri = try await resolveCastURI(for: song)
+            try await controller.setAVTransportURI(uri: uri.absoluteString,
+                                                    title: song.title,
+                                                    artist: song.artistName)
+            if autoPlay {
+                try await controller.play()
+                isPlaying = true
+            }
+            if seconds > 0 {
+                try? await Task.sleep(for: .milliseconds(200))
+                try? await controller.seek(toSeconds: seconds)
+            }
+            plog("📡 Cast: '\(song.title)' → \(controller.renderer.friendlyName)")
+        } catch {
+            plog("⚠️ Cast playback failed for '\(song.title)': \(error.localizedDescription)")
+            isPlaying = false
+        }
+    }
+
+    /// 给 renderer 拿一个它能 HTTP GET 的 URL:
+    /// - file:// (本地 / cached): 注册到 DLNAMediaServer, 返回 http://<iphone>:49160/<token>/...
+    /// - https / http (NAS / Cloud HTTP source): 直接给, renderer 拉 (前提同 LAN 或公网可达)
+    /// - primuse-stream:// (range-fetch cloud): 当前不支持 cast, 抛错让 caller 提示用户先离线下载
+    private func resolveCastURI(for song: Song) async throws -> URL {
+        let url = try await resolvedURL(for: song)
+        if url.isFileURL {
+            let name = (song.title.isEmpty ? "track" : song.title) + "." + (url.pathExtension.isEmpty ? "mp3" : url.pathExtension)
+            return try DLNAMediaServer.shared.registerFile(localURL: url, suggestedName: name)
+        }
+        if url.scheme == "http" || url.scheme == "https" {
+            return url
+        }
+        throw NSError(domain: "Primuse.DLNA", code: -10,
+                      userInfo: [NSLocalizedDescriptionKey: "Source \"\(song.title)\" needs offline download before casting (scheme=\(url.scheme ?? "?"))"])
+    }
+
+    private func startCastingPolling() {
+        castingPositionTask?.cancel()
+        castingPositionTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, let controller = self.castingController else { break }
+                do {
+                    let pos = try await controller.getPositionInfo()
+                    if pos.currentTime >= 0 { self.currentTime = pos.currentTime }
+                    if pos.duration > 0 { self.duration = pos.duration }
+                    let state = try await controller.getTransportInfo()
+                    self.isPlaying = (state == "PLAYING")
+                } catch {
+                    // 轮询失败 (renderer 断网 / 关机) 不立刻退出 cast, 给 3 次重试机会
+                    plog("⚠️ Cast polling error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     func togglePlayPause() {
         if isAppleMusicMode {
             AppServices.shared.appleMusic.togglePlayPauseAppleMusic()
+            return
+        }
+        if isCastingMode, let controller = castingController {
+            Task { [isPlaying] in
+                do {
+                    if isPlaying {
+                        try await controller.pause()
+                    } else {
+                        try await controller.play()
+                    }
+                } catch {
+                    plog("⚠️ Cast togglePlayPause failed: \(error.localizedDescription)")
+                }
+            }
             return
         }
         if isPlaying { pause() } else { resume() }
@@ -1583,6 +1762,16 @@ final class AudioPlayerService {
     func seek(to time: TimeInterval, startPlaying: Bool? = nil, isRecovery: Bool = false) {
         if isAppleMusicMode {
             AppServices.shared.appleMusic.seekAppleMusic(to: TimeInterval.sanitized(time))
+            return
+        }
+        if isCastingMode, let controller = castingController {
+            let target = TimeInterval.sanitized(time)
+            currentTime = target
+            Task {
+                do { try await controller.seek(toSeconds: target) } catch {
+                    plog("⚠️ Cast seek failed: \(error.localizedDescription)")
+                }
+            }
             return
         }
         let requestedTime = TimeInterval.sanitized(time)
@@ -2416,6 +2605,10 @@ final class AudioPlayerService {
     ///   half-broken loading/streaming state cleanly instead of
     ///   leaving the engine wedged with currentSong still set.
     private func autoAdvanceAfterFailure() async {
+        if isDLNACast(currentSong) {
+            stop()
+            return
+        }
         if repeatMode == .one {
             stop()
             return
@@ -2425,6 +2618,10 @@ final class AudioPlayerService {
         } else {
             stop()
         }
+    }
+
+    private func isDLNACast(_ song: Song?) -> Bool {
+        song?.sourceID == Self.dlnaSourceID
     }
 
     private func nextSongInQueue() -> Song? {

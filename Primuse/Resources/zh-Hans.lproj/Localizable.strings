@@ -899,6 +899,17 @@
 "settings_dlna_section" = "DLNA 接收";
 "settings_dlna_enable" = "接受同一 Wi-Fi 的投送";
 "settings_dlna_footer" = "同 Wi-Fi 下的其它设备(VLC、群晖音频中心、Plex、Hi-Fi Cast 等)可以发现猿音并把音频推过来播放。";
+"settings_dlna_keepalive" = "后台接收推送";
+"settings_dlna_keepalive_footer" = "开启后即使猿音退到后台、没有正在播放音乐,也能持续接收 LAN 内其他设备推过来的音频。代价: 锁屏 / 控制中心会显示猿音在播,耗电略增。";
+"cast_to_device" = "投屏到设备";
+"cast_casting_to_format" = "投屏中: %@";
+"cast_picker_title" = "选择播放设备";
+"cast_local_device" = "本机播放";
+"cast_local_subtitle" = "在这台 iPhone 上播放";
+"cast_lan_devices" = "局域网设备";
+"cast_scanning" = "正在搜索投屏设备…";
+"cast_dlna_required_hint" = "设备需支持 UPnP/DLNA 渲染器协议,并跟你的 iPhone 在同一 Wi-Fi 下。";
+"refresh" = "刷新";
 "dlna_status_listening" = "等待发现";
 "dlna_status_playing_format" = "正在播放: %@";
 "dlna_status_error_format" = "错误: %@";

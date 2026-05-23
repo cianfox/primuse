@@ -27,6 +27,13 @@ final class AudioEngine {
     private var isSetUp = false
     private var headphoneMotionManager: CMHeadphoneMotionManager?
 
+    /// DLNA 后台保活用 ── 喂一段 -90 dB 的极小振幅 buffer 让 iOS audio
+    /// background mode 不挂起进程, NWListener 才能持续接 SSDP / control 请求。
+    /// 真歌在播时主路径已经撑住 session, 这两个 nil; 真歌停 + DLNA 后台保活
+    /// 开启时挂上去。开关由 DLNARendererService 调度。
+    private var keepAlivePlayerNode: AVAudioPlayerNode?
+    private var keepAliveBuffer: AVAudioPCMBuffer?
+
     /// Sample time offset for gapless track transitions.
     /// When gapless transitions happen without stopping the playerNode,
     /// this tracks the cumulative sample offset so currentTime resets to 0.
@@ -136,6 +143,71 @@ final class AudioEngine {
         engine?.stop()
         stopSpatialHeadTracking()
         isPlaying = false
+    }
+
+    // MARK: - DLNA Background Keep-Alive
+
+    /// 启动一个静音 AVAudioPlayerNode 喂极小振幅 buffer ── 让 iOS 的
+    /// audio background mode 把 app 标记为 "正在播音频", 进程不被 suspend,
+    /// NWListener / POSIX socket 才能在后台继续接 SSDP / control 请求。
+    ///
+    /// 振幅用 1/32768 (-90 dB FS, 已经在 16-bit 量化噪声以下), 用户听不到。
+    /// 用交替正负避免全 0 buffer 被 iOS 静音检测当成"没在播"。
+    ///
+    /// 跟主播放共存: keepAlive node 单独 attach, 跟 playerNode 平级挂 mainMixer,
+    /// 不影响 EQ / spatial / 主路径 volume。真歌在播时调用方应该停 keepAlive
+    /// (主路径自己撑 session, 没必要双管齐下耗电)。
+    func startSilenceKeepAlive() {
+        guard keepAlivePlayerNode == nil else { return }
+        do { try setUp() } catch {
+            plog("⚠️ AudioEngine keepAlive setUp failed: \(error.localizedDescription)")
+            return
+        }
+        guard let engine, let mainMixer = engine.mainMixerNode as AVAudioMixerNode? else { return }
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)
+            ?? mainMixer.outputFormat(forBus: 0)
+        let frames: AVAudioFrameCount = 4_800   // 0.1s @ 48k
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+        buffer.frameLength = frames
+
+        // 极小振幅交替波 ── 不能全 0 (iOS 静音检测会判定无效流然后 suspend)。
+        let amplitude: Float = 1.0 / 32_768
+        if let channelData = buffer.floatChannelData {
+            for ch in 0..<Int(format.channelCount) {
+                for i in 0..<Int(frames) {
+                    channelData[ch][i] = (i % 2 == 0) ? amplitude : -amplitude
+                }
+            }
+        }
+
+        let node = AVAudioPlayerNode()
+        engine.attach(node)
+        engine.connect(node, to: mainMixer, format: format)
+        node.volume = 0.001   // 即便有人调系统音量到极大也基本听不见
+
+        if !engine.isRunning {
+            do { try engine.start() } catch {
+                plog("⚠️ AudioEngine keepAlive engine.start failed: \(error.localizedDescription)")
+                engine.detach(node)
+                return
+            }
+        }
+
+        node.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
+        node.play()
+        keepAlivePlayerNode = node
+        keepAliveBuffer = buffer
+        plog("🛡 AudioEngine silence keepAlive ON")
+    }
+
+    func stopSilenceKeepAlive() {
+        guard let node = keepAlivePlayerNode else { return }
+        node.stop()
+        engine?.detach(node)
+        keepAlivePlayerNode = nil
+        keepAliveBuffer = nil
+        plog("🛡 AudioEngine silence keepAlive OFF")
     }
 
     // MARK: - Buffer Scheduling (Primary Node)
