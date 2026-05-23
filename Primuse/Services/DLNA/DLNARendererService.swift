@@ -78,11 +78,14 @@ final class DLNARendererService {
         }
     }
 
-    private var ssdpListener: NWListener?
+    /// SSDP 用 POSIX UDP socket ── Network.framework 的 NWConnectionGroup
+    /// / NWListener UDP 在 iOS 上同时绑 1900 端口的 multicast + unicast 时
+    /// 有已知问题, 实测一个 M-SEARCH 都收不到 (见 8b1da7c)。退回 BSD socket:
+    /// 一个 fd 绑 INADDR_ANY:1900, 同时通过 IP_ADD_MEMBERSHIP 加入
+    /// 239.255.255.250, multicast 和 unicast M-SEARCH 都能投递到 read source。
+    private var ssdpSocket: Int32 = -1
+    private var ssdpReadSource: DispatchSourceRead?
     private var httpListener: NWListener?
-    /// SSDP multicast 组,负责接收发到 239.255.255.250:1900 的 M-SEARCH
-    /// (大多数控制点用 multicast search) 以及主动发 NOTIFY alive 广播。
-    private var ssdpMulticast: NWConnectionGroup?
     /// NOTIFY alive 周期任务。`ssdp:byebye` 在 stop() 里同步发掉。
     private var notifyTask: Task<Void, Never>?
 
@@ -229,8 +232,9 @@ final class DLNARendererService {
         subscriptions.removeAll()
         connectedDevices.removeAll()
         activeControllerID = nil
-        ssdpMulticast?.cancel(); ssdpMulticast = nil
-        ssdpListener?.cancel(); ssdpListener = nil
+        ssdpReadSource?.cancel()  // cancel handler 里 close(fd)
+        ssdpReadSource = nil
+        ssdpSocket = -1
         httpListener?.cancel(); httpListener = nil
         isRunning = false
         statusText = ""
@@ -239,75 +243,90 @@ final class DLNARendererService {
     // MARK: - SSDP
 
     private func startSSDP() throws {
-        // 单播 listener ── 控制点发完 M-SEARCH 后从我们这边收包的 socket
-        // 也可能落在这,主要兜底用。多数主流控制点(VLC / Plex)走的是
-        // 加入 multicast group 后单播回的模式,这两条路径都要监听。
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-        let listener = try NWListener(using: params, on: Self.ssdpPort)
-        listener.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .ready:
-                    self?.logEvent(.discovery, "SSDP unicast listener ready on UDP \(Self.ssdpPort.rawValue)")
-                case .failed(let error):
-                    self?.logEvent(.error, "SSDP unicast listener failed: \(error.localizedDescription)")
-                default:
-                    break
-                }
-            }
+        // 一个 UDP socket 同时收 multicast(239.255.255.250) 和 unicast(自机
+        // 任意 IP) 到 1900 端口的包 ── BSD socket 标准玩法, 跟 iOS 上
+        // NWConnectionGroup/NWListener UDP 同绑同端口的兼容性问题彻底解耦。
+        let fd = Darwin.socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
+                          userInfo: [NSLocalizedDescriptionKey: "socket() failed"])
         }
-        listener.newConnectionHandler = { [weak self] conn in
-            Task { @MainActor in self?.handleSSDPConnection(conn) }
-        }
-        listener.start(queue: .main)
-        ssdpListener = listener
 
-        // Multicast group ── 监听 239.255.255.250:1900,接受 multicast
-        // M-SEARCH (大多数控制点广播找设备),同时拿来发 NOTIFY alive。
-        // Network.framework 的 NWConnectionGroup 是 iOS 14+ 标准 multicast
-        // 入口,不需要自己撸 setsockopt。
-        let multicastParams = NWParameters.udp
-        multicastParams.allowLocalEndpointReuse = true
-        let multicast = try NWMulticastGroup(
-            for: [.hostPort(host: Self.ssdpMulticastHost, port: Self.ssdpPort)]
-        )
-        let group = NWConnectionGroup(with: multicast, using: multicastParams)
-        group.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .ready:
-                    self?.logEvent(.discovery, "SSDP multicast group joined \(Self.ssdpMulticastHost):\(Self.ssdpPort.rawValue)")
-                case .failed(let error):
-                    self?.logEvent(.error, "SSDP multicast failed: \(error.localizedDescription)")
-                default:
-                    break
-                }
+        // SO_REUSEADDR + SO_REUSEPORT ── 跟其它可能存在的 SSDP-aware 进程共存
+        var yes: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes,
+                       socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes,
+                       socklen_t(MemoryLayout<Int32>.size))
+
+        var bindAddr = sockaddr_in()
+        bindAddr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
+        bindAddr.sin_family = sa_family_t(AF_INET)
+        bindAddr.sin_port = Self.ssdpPort.rawValue.bigEndian
+        bindAddr.sin_addr.s_addr = in_addr_t(0)   // INADDR_ANY
+        let bindResult = withUnsafePointer(to: &bindAddr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                Darwin.bind(fd, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        group.setReceiveHandler(maximumMessageSize: 65535, rejectOversizedMessages: true) { [weak self] msg, content, _ in
-            guard let self, let data = content,
-                  let request = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in
-                self.handleMulticastDatagram(request, message: msg)
+        guard bindResult == 0 else {
+            let e = errno
+            Darwin.close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(e),
+                          userInfo: [NSLocalizedDescriptionKey: "bind(0.0.0.0:1900) failed errno=\(e)"])
+        }
+
+        // IP_ADD_MEMBERSHIP ── 加入 239.255.255.250 组。imr_interface 设
+        // INADDR_ANY 让内核挑路由(通常是默认上行接口)。失败不致命,
+        // 退化为只有 unicast SSDP 可用。
+        var mreq = ip_mreq()
+        mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250")
+        mreq.imr_interface.s_addr = in_addr_t(0)
+        let joinResult = setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
+                                    socklen_t(MemoryLayout<ip_mreq>.size))
+        if joinResult != 0 {
+            logEvent(.error, "IP_ADD_MEMBERSHIP failed errno=\(errno)")
+        }
+
+        // multicast TTL + 关 loopback ── 跨网段 4 跳够用, 自己发的 NOTIFY
+        // 不需要再回到自己 (会触发 handleSSDPRead 浪费 CPU)。
+        var ttl: UInt8 = 4
+        _ = setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl,
+                       socklen_t(MemoryLayout<UInt8>.size))
+        var loop: UInt8 = 0
+        _ = setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop,
+                       socklen_t(MemoryLayout<UInt8>.size))
+
+        ssdpSocket = fd
+
+        // DispatchSourceRead 在 main queue 上等 readable; recvfrom 立即返回。
+        // setCancelHandler 里 close(fd), 保证 socket 跟 source 同生命周期。
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.handleSSDPRead()
             }
         }
-        group.start(queue: .main)
-        ssdpMulticast = group
+        source.setCancelHandler {
+            Darwin.close(fd)
+        }
+        source.resume()
+        ssdpReadSource = source
+
+        logEvent(.discovery, "SSDP socket bound UDP/1900 + joined 239.255.255.250")
 
         // 启动 NOTIFY alive 广播循环。前 60s 内每 3s 发一次 (新加入网络
         // 的控制点能尽快看到我们),之后改成每 5 分钟,跟 max-age=1800
         // 的标准建议(发送间隔 < max-age/2)对齐。
         notifyTask = Task { [weak self] in
-            // 先发一遍 alive 让 multicast group 上已经在听的控制点立刻收到
-            await Task.yield()
-            self?.sendNotifyBatch(isAlive: true)
+            try? await Task.sleep(for: .milliseconds(50))
+            await MainActor.run { self?.sendNotifyBatch(isAlive: true) }
             var fastTicks = 0
             while !Task.isCancelled {
-                let delay: UInt64 = fastTicks < 20 ? 3 : 300
-                try? await Task.sleep(for: .seconds(Int(delay)))
+                let delay = fastTicks < 20 ? 3 : 300
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { break }
-                self?.sendNotifyBatch(isAlive: true)
+                await MainActor.run { self?.sendNotifyBatch(isAlive: true) }
                 fastTicks += 1
             }
         }
@@ -317,22 +336,41 @@ final class DLNARendererService {
         (["ssdp:all"] + usnTypes).map { $0.lowercased() }
     }
 
-    /// Multicast 收到 M-SEARCH 时单播回 200 OK。`NWConnectionGroup` 给的
-    /// `message` 里能拿到 reply endpoint,直接走它回。
-    private func handleMulticastDatagram(_ request: String, message: NWConnectionGroup.Message) {
+    /// DispatchSource 触发时调 recvfrom 取一个 UDP 包 ── UDP datagram 边界
+    /// 明确, 每次 read 一个完整 M-SEARCH (或 NOTIFY, 但我们 ignore)。
+    private func handleSSDPRead() {
+        guard ssdpSocket >= 0 else { return }
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        var src = sockaddr_in()
+        var srcLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let n = buffer.withUnsafeMutableBufferPointer { buf -> Int in
+            withUnsafeMutablePointer(to: &src) { srcPtr in
+                srcPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                    Darwin.recvfrom(ssdpSocket, buf.baseAddress, buf.count, 0, saPtr, &srcLen)
+                }
+            }
+        }
+        guard n > 0 else { return }
+        let data = Data(buffer[0..<n])
+        guard let request = String(data: data, encoding: .utf8) else { return }
+        let host = Self.ipString(from: src.sin_addr)
+        let port = UInt16(bigEndian: src.sin_port)
+        handleSSDPDatagram(request, fromHost: host, fromPort: port)
+    }
+
+    /// 解析 M-SEARCH, 命中我们 ST 时按 UPnP/AV 规范 unicast 回 6 条 200 OK
+    /// (rootdevice / uuid / device:MediaRenderer:1 / 3 个 service:*) ──
+    /// 控制点按 USN 去重。
+    private func handleSSDPDatagram(_ request: String, fromHost host: String, fromPort port: UInt16) {
         guard request.hasPrefix("M-SEARCH") else { return }
         let lower = request.lowercased()
         guard interestedSSDPTargets.contains(where: { lower.contains($0) }) else { return }
-        // 把单播响应直接走 message.reply,不需要单独建 NWConnection。
         let st = headerValue("st", in: request) ?? "?"
-        logEvent(.discovery, "M-SEARCH (ST=\(st)) — replied")
-        sendSSDPReplies(via: message)
+        logEvent(.discovery, "M-SEARCH from \(host):\(port) (ST=\(st)) — replied")
+        sendSSDPReplies(toHost: host, toPort: port)
     }
 
-    /// 控制点的 M-SEARCH 一次扫多个 ST,我们按 UPnP/AV 规范每个 NT 都发一遍
-    /// 200 OK。3 条 (rootdevice / uuid / device:MediaRenderer:1) 足够命中
-    /// 99% 控制点的扫描需求。
-    private func sendSSDPReplies(via message: NWConnectionGroup.Message) {
+    private func sendSSDPReplies(toHost host: String, toPort port: UInt16) {
         guard let location = httpLocation() else { return }
         for nt in usnTypes {
             let usn = nt == "uuid:\(deviceUUID)" ? nt : "uuid:\(deviceUUID)::\(nt)"
@@ -348,14 +386,16 @@ final class DLNARendererService {
             \r
 
             """
-            message.reply(content: response.data(using: .utf8))
+            if let data = response.data(using: .utf8) {
+                sendUDP(data: data, toHost: host, toPort: port)
+            }
         }
     }
 
-    /// NOTIFY ssdp:alive ── 周期性 multicast 广播,告诉所有控制点"我还在"。
-    /// NT 与 USN 跟 200 OK 同套, 控制点会根据 USN 去重。
+    /// NOTIFY ssdp:alive / byebye ── 周期性 multicast 广播当前在线状态。
+    /// stop() 时同步发一遍 byebye 让控制点立刻从列表移除, 不用等 max-age 过期。
     private func sendNotifyBatch(isAlive: Bool) {
-        guard let group = ssdpMulticast, let location = httpLocation() else { return }
+        guard ssdpSocket >= 0, let location = httpLocation() else { return }
         let nts = isAlive ? "ssdp:alive" : "ssdp:byebye"
         for nt in usnTypes {
             let usn = nt == "uuid:\(deviceUUID)" ? nt : "uuid:\(deviceUUID)::\(nt)"
@@ -381,12 +421,13 @@ final class DLNARendererService {
                 \r
 
                 """
-            group.send(content: notify.data(using: .utf8)) { _ in }
+            if let data = notify.data(using: .utf8) {
+                sendUDP(data: data, toHost: "239.255.255.250",
+                        toPort: Self.ssdpPort.rawValue)
+            }
         }
     }
 
-    /// stop() 时同步发一次 byebye。控制点收到后会立刻把我们从设备列表
-    /// 移除,而不是等 max-age 过期 (30 分钟)。
     private func sendByebyeBatch() {
         sendNotifyBatch(isAlive: false)
     }
@@ -404,46 +445,28 @@ final class DLNARendererService {
         ]
     }
 
-    private func handleSSDPConnection(_ connection: NWConnection) {
-        connection.start(queue: .main)
-        connection.receiveMessage { [weak self] data, _, _, _ in
-            guard let self, let data, let request = String(data: data, encoding: .utf8) else {
-                connection.cancel(); return
-            }
-            Task { @MainActor in
-                // 控制点会发 "M-SEARCH * HTTP/1.1 ... ST: urn:schemas-upnp-org:device:MediaRenderer:1"
-                // 之类。命中 ST = ssdp:all / MediaRenderer:1 / service type
-                // 时,回一个 200 OK SSDP 响应。
-                if request.contains("M-SEARCH") {
-                    let lower = request.lowercased()
-                    if self.interestedSSDPTargets.contains(where: { lower.contains($0) }) {
-                        let st = self.headerValue("st", in: request) ?? "?"
-                        self.logEvent(.discovery, "M-SEARCH unicast (ST=\(st)) — replied")
-                        await self.replySSDP(to: connection)
-                        return
-                    }
+    private func sendUDP(data: Data, toHost host: String, toPort port: UInt16) {
+        guard ssdpSocket >= 0 else { return }
+        var dest = sockaddr_in()
+        dest.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
+        dest.sin_family = sa_family_t(AF_INET)
+        dest.sin_port = port.bigEndian
+        dest.sin_addr.s_addr = inet_addr(host)
+        _ = data.withUnsafeBytes { (rawBuf: UnsafeRawBufferPointer) -> Int in
+            withUnsafePointer(to: &dest) { destPtr -> Int in
+                destPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr -> Int in
+                    Darwin.sendto(ssdpSocket, rawBuf.baseAddress, rawBuf.count, 0,
+                                  saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
-                connection.cancel()
             }
         }
     }
 
-    private func replySSDP(to connection: NWConnection) async {
-        guard let location = httpLocation() else { connection.cancel(); return }
-        let response = """
-        HTTP/1.1 200 OK\r
-        CACHE-CONTROL: max-age=1800\r
-        DATE: \(rfc1123Now())\r
-        EXT: \r
-        LOCATION: \(location)\r
-        SERVER: iOS/UPnP/1.0 Primuse/1.0\r
-        ST: urn:schemas-upnp-org:device:MediaRenderer:1\r
-        USN: uuid:\(deviceUUID)::urn:schemas-upnp-org:device:MediaRenderer:1\r
-        \r
-        """
-        connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+    private static func ipString(from addr: in_addr) -> String {
+        var copy = addr
+        var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        inet_ntop(AF_INET, &copy, &buf, socklen_t(INET_ADDRSTRLEN))
+        return String(cString: buf)
     }
 
     // MARK: - HTTP
@@ -1105,17 +1128,27 @@ final class DLNARendererService {
     // MARK: - XML helpers
 
     private func deviceDescriptionXML() -> String {
+        // X_DLNADOC 声明 DMR-1.50 兼容 ── 某些控制点 (Synology Audio Station、
+        // 部分日韩品牌 AVR) 只列出明确带这个标记的 renderer; X_DLNACAP 留空
+        // 表示没有额外可选能力, 但要存在这个 tag 才符合 DLNA 规范。
         """
         <?xml version="1.0" encoding="UTF-8"?>
-        <root xmlns="urn:schemas-upnp-org:device-1-0">
+        <root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
           <specVersion><major>1</major><minor>0</minor></specVersion>
           <device>
+            <dlna:X_DLNADOC xmlns:dlna="urn:schemas-dlna-org:device-1-0">DMR-1.50</dlna:X_DLNADOC>
+            <dlna:X_DLNACAP xmlns:dlna="urn:schemas-dlna-org:device-1-0"></dlna:X_DLNACAP>
             <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
             <friendlyName>\(xmlEscape(friendlyName))</friendlyName>
             <manufacturer>Welape</manufacturer>
+            <manufacturerURL>https://welape.com</manufacturerURL>
+            <modelDescription>Primuse Media Renderer</modelDescription>
             <modelName>Primuse</modelName>
             <modelNumber>1.0</modelNumber>
+            <modelURL>https://welape.com/primuse</modelURL>
+            <serialNumber>\(deviceUUID.prefix(12))</serialNumber>
             <UDN>uuid:\(deviceUUID)</UDN>
+            <UPC>000000000000</UPC>
             <serviceList>
               <service>
                 <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
