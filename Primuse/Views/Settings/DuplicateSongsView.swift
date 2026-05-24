@@ -17,6 +17,13 @@ struct DuplicateSongsView: View {
     @State private var showCleanAllConfirm = false
     @State private var cleanedCount: Int = 0
     @State private var lastActionMessage: String?
+    @State private var showAllGroups = false
+
+    /// 一次性最多渲染多少个 Section, 超过后下面给个「显示全部」按钮。
+    /// SwiftUI Form 大量 Section + DisclosureGroup 会让 macOS 渲染掉帧,
+    /// 100 是经验值: 用户该清的早就用「一键清理」按钮处理了, 看完整列表
+    /// 是相对边缘的需求, 显式展开避免默认 paint 卡。
+    private static let initialGroupRenderCap = 100
 
     var body: some View {
         Form {
@@ -34,8 +41,24 @@ struct DuplicateSongsView: View {
                     summarySection
                     cleanAllSection
 
-                    ForEach(groups) { group in
+                    ForEach(visibleGroups) { group in
                         groupSection(group)
+                    }
+
+                    if !showAllGroups, groups.count > Self.initialGroupRenderCap {
+                        Section {
+                            Button {
+                                showAllGroups = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "list.bullet.indent")
+                                    Text(String(format: String(localized: "dup_show_all_format"),
+                                                groups.count - Self.initialGroupRenderCap))
+                                }
+                            }
+                        } footer: {
+                            Text("dup_show_all_hint")
+                        }
                     }
                 }
             }
@@ -209,11 +232,15 @@ struct DuplicateSongsView: View {
     private func rescan() async {
         isScanning = true
         defer { isScanning = false }
-        // detect 是 CPU bound 的 in-memory 算, 几千首歌 < 100ms
-        // 直接同步算 + 让出一帧给 SwiftUI 显示 ProgressView
-        try? await Task.sleep(for: .milliseconds(50))
-        groups = DuplicateDetector.detect(in: library.songs)
+        // 主线程只负责拍 snapshot, 实际 Dictionary(grouping:) + folding
+        // + sort 全部到后台跑。10k+ 库主线程跑要 1-3s 直接卡 UI。
+        let snapshot = library.songs
+        let detected = await Task.detached(priority: .userInitiated) {
+            DuplicateDetector.detect(in: snapshot)
+        }.value
+        groups = detected
         expandedGroupID = nil
+        showAllGroups = false
     }
 
     private func keepBest(of group: DuplicateGroup) async {
@@ -276,6 +303,13 @@ struct DuplicateSongsView: View {
 
     private var totalRedundantCount: Int {
         groups.reduce(0) { $0 + $1.songs.count - 1 }
+    }
+
+    private var visibleGroups: [DuplicateGroup] {
+        if showAllGroups || groups.count <= Self.initialGroupRenderCap {
+            return groups
+        }
+        return Array(groups.prefix(Self.initialGroupRenderCap))
     }
 
     private func qualityDescription(_ song: Song) -> String {

@@ -1123,3 +1123,7 @@
 
 // MARK: - macOS Cloud Sync settings
 "open_keychain_settings" = "Open Keychain settings";
+
+// MARK: - Duplicate Songs view
+"dup_show_all_format" = "Show remaining %d groups";
+"dup_show_all_hint" = "Showing the first 100 groups to keep the UI responsive. Use “Clean all” above to handle obvious duplicates first.";

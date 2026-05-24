@@ -1124,3 +1124,7 @@
 
 // MARK: - macOS Cloud Sync settings
 "open_keychain_settings" = "打开钥匙串设置";
+
+// MARK: - Duplicate Songs view
+"dup_show_all_format" = "显示其余 %d 组";
+"dup_show_all_hint" = "为了不卡渲染，先只展示前 100 组。建议先用上面的「一键清理」处理掉明显多余的版本。";
