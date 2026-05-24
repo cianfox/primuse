@@ -262,6 +262,12 @@ final class CloudKitSyncService {
     /// 之后 shareable record (playlist / source / cloud account 等) 会自动走
     /// family zone, participant 接受后能看到。
     /// 「我喜欢」playlist 例外仍在 PrimuseSync (zoneFor 已经处理), 不会被 share。
+    ///
+    /// 幂等 ── 用户重复点 "创建家庭包" / 重装 app 后再点, 都能正确返回当前
+    /// CKShare 而不是抛 "record already exists":
+    /// 1. holder 已在 server (上次创建成功) → fetch + 复用
+    /// 2. holder 有但 share 被删了 (用户曾解散) → 在现有 holder 上重建 share
+    /// 3. 都没有 → fresh insert
     @MainActor
     func enableFamilySharing() async throws -> CKShare {
         guard let db = configuredDatabase() else {
@@ -269,7 +275,7 @@ final class CloudKitSyncService {
                           userInfo: [NSLocalizedDescriptionKey: "CloudKit unavailable"])
         }
 
-        // 1. ensure family zone on server
+        // 1. ensure family zone on server (save zone 幂等, 已存在不报错)
         let zone = CKRecordZone(zoneID: Self.familyZoneID)
         do {
             _ = try await db.save(zone)
@@ -279,32 +285,55 @@ final class CloudKitSyncService {
             plog("⚠️ ensure family zone failed: \(error.localizedDescription)")
         }
 
-        // 2. holder record (CKShare 必须依附一个 rootRecord, 我们用 placeholder
-        //    holder; 真正 share 整个 family zone 的所有 record 通过 rootRecord
-        //    的关联做)
         let holderID = CKRecord.ID(recordName: "primuse.family.holder",
                                     zoneID: Self.familyZoneID)
+
+        // 2. 试 fetch 现有 holder ── 如果在 + 有 share, 直接复用
+        if let existingHolder = try? await db.record(for: holderID) {
+            // holder 已存在, 查它关联的 share reference
+            if let shareRef = existingHolder.share,
+               let existingShare = try? await db.record(for: shareRef.recordID) as? CKShare {
+                Self.familySharingEnabled = true
+                isParticipantOfShare = false
+                plog("☁️ Family sharing reuse existing share")
+                return existingShare
+            }
+            // holder 在但 share 没了 → 在现有 holder 上 attach 新 share
+            let newShare = CKShare(rootRecord: existingHolder)
+            newShare[CKShare.SystemFieldKey.title] = "Primuse Family" as CKRecordValue
+            newShare.publicPermission = .none
+            let (rebuiltResults, _) = try await db.modifyRecords(
+                saving: [existingHolder, newShare], deleting: []
+            )
+            for (_, result) in rebuiltResults {
+                if case .failure(let err) = result { throw err }
+            }
+            Self.familySharingEnabled = true
+            isParticipantOfShare = false
+            scheduleInitialUpload()
+            plog("☁️ Family sharing rebuilt share on existing holder")
+            return newShare
+        }
+
+        // 3. 全新创建 holder + share (CKShare 必须依附 rootRecord, holder 当
+        //    placeholder; 真正 share 整个 family zone 的 record 通过这个
+        //    rootRecord 的关联做)
         let holder = CKRecord(recordType: "FamilyHolder", recordID: holderID)
         holder["createdAt"] = Date() as CKRecordValue
 
-        // 3. CKShare ── participant 默认读写 (用户选的)
         let share = CKShare(rootRecord: holder)
         share[CKShare.SystemFieldKey.title] = "Primuse Family" as CKRecordValue
         share.publicPermission = .none
 
-        // 4. 一对原子保存
         let (results, _) = try await db.modifyRecords(saving: [holder, share], deleting: [])
         for (_, result) in results {
-            if case .failure(let err) = result {
-                throw err
-            }
+            if case .failure(let err) = result { throw err }
         }
 
-        // 5. 标记 enabled, owner 不需要 sharedEngine
         Self.familySharingEnabled = true
         isParticipantOfShare = false
 
-        // 6. migration: shareable record 重新 push, recordID 算到 family zone
+        // migration: shareable record 重新 push, recordID 算到 family zone
         scheduleInitialUpload()
         plog("☁️ Family sharing enabled, share created")
         return share
