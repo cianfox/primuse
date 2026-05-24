@@ -1024,3 +1024,28 @@
 "repeat" = "Repeat";
 "volume_up" = "Volume Up";
 "volume_down" = "Volume Down";
+
+// MARK: - macOS Home dashboard / Player empty / Keychain
+"home_dashboard_title" = "Primuse";
+"home_dashboard_subtitle" = "Your local files, NAS, cloud drives and Apple Music — all in one place.";
+"home_health_title" = "Library health";
+"home_cover_art" = "Cover coverage";
+"home_lyrics" = "Lyrics coverage";
+"home_playable" = "Playable ratio";
+"home_sources_title" = "Sources";
+"home_enabled_sources" = "Enabled";
+"home_active_scans" = "Scanning";
+"home_pending_details" = "Pending";
+"home_no_scans" = "No scans in progress";
+"home_source_pipeline" = "Pipeline";
+"home_pipeline_sources" = "Sources";
+"home_pipeline_scan" = "Scan";
+"home_pipeline_metadata" = "Metadata";
+"home_pipeline_listen" = "Listen";
+"home_empty_mac_hint" = "Add a NAS or cloud drive from Sources on the left, or authorize Apple Music to start.";
+"player_empty_title" = "Pick a song to play";
+"player_empty_message" = "Choose one from the library or search on the left.";
+"mac_sidebar_tools" = "Tools";
+"desktop_widgets" = "Desktop widgets";
+"keychain_sync_hint_title" = "Keychain sync";
+"keychain_sync_hint_body" = "Source passwords and cloud-drive tokens sync end-to-end-encrypted via iCloud Keychain. Enable Keychain sync in System Settings to use it.";

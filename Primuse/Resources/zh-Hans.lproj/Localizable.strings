@@ -1025,3 +1025,28 @@
 "repeat" = "循环";
 "volume_up" = "音量增大";
 "volume_down" = "音量减小";
+
+// MARK: - macOS Home dashboard / Player empty / Keychain
+"home_dashboard_title" = "猿音";
+"home_dashboard_subtitle" = "你的本地、NAS、云盘和 Apple Music 都在这里。";
+"home_health_title" = "资料库健康度";
+"home_cover_art" = "封面完整度";
+"home_lyrics" = "歌词完整度";
+"home_playable" = "可播放比例";
+"home_sources_title" = "音乐源";
+"home_enabled_sources" = "已启用";
+"home_active_scans" = "扫描中";
+"home_pending_details" = "待补全";
+"home_no_scans" = "暂无扫描任务";
+"home_source_pipeline" = "处理管线";
+"home_pipeline_sources" = "音乐源";
+"home_pipeline_scan" = "扫描";
+"home_pipeline_metadata" = "元数据";
+"home_pipeline_listen" = "聆听";
+"home_empty_mac_hint" = "从左侧「音乐源」添加 NAS 或云盘，或在「Apple Music」里授权后开始使用。";
+"player_empty_title" = "选一首歌开始播放";
+"player_empty_message" = "在左侧资料库或搜索里选一首歌。";
+"mac_sidebar_tools" = "工具";
+"desktop_widgets" = "桌面小组件";
+"keychain_sync_hint_title" = "钥匙串同步";
+"keychain_sync_hint_body" = "音乐源密码、云盘登录态走 iCloud 钥匙串端到端加密同步，需要在系统设置里开启钥匙串同步。";
