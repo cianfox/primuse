@@ -740,7 +740,7 @@ final class CloudKitSyncService {
         let changes = ids.map { id in
             CKSyncEngine.PendingRecordZoneChange.saveRecord(recordID(recordType: recordType, id: id))
         }
-        engine.state.add(pendingRecordZoneChanges: changes)
+        addCoalescedRecordZoneChanges(changes, to: engine)
     }
 
     private func enqueueDeletes(recordType: String, ids: [String]) {
@@ -748,7 +748,78 @@ final class CloudKitSyncService {
         let changes = ids.map { id in
             CKSyncEngine.PendingRecordZoneChange.deleteRecord(recordID(recordType: recordType, id: id))
         }
-        engine.state.add(pendingRecordZoneChanges: changes)
+        addCoalescedRecordZoneChanges(changes, to: engine)
+    }
+
+    private func addCoalescedRecordZoneChanges(
+        _ changes: [CKSyncEngine.PendingRecordZoneChange],
+        to syncEngine: CKSyncEngine
+    ) {
+        Self.replacePendingRecordZoneChanges(
+            with: changes,
+            in: syncEngine,
+            scopeFilter: nil
+        )
+    }
+
+    nonisolated private static func replacePendingRecordZoneChanges(
+        with changes: [CKSyncEngine.PendingRecordZoneChange],
+        in syncEngine: CKSyncEngine,
+        scopeFilter: ((CKSyncEngine.PendingRecordZoneChange) -> Bool)?
+    ) {
+        let coalescedChanges = coalescedRecordZoneChanges(changes)
+        guard !coalescedChanges.isEmpty else { return }
+
+        let changedRecordIDs = Set(coalescedChanges.compactMap(recordID(for:)))
+        guard !changedRecordIDs.isEmpty else {
+            syncEngine.state.add(pendingRecordZoneChanges: coalescedChanges)
+            return
+        }
+
+        let existingChanges = syncEngine.state.pendingRecordZoneChanges.filter { change in
+            if let scopeFilter, !scopeFilter(change) { return false }
+            guard let recordID = recordID(for: change) else { return false }
+            return changedRecordIDs.contains(recordID)
+        }
+
+        if !existingChanges.isEmpty {
+            syncEngine.state.remove(pendingRecordZoneChanges: existingChanges)
+        }
+        syncEngine.state.add(pendingRecordZoneChanges: coalescedChanges)
+    }
+
+    nonisolated private static func coalescedRecordZoneChanges(
+        _ changes: [CKSyncEngine.PendingRecordZoneChange]
+    ) -> [CKSyncEngine.PendingRecordZoneChange] {
+        var coalesced: [CKSyncEngine.PendingRecordZoneChange] = []
+        var indexByRecordID: [CKRecord.ID: Int] = [:]
+
+        for change in changes {
+            guard let recordID = recordID(for: change) else {
+                coalesced.append(change)
+                continue
+            }
+
+            if let index = indexByRecordID[recordID] {
+                coalesced[index] = change
+            } else {
+                indexByRecordID[recordID] = coalesced.count
+                coalesced.append(change)
+            }
+        }
+
+        return coalesced
+    }
+
+    nonisolated private static func recordID(
+        for change: CKSyncEngine.PendingRecordZoneChange
+    ) -> CKRecord.ID? {
+        switch change {
+        case .saveRecord(let recordID), .deleteRecord(let recordID):
+            return recordID
+        @unknown default:
+            return nil
+        }
     }
 
     private func recordID(recordType: String, id: String) -> CKRecord.ID {
@@ -929,7 +1000,9 @@ final class CloudKitSyncService {
         // the remote deletion as stale and re-push our restored state instead
         // of wiping it.
         if isLocallyRestored(recordType: recordType, id: id) {
-            engine?.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            if let engine {
+                addCoalescedRecordZoneChanges([.saveRecord(recordID)], to: engine)
+            }
             return
         }
 
@@ -1236,7 +1309,15 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         let scope = context.options.scope
-        let pending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        let scopedPending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        let pending = Self.coalescedRecordZoneChanges(scopedPending)
+        if pending.count != scopedPending.count {
+            Self.replacePendingRecordZoneChanges(
+                with: pending,
+                in: syncEngine,
+                scopeFilter: { scope.contains($0) }
+            )
+        }
 
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending) { recordID in
             let record = await MainActor.run { self.makeRecord(for: recordID) }
@@ -1265,7 +1346,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
         case .zoneNotFound, .userDeletedZone:
             // Re-create the zone and try again.
             syncEngine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: recordID.zoneID))])
-            syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            addCoalescedRecordZoneChanges([.saveRecord(recordID)], to: syncEngine)
         case .unknownItem:
             // Server-side record went away (deleted on another device). Mirror
             // that locally so the two sides line up.
@@ -1275,7 +1356,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
             if let retry = ckError.retryAfterSeconds {
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(retry))
-                    syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                    self.addCoalescedRecordZoneChanges([.saveRecord(recordID)], to: syncEngine)
                 }
             }
         case .quotaExceeded:
@@ -1306,7 +1387,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
     ) {
         guard let server = error.serverRecord else {
             // No server record provided — naive re-queue.
-            syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(local.recordID)])
+            addCoalescedRecordZoneChanges([.saveRecord(local.recordID)], to: syncEngine)
             return
         }
 
@@ -1332,7 +1413,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
 
         // Re-enqueue so engine picks up the merged local state with server's
         // changeTag.
-        syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(local.recordID)])
+        addCoalescedRecordZoneChanges([.saveRecord(local.recordID)], to: syncEngine)
     }
 
     @MainActor
