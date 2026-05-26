@@ -1,11 +1,7 @@
 name: Release
 
-# 触发: push 一个 vX.Y.Z 形式的 tag (例如 v1.2.0)。手动触发也可以,跑
-# workflow_dispatch 一次性出 build, 不会产生新 tag。
+# 手动触发一次性出 build, 不会产生新 tag。
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       submit_to_testflight:
