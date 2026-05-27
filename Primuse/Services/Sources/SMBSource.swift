@@ -4,6 +4,7 @@ import PrimuseKit
 
 actor SMBSource: MusicSourceConnector {
     let sourceID: String
+    nonisolated let supportsSidecarWriting = true
     private let host: String
     private let port: Int
     private let sharePath: String

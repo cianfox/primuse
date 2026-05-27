@@ -1387,9 +1387,6 @@ struct LyricsScrollView: View {
     @State private var manualWordOffset: CGFloat? = nil
     /// 拖动 session 开始时的偏移基准 (用于把 translation.height 累加上去)。
     @State private var wordDragStartOffset: CGFloat = 0
-    /// 最近一次 auto follow 计算出的偏移 ── 当用户开始拖动时作为起点, 避免
-    /// 起手就跳。
-    @State private var lastAutoWordOffset: CGFloat = 0
     private static let manualScrollGracePeriod: TimeInterval = 3.0
 
     // Translation —— system translation framework
@@ -1526,10 +1523,10 @@ struct LyricsScrollView: View {
                 let now = player.interpolatedTime(at: ctx.date)
                 let autoOffset = smoothWordContentOffset(at: now, viewportHeight: geo.size.height)
                 // 用户手动拖动接管期 (lastUserScrollTime + grace 内): 用 manualWordOffset;
-                // 静止超过 grace 后清掉手动状态, 平滑回到 auto follow。
-                // resolveWordOffset 还会把最新 autoOffset 缓存进 lastAutoWordOffset
-                // 供 DragGesture 起手取用。
-                let displayOffset = resolveWordOffset(autoOffset: autoOffset)
+                // 静止超过 grace 后平滑回到 auto follow。这里必须保持纯计算,
+                // 不能在 TimelineView 的 body 中写 @State, 否则逐字歌词会触发
+                // SwiftUI 重入更新并把主线程打满。
+                let displayOffset = displayWordOffset(autoOffset: autoOffset)
 
                 VStack(alignment: .leading, spacing: 12) {
                     Spacer().frame(height: 20)
@@ -1543,7 +1540,7 @@ struct LyricsScrollView: View {
                         //             Duration 同步窗口, 跟滚动一气呵成。
                         // - scale:    active 行 1.06, 渐进过渡 ── 给"近大远小"的纵深感。
                         let activity = rowVisualActivity(at: now, index: index)
-                        lyricsRow(line: line, index: index, dimmedByAmbient: true)
+                        lyricsRow(line: line, index: index, dimmedByAmbient: true, timelineTime: now)
                             .id(line.id)
                             .opacity(activity.opacity)
                             .scaleEffect(activity.scale, anchor: line.voice == .secondary ? .trailing : .leading)
@@ -1559,9 +1556,13 @@ struct LyricsScrollView: View {
                 .offset(y: displayOffset)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .onPreferenceChange(LyricRowFramePreferenceKey.self) { frames in
-                    wordLineFrames = frames
+                    if wordLineFrames != frames {
+                        wordLineFrames = frames
+                    }
                 }
             }
+            .contentShape(Rectangle())
+            .simultaneousGesture(wordDragGesture(viewportHeight: geo.size.height))
         }
         .clipped()
         // 顶/底 fade mask: viewport 边缘的歌词不要硬切, 用 LinearGradient 让它
@@ -1579,7 +1580,6 @@ struct LyricsScrollView: View {
                 endPoint: .bottom
             )
         )
-        .contentShape(Rectangle())  // GeometryReader 自身不响应手势, 给整个区域加命中区
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in
@@ -1593,41 +1593,40 @@ struct LyricsScrollView: View {
                     isPinchingLyrics = false
                 }
         )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 4)
-                .onChanged { value in
-                    if manualWordOffset == nil {
-                        // 起手: 以当前 auto offset 作为基准, 避免视图突然跳到顶部。
-                        wordDragStartOffset = lastAutoWordOffset
-                        manualWordOffset = lastAutoWordOffset
-                    }
-                    manualWordOffset = wordDragStartOffset + value.translation.height
-                    lastUserScrollTime = Date()
-                }
-                .onEnded { value in
-                    if let cur = manualWordOffset {
-                        wordDragStartOffset = cur
-                    }
-                    lastUserScrollTime = Date()
-                }
-        )
     }
 
     /// 决定字级歌词视图当前应该用哪个 offset:
     /// - 用户在 grace period 内拖动过 → 用手动偏移
-    /// - 否则 → 用 auto follow 偏移, 顺便把 manual 状态清空
-    /// 同时记录最新 auto offset, DragGesture 起手时拿来当基准。
-    private func resolveWordOffset(autoOffset: CGFloat) -> CGFloat {
-        lastAutoWordOffset = autoOffset
+    /// - 否则 → 用 auto follow 偏移
+    private func displayWordOffset(autoOffset: CGFloat) -> CGFloat {
         let withinGrace = Date().timeIntervalSince(lastUserScrollTime) < Self.manualScrollGracePeriod
         if withinGrace, let manual = manualWordOffset {
             return manual
         }
-        // 退出 grace: 清掉手动状态, 让下一帧开始走 auto follow。
-        if manualWordOffset != nil {
-            manualWordOffset = nil
-        }
         return autoOffset
+    }
+
+    private func wordDragGesture(viewportHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                let withinGrace = Date().timeIntervalSince(lastUserScrollTime) < Self.manualScrollGracePeriod
+                if manualWordOffset == nil || !withinGrace {
+                    let autoOffset = smoothWordContentOffset(
+                        at: player.interpolatedTime(),
+                        viewportHeight: viewportHeight
+                    )
+                    wordDragStartOffset = autoOffset
+                    manualWordOffset = autoOffset
+                }
+                manualWordOffset = wordDragStartOffset + value.translation.height
+                lastUserScrollTime = Date()
+            }
+            .onEnded { _ in
+                if let cur = manualWordOffset {
+                    wordDragStartOffset = cur
+                }
+                lastUserScrollTime = Date()
+            }
     }
 
     private var wordLevelBadge: some View {
@@ -1690,7 +1689,7 @@ struct LyricsScrollView: View {
     /// 的连续 ambient opacity 接管, row 内部不要再按 isActive 离散切换颜色,
     /// 否则跟外层 .opacity multiply 会双重叠加 + 跳变。
     @ViewBuilder
-    private func lyricsRow(line: LyricLine, index: Int, dimmedByAmbient: Bool = false) -> some View {
+    private func lyricsRow(line: LyricLine, index: Int, dimmedByAmbient: Bool = false, timelineTime: TimeInterval? = nil) -> some View {
         let isActive = index == currentLineIndex
         let baseSize = hasWordLevelLyrics
             ? Self.lyricsWordLevelBaseSize
@@ -1702,7 +1701,7 @@ struct LyricsScrollView: View {
         let alignment: HorizontalAlignment = line.voice == .secondary ? .trailing : .leading
 
         VStack(alignment: alignment, spacing: 4) {
-            singleLineContent(line: line, isActive: isActive, index: index, fontSize: fontSize, weight: weight, dimmedByAmbient: dimmedByAmbient)
+            singleLineContent(line: line, isActive: isActive, index: index, fontSize: fontSize, weight: weight, dimmedByAmbient: dimmedByAmbient, timelineTime: timelineTime)
 
             // 歌词翻译 — 在原文下面以略小的字号显示, 仅当启用且当前行有翻译。
             // 字号取原文的 0.65 + medium weight, 视觉上是 secondary。
@@ -1723,7 +1722,7 @@ struct LyricsScrollView: View {
 
             if let bgs = line.background {
                 ForEach(bgs) { bg in
-                    singleLineContent(line: bg, isActive: isActive, index: index, fontSize: fontSize * 0.7, weight: .medium, dimmedByAmbient: dimmedByAmbient)
+                    singleLineContent(line: bg, isActive: isActive, index: index, fontSize: fontSize * 0.7, weight: .medium, dimmedByAmbient: dimmedByAmbient, timelineTime: timelineTime)
                         .opacity(0.7)
                 }
             }
@@ -1738,7 +1737,8 @@ struct LyricsScrollView: View {
         index: Int,
         fontSize: CGFloat,
         weight: Font.Weight,
-        dimmedByAmbient: Bool = false
+        dimmedByAmbient: Bool = false,
+        timelineTime: TimeInterval? = nil
     ) -> some View {
         if shouldRenderWordTimeline(line: line, index: index, isActive: isActive, dimmedByAmbient: dimmedByAmbient) {
             // dimmedByAmbient 模式: KaraokeLineView 内部用固定 active=1.0 / inactive=0.4
@@ -1755,7 +1755,8 @@ struct LyricsScrollView: View {
                 weight: weight,
                 activeColor: .white.opacity(activeOpacity),
                 inactiveColor: .white.opacity(inactiveOpacity),
-                timeAt: { date in player.interpolatedTime(at: date) }
+                timeAt: { date in player.interpolatedTime(at: date) },
+                fixedTime: timelineTime
             )
         } else {
             Text(line.text)

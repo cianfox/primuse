@@ -228,9 +228,10 @@ final class CloudKitSyncService {
             self.status = .upToDate
             self.lastSyncedAt = Date()
         } catch {
-            plog("CloudKitSync: initial sync error: \(error)")
             if let ck = error as? CKError {
-                plog("CloudKitSync: CKError code=\(ck.code.rawValue) (\(ck.code)) userInfo=\(ck.userInfo)")
+                plog("CloudKitSync: initial sync error \(Self.compactDescription(for: ck))")
+            } else {
+                plog("CloudKitSync: initial sync error: \(error.localizedDescription)")
             }
             self.status = mapToSyncStatus(error)
         }
@@ -547,12 +548,12 @@ final class CloudKitSyncService {
         guard let ckError = error as? CKError else {
             return .error(error.localizedDescription)
         }
-        plog("CloudKitSync: CKError code=\(ckError.code.rawValue) (\(ckError.code)) desc=\(ckError.localizedDescription) userInfo=\(ckError.userInfo)")
+        plog("CloudKitSync: CKError \(Self.compactDescription(for: ckError))")
         if ckError.code == .partialFailure,
            let perItem = ckError.partialErrorsByItemID {
             for (key, err) in perItem {
                 if let ck = err as? CKError {
-                    plog("CloudKitSync: partial failure on \(key) → code=\(ck.code.rawValue) (\(ck.code)) desc=\(ck.localizedDescription) info=\(ck.userInfo)")
+                    plog("CloudKitSync: partial failure on \(key) → \(Self.compactDescription(for: ck))")
                 } else {
                     plog("CloudKitSync: partial failure on \(key) → \(err)")
                 }
@@ -586,6 +587,29 @@ final class CloudKitSyncService {
         default:
             return .error("CloudKit \(ckError.code.rawValue): \(ckError.localizedDescription)")
         }
+    }
+
+    private nonisolated static func compactDescription(for error: CKError) -> String {
+        var parts = [
+            "code=\(error.code.rawValue) (\(error.code))",
+            "desc=\(error.localizedDescription)"
+        ]
+        if let retry = error.retryAfterSeconds {
+            parts.append(String(format: "retryAfter=%.1fs", retry))
+        }
+        if let serverRecord = error.serverRecord {
+            parts.append("serverRecord=\(serverRecord.recordID.recordName)")
+            parts.append("serverZone=\(serverRecord.recordID.zoneID.zoneName)")
+        }
+        if let partials = error.partialErrorsByItemID {
+            parts.append("partialFailures=\(partials.count)")
+        }
+        for key in ["ServerErrorDescription", "ClientEtag", "ServerEtag", "OperationID", "RequestUUID"] {
+            if let value = error.userInfo[key] {
+                parts.append("\(key)=\(value)")
+            }
+        }
+        return parts.joined(separator: " ")
     }
 
     private func attachLocalChangeObservers() {
@@ -902,8 +926,9 @@ final class CloudKitSyncService {
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()
         let data = coder.encodedData
-        let key = record.recordID.recordName
-        if systemFieldsCache[key] != data {
+        let key = systemFieldsKey(for: record.recordID)
+        let removedLegacy = systemFieldsCache.removeValue(forKey: record.recordID.recordName) != nil
+        if systemFieldsCache[key] != data || removedLegacy {
             systemFieldsCache[key] = data
             persistSystemFieldsCache()
         }
@@ -911,7 +936,9 @@ final class CloudKitSyncService {
 
     fileprivate func removeSystemFields(for recordID: CKRecord.ID) {
         loadSystemFieldsCacheIfNeeded()
-        if systemFieldsCache.removeValue(forKey: recordID.recordName) != nil {
+        let removedScoped = systemFieldsCache.removeValue(forKey: systemFieldsKey(for: recordID)) != nil
+        let removedLegacy = systemFieldsCache.removeValue(forKey: recordID.recordName) != nil
+        if removedScoped || removedLegacy {
             persistSystemFieldsCache()
         }
     }
@@ -924,12 +951,30 @@ final class CloudKitSyncService {
 
     private func cachedRecord(for recordID: CKRecord.ID) -> CKRecord? {
         loadSystemFieldsCacheIfNeeded()
-        guard let data = systemFieldsCache[recordID.recordName],
-              let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else {
-            return nil
+        let keys = [systemFieldsKey(for: recordID), recordID.recordName]
+        for key in keys {
+            guard let data = systemFieldsCache[key],
+                  let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else {
+                continue
+            }
+            unarchiver.requiresSecureCoding = true
+            guard let record = CKRecord(coder: unarchiver),
+                  Self.sameRecordID(record.recordID, recordID) else {
+                continue
+            }
+            return record
         }
-        unarchiver.requiresSecureCoding = true
-        return CKRecord(coder: unarchiver)
+        return nil
+    }
+
+    private nonisolated func systemFieldsKey(for recordID: CKRecord.ID) -> String {
+        "\(recordID.zoneID.ownerName)|\(recordID.zoneID.zoneName)|\(recordID.recordName)"
+    }
+
+    private nonisolated static func sameRecordID(_ lhs: CKRecord.ID, _ rhs: CKRecord.ID) -> Bool {
+        lhs.recordName == rhs.recordName
+            && lhs.zoneID.zoneName == rhs.zoneID.zoneName
+            && lhs.zoneID.ownerName == rhs.zoneID.ownerName
     }
 
     // MARK: - Record (de)serialization
@@ -1300,7 +1345,12 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
             // Lifecycle markers — useful for debugging but no action needed.
             break
         @unknown default:
-            plog("CloudKitSync: unhandled engine event \(event)")
+            let description = String(describing: event)
+            if description.contains("WillFetchRecordZoneChanges")
+                || description.contains("DidFetchRecordZoneChanges") {
+                break
+            }
+            plog("CloudKitSync: unhandled engine event \(description)")
         }
     }
 

@@ -22,6 +22,26 @@ struct KaraokeLineView: View {
     let inactiveColor: Color
     /// 把 `TimelineView` 的 `context.date` 翻译为外推后的播放秒数。
     let timeAt: (Date) -> TimeInterval
+    /// 外层已经有 TimelineView 时传入固定时间，避免嵌套 60Hz 刷新。
+    let fixedTime: TimeInterval?
+
+    init(
+        line: LyricLine,
+        fontSize: CGFloat,
+        weight: Font.Weight,
+        activeColor: Color,
+        inactiveColor: Color,
+        timeAt: @escaping (Date) -> TimeInterval,
+        fixedTime: TimeInterval? = nil
+    ) {
+        self.line = line
+        self.fontSize = fontSize
+        self.weight = weight
+        self.activeColor = activeColor
+        self.inactiveColor = inactiveColor
+        self.timeAt = timeAt
+        self.fixedTime = fixedTime
+    }
 
     /// 提前进入过渡的时间 — 让字真正唱出来的时刻已经亮了 80-90%。
     private static let lookaheadSec: TimeInterval = 0.10
@@ -37,8 +57,12 @@ struct KaraokeLineView: View {
     private static let maskEdgeWidth: Double = 0.12
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
-            renderLine(at: timeAt(ctx.date))
+        if let fixedTime {
+            renderLine(at: fixedTime)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
+                renderLine(at: timeAt(ctx.date))
+            }
         }
     }
 

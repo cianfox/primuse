@@ -103,58 +103,63 @@ final class MusicScraperService {
             // Write sidecar files to source (cover.jpg, .lrc) and update Song refs
             plog("📝 Sidecar: coverData=\(coverData?.count ?? 0)B lyricsLines=\(lyricsLines?.count ?? 0) for '\(updatedSong.title)'")
             if coverData != nil || lyricsLines != nil {
-                let songForWrite = updatedSong
-                let sourceManager = self.sourceManager
-                let songID = updatedSong.id
-                Task.detached(priority: .utility) {
-                    do {
-                        plog("📝 Sidecar: getting auxiliary connector for '\(songForWrite.title)' source=\(songForWrite.sourceID)")
-                        let writeResult = try await MusicScraperService.writeSidecarWithTimeout(
-                            seconds: 30,
-                            sourceManager: sourceManager,
-                            for: songForWrite,
-                            coverData: coverData, lyricsLines: lyricsLines
-                        )
-                        plog("📝 Sidecar: result cover=\(writeResult.coverWritten) lyrics=\(writeResult.lyricsWritten) errors=\(writeResult.errors)")
+                let canWriteSidecar = await sourceManager.supportsSidecarWriting(for: updatedSong)
+                if canWriteSidecar {
+                    let songForWrite = updatedSong
+                    let sourceManager = self.sourceManager
+                    let songID = updatedSong.id
+                    Task.detached(priority: .utility) {
+                        do {
+                            plog("📝 Sidecar: getting auxiliary connector for '\(songForWrite.title)' source=\(songForWrite.sourceID)")
+                            let writeResult = try await MusicScraperService.writeSidecarWithTimeout(
+                                seconds: 30,
+                                sourceManager: sourceManager,
+                                for: songForWrite,
+                                coverData: coverData, lyricsLines: lyricsLines
+                            )
+                            plog("📝 Sidecar: result cover=\(writeResult.coverWritten) lyrics=\(writeResult.lyricsWritten) errors=\(writeResult.errors)")
 
-                        // Update Song refs to point to sidecar paths on source
-                        let songDir = (songForWrite.filePath as NSString).deletingLastPathComponent
-                        let baseNameNoExt = ((songForWrite.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
-                        var needsUpdate = false
-                        var refSong = songForWrite
+                            // Update Song refs to point to sidecar paths on source
+                            let songDir = (songForWrite.filePath as NSString).deletingLastPathComponent
+                            let baseNameNoExt = ((songForWrite.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
+                            var needsUpdate = false
+                            var refSong = songForWrite
 
-                        if writeResult.coverWritten {
-                            let coverPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt)-cover.jpg")
-                            refSong.coverArtFileName = coverPath
-                            // sidecar 已落盘 —— 现在回写 hash cache 作为可信 mirror
-                            if let coverData {
-                                await MetadataAssetStore.shared.cacheCover(coverData, forSongID: songID)
+                            if writeResult.coverWritten {
+                                let coverPath = (songDir as NSString).appendingPathComponent("\(baseNameNoExt)-cover.jpg")
+                                refSong.coverArtFileName = coverPath
+                                // sidecar 已落盘 —— 现在回写 hash cache 作为可信 mirror
+                                if let coverData {
+                                    await MetadataAssetStore.shared.cacheCover(coverData, forSongID: songID)
+                                }
+                                needsUpdate = true
                             }
-                            needsUpdate = true
-                        }
-                        if writeResult.lyricsWritten, let lyricsLines {
-                            // 不让 song.lyricsFileName 指向 NAS .lrc —— .lrc
-                            // 是行级备份, 字级数据只在本地 hash JSON 里。
-                            // 仍把内容回写到本地 cache 让 hash JSON 跟 NAS
-                            // 一致。
-                            // 用户动作 (scrape) 触发的 sidecar 镜像写回, 强制覆盖
-                            await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
-                        }
-
-                        if needsUpdate {
-                            await MainActor.run {
-                                library.replaceSong(refSong)
+                            if writeResult.lyricsWritten, let lyricsLines {
+                                // 不让 song.lyricsFileName 指向 NAS .lrc —— .lrc
+                                // 是行级备份, 字级数据只在本地 hash JSON 里。
+                                // 仍把内容回写到本地 cache 让 hash JSON 跟 NAS
+                                // 一致。
+                                // 用户动作 (scrape) 触发的 sidecar 镜像写回, 强制覆盖
+                                await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
                             }
-                        }
 
-                        if !writeResult.errors.isEmpty {
-                            plog("⚠️ Sidecar write errors: \(writeResult.errors)")
+                            if needsUpdate {
+                                await MainActor.run {
+                                    library.replaceSong(refSong)
+                                }
+                            }
+
+                            if !writeResult.errors.isEmpty {
+                                plog("⚠️ Sidecar write errors: \(writeResult.errors)")
+                            }
+                        } catch is CancellationError {
+                            plog("⚠️ Sidecar write timed out (30s) for '\(songForWrite.title)'")
+                        } catch {
+                            plog("⚠️ Sidecar write skipped for '\(songForWrite.title)': \(error.localizedDescription)")
                         }
-                    } catch is CancellationError {
-                        plog("⚠️ Sidecar write timed out (30s) for '\(songForWrite.title)'")
-                    } catch {
-                        plog("⚠️ Sidecar write skipped for '\(songForWrite.title)': \(error.localizedDescription)")
                     }
+                } else {
+                    plog("📝 Sidecar: source does not support writing, keeping local metadata cache for '\(updatedSong.title)'")
                 }
             }
         }
@@ -218,13 +223,10 @@ final class MusicScraperService {
                     }
 
                     processedCount += 1
-                    let updatedSong = result.song
+                    var updatedSong = result.song
 
                     if updatedSong != song {
-                        library.replaceSong(updatedSong)
-                        updatedCount += 1
-
-                        // Determine which sidecar data to write based on fill/overwrite mode
+                        // Determine which assets should be committed based on fill/overwrite mode.
                         let shouldWriteCover: Bool
                         let shouldWriteLyrics: Bool
                         if onlyFillMissing {
@@ -240,20 +242,32 @@ final class MusicScraperService {
                         let coverData = shouldWriteCover ? result.coverData : nil
                         let lyricsLines = shouldWriteLyrics ? result.lyricsLines : nil
 
+                        if let coverData {
+                            await MetadataAssetStore.shared.cacheCover(coverData, forSongID: updatedSong.id)
+                            updatedSong.coverArtFileName = MetadataAssetStore.shared.expectedCoverFileName(for: updatedSong.id)
+                            CachedArtworkView.invalidateCache(for: updatedSong.id)
+                        }
+                        if let lyricsLines, !lyricsLines.isEmpty {
+                            await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: updatedSong.id, force: true)
+                            updatedSong.lyricsFileName = MetadataAssetStore.shared.expectedLyricsFileName(for: updatedSong.id)
+                        }
+
+                        library.replaceSong(updatedSong)
+                        updatedCount += 1
+
                         if coverData != nil || lyricsLines != nil {
                             let songForWrite = updatedSong
                             let sourceManager = self.sourceManager
                             let songID = updatedSong.id
 
+                            let canWriteSidecar = await sourceManager.supportsSidecarWriting(for: songForWrite)
+                            guard canWriteSidecar else {
+                                plog("📝 Batch sidecar: source does not support writing for '\(songForWrite.title)'")
+                                continue
+                            }
+
                             // Write sidecar files to source asynchronously (don't block scraping loop)
                             Task.detached(priority: .utility) {
-                                // 同 scrapeSingle:写 sidecar 前清旧 cache、写后回写
-                                await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
-                                await MetadataAssetStore.shared.invalidateLyricsCache(forSongID: songID)
-                                await MainActor.run {
-                                    CachedArtworkView.invalidateCache(for: songID)
-                                }
-
                                 do {
                                     let writeResult = try await MusicScraperService.writeSidecarWithTimeout(
                                         seconds: 30,

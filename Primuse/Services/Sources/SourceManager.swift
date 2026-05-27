@@ -1719,6 +1719,23 @@ final class SourceManager {
         return conn
     }
 
+    func supportsSidecarWriting(for song: Song) async -> Bool {
+        guard let sources = try? await sourcesProvider(),
+              let source = sources.first(where: { $0.id == song.sourceID }) else {
+            return false
+        }
+        return Self.supportsSidecarWriting(sourceType: source.type)
+    }
+
+    nonisolated static func supportsSidecarWriting(sourceType: MusicSourceType) -> Bool {
+        switch sourceType {
+        case .synology, .smb:
+            return true
+        default:
+            return false
+        }
+    }
+
 
     /// Get a direct HTTP URL for an image file on the source (for cover art display).
     /// Uses the shared connector — lightweight, just builds a URL without downloading.

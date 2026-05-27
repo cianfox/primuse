@@ -51,6 +51,7 @@ struct ConnectorScannedSong: Sendable {
 
 protocol MusicSourceConnector: Sendable {
     var sourceID: String { get }
+    var supportsSidecarWriting: Bool { get }
     func connect() async throws
     func disconnect() async
     func listFiles(at path: String) async throws -> [RemoteFileItem]
@@ -101,6 +102,8 @@ protocol MusicSourceConnector: Sendable {
 }
 
 extension MusicSourceConnector {
+    var supportsSidecarWriting: Bool { false }
+
     /// 默认 noop ── 大多数 connector 不需要预热, 单次 fetchRange 自带的
     /// metadata resolve 已经够。只有受限速 / batch API 收益高的源 (百度网盘)
     /// 才 override。

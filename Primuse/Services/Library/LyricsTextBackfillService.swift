@@ -11,8 +11,8 @@ import PrimuseKit
 /// 设计权衡:
 /// - 不读远端 NAS / 云盘 .lrc, 只读 MetadataAssetStore 本地 JSON 缓存,
 ///   避免 backfill 触发大量网络 IO。
-/// - 单线程 MainActor, 每 50 首 yield 一次让 UI 喘气; 不用 detached, 否则
-///   要绕一圈线程切换, 且 replaceSongs 必须回 main 才安全。
+/// - 单线程 MainActor, 每 50 首 yield 一次让 UI 喘气; 写入走
+///   MusicLibrary.updateLyricsText, 避免为搜索文本重建专辑/歌手索引。
 /// - 失败的歌 (没缓存 / 解码失败) 不留任何痕迹, 下次启动如果 migration
 ///   key 被升版可以重跑。
 @MainActor
@@ -66,7 +66,7 @@ final class LyricsTextBackfillService {
             return
         }
 
-        var batch: [Song] = []
+        var batch: [String: String] = [:]
         batch.reserveCapacity(Self.batchSize)
         for song in candidates {
             if Task.isCancelled { return }
@@ -80,19 +80,17 @@ final class LyricsTextBackfillService {
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
             guard !text.isEmpty else { continue }
-            var updated = song
-            updated.lyricsText = text
-            batch.append(updated)
+            batch[song.id] = text
             indexedCount += 1
 
             if batch.count >= Self.batchSize {
-                library.replaceSongs(batch)
+                library.updateLyricsText(batch)
                 batch.removeAll(keepingCapacity: true)
                 await Task.yield()
             }
         }
         if !batch.isEmpty {
-            library.replaceSongs(batch)
+            library.updateLyricsText(batch)
         }
         UserDefaults.standard.set(true, forKey: Self.migrationKey)
     }

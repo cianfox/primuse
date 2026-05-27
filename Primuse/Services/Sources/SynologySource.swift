@@ -3,6 +3,7 @@ import PrimuseKit
 
 actor SynologySource: MusicSourceConnector {
     let sourceID: String
+    nonisolated let supportsSidecarWriting = true
 
     private let api: SynologyAPI
     private let username: String

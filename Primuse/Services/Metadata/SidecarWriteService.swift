@@ -28,6 +28,10 @@ actor SidecarWriteService {
         lyricsLines: [LyricLine]?
     ) async -> WriteResult {
         var result = WriteResult()
+        guard connector.supportsSidecarWriting else {
+            result.errors.append("Source does not support sidecar writing")
+            return result
+        }
         let songDir = (song.filePath as NSString).deletingLastPathComponent
         let songBaseName = (song.filePath as NSString).lastPathComponent
         let baseNameNoExt = (songBaseName as NSString).deletingPathExtension

@@ -733,10 +733,9 @@ final class MusicLibrary {
         // MetadataAssetStore 写 lyrics 缓存后会发这个通知 — 把对应 song 的
         // lyricsText 同步进库, 让 FTS5 全文歌词搜索覆盖到这首。
         //
-        // 关键: 一次刮削会触发多次 cacheLyrics (主写一次 + sidecar 写一次),
-        // 全库刮删时 N×多倍的 replaceSong 会堆爆主线程触发 iOS watchdog
-        // (用户反馈刮削后 UI 卡死 → 闪退)。500ms debounce 合并多个 songID
-        // 的 update 到一次 replaceSongs(batch) — index/persist 只跑一次。
+        // 关键: 一次刮削会触发多次 cacheLyrics (主写一次 + sidecar 写一次)。
+        // 500ms debounce 合并多个 songID, flush 时只更新 search 用 lyricsText,
+        // 不再走 replaceSongs 的全套 album/artist/playlist pipeline。
         NotificationCenter.default.addObserver(
             forName: .primuseLyricsDidCache,
             object: nil,
@@ -777,19 +776,39 @@ final class MusicLibrary {
         pendingLyricsFlushTask = nil
         guard !pending.isEmpty else { return }
 
-        var updates: [Song] = []
-        updates.reserveCapacity(pending.count)
-        for (songID, text) in pending {
-            guard let idx = songs.firstIndex(where: { $0.id == songID }) else { continue }
-            guard songs[idx].lyricsText != text else { continue }
-            var s = songs[idx]
-            s.lyricsText = text
-            updates.append(s)
+        updateLyricsText(pending)
+    }
+
+    /// Update only the lyrics text used by library search. This deliberately
+    /// avoids `replaceSongs`: lyrics text does not affect album/artist grouping,
+    /// playlist membership, player metadata, or artwork. Running the full
+    /// replace pipeline here made a single scraped word-level lyric trigger
+    /// needless main-actor work immediately after the lyrics UI appeared.
+    func updateLyricsText(_ lyricsTextBySongID: [String: String]) {
+        guard !lyricsTextBySongID.isEmpty else { return }
+
+        var visibleIndexByID: [String: Int] = [:]
+        visibleIndexByID.reserveCapacity(visibleSongs.count)
+        for (index, song) in visibleSongs.enumerated() {
+            visibleIndexByID[song.id] = index
         }
-        guard !updates.isEmpty else { return }
-        // 一次 replaceSongs 内部 rebuildIndex / persistSnapshot 只跑一次,
-        // 不会刷爆主线程。
-        replaceSongs(updates)
+
+        var appliedIDs: [String] = []
+        appliedIDs.reserveCapacity(lyricsTextBySongID.count)
+        for (songID, text) in lyricsTextBySongID {
+            guard let index = songs.firstIndex(where: { $0.id == songID }) else { continue }
+            guard songs[index].lyricsText != text else { continue }
+            songs[index].lyricsText = text
+            if let visibleIndex = visibleIndexByID[songID] {
+                visibleSongs[visibleIndex].lyricsText = text
+            }
+            appliedIDs.append(songID)
+        }
+
+        guard !appliedIDs.isEmpty else { return }
+        plog("📚 updateLyricsText: requested=\(lyricsTextBySongID.count) applied=\(appliedIDs.count) librarySongs=\(songs.count)")
+        invalidateSearchCaches()
+        persistSnapshot()
     }
 
     /// Add songs from a scan result and rebuild albums/artists.
