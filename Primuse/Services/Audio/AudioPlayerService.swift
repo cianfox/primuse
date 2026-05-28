@@ -1397,9 +1397,12 @@ final class AudioPlayerService {
             buffer,
             completionCallbackType: .dataPlayedBack
         ) { [weak self, transition] _ in
-            plog("🔔 gapless boundary fired playID=\(id.uuidString.prefix(8))")
+            // .dataPlayedBack 在 playerNode.reset() / stopPlayback() 时也会
+            // 同步 fire (任何 yield / 新 play / 主动切歌都会触发), id 是闭包
+            // 捕获的旧 playID, 移到 guard 内才不会在 log 里产生误导事件。
             Task { @MainActor [weak self] in
                 guard let self, self.playID == id else { return }
+                plog("🔔 gapless boundary fired playID=\(id.uuidString.prefix(8))")
                 await self.handleGaplessBoundary(transition: transition, playID: id)
             }
         }
@@ -1431,9 +1434,9 @@ final class AudioPlayerService {
             buffer,
             completionCallbackType: .dataPlayedBack
         ) { [weak self] _ in
-            plog("🔔 lastBuffer dataPlayedBack fired playID=\(id.uuidString.prefix(8))")
             Task { @MainActor [weak self] in
                 guard let self, self.playID == id else { return }
+                plog("🔔 lastBuffer dataPlayedBack fired playID=\(id.uuidString.prefix(8))")
                 // In crossfade mode, only handle track end if crossfade wasn't triggered
                 if settings.crossfadeEnabled && self.crossfadeTriggered { return }
                 await self.handleTrackEnd()
@@ -2084,6 +2087,18 @@ final class AudioPlayerService {
         transition: GaplessTransitionState,
         playID id: UUID
     ) async {
+        // Sanity check: 当前歌还远没听完就 fire boundary, 说明上游有问题
+        // (CloudPlaybackSource 短读 / decoder 误判 EOF / MP3 帧元数据偏差),
+        // 直接切歌会让用户体感是"歌没播完就跳了"。重置 decoder pipeline
+        // 走 autoAdvanceAfterFailure, 上层会判断是 retry 还是真切下一首。
+        if duration > 30, currentTime < duration - 5, !isLoading {
+            plog("⚠️ premature gapless boundary suppressed: currentTime=\(String(format: "%.1f", currentTime))s duration=\(String(format: "%.1f", duration))s playID=\(id.uuidString.prefix(8))")
+            transition.shouldCancelPreparation = true
+            cancelGaplessTasks()
+            await autoAdvanceAfterFailure()
+            return
+        }
+
         transition.didBoundaryFire = true
 
         // 防御性兜底: 10 秒内 boundary 触发 ≥4 次 = 队列里有 partial/坏掉
@@ -2318,6 +2333,7 @@ final class AudioPlayerService {
         ) { [weak self, followingTransition] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.playID == id else { return }
+                plog("🔔 gapless boundary fired (prepared) playID=\(id.uuidString.prefix(8))")
                 await self.handleGaplessBoundary(transition: followingTransition, playID: id)
             }
         }
