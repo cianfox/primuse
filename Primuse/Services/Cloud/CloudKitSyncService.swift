@@ -890,10 +890,12 @@ final class CloudKitSyncService {
         return true
     }
 
-    private func pendingRecordID(from change: CKSyncEngine.PendingRecordZoneChange) -> CKRecord.ID {
+    private func pendingRecordID(from change: CKSyncEngine.PendingRecordZoneChange) -> CKRecord.ID? {
         switch change {
         case .saveRecord(let recordID), .deleteRecord(let recordID):
             return recordID
+        @unknown default:
+            return nil
         }
     }
 
@@ -913,7 +915,11 @@ final class CloudKitSyncService {
         var dropped: [CKSyncEngine.PendingRecordZoneChange] = []
 
         for change in changes {
-            if isSyncableRecordID(pendingRecordID(from: change)) {
+            guard let recordID = pendingRecordID(from: change) else {
+                kept.append(change)
+                continue
+            }
+            if isSyncableRecordID(recordID) {
                 kept.append(change)
             } else {
                 dropped.append(change)
@@ -923,7 +929,9 @@ final class CloudKitSyncService {
         if !dropped.isEmpty {
             syncEngine.state.remove(pendingRecordZoneChanges: dropped)
             for change in dropped {
-                removeSystemFields(for: pendingRecordID(from: change))
+                if let recordID = pendingRecordID(from: change) {
+                    removeSystemFields(for: recordID)
+                }
             }
             plog("CloudKitSync: dropped \(dropped.count) stale Apple Music mirror pending change(s)")
         }
@@ -1407,7 +1415,9 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
             }
         case .accountChange(let change):
             await MainActor.run { self.handleAccountChange(change) }
-        case .willFetchChanges, .willSendChanges, .didFetchChanges, .didSendChanges:
+        case .willFetchChanges, .willFetchRecordZoneChanges,
+             .willSendChanges, .didFetchRecordZoneChanges,
+             .didFetchChanges, .didSendChanges:
             // Lifecycle markers — useful for debugging but no action needed.
             break
         @unknown default:
@@ -1441,10 +1451,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
         syncEngine: CKSyncEngine
     ) {
         let recordID = failed.record.recordID
-        guard let ckError = failed.error as? CKError else {
-            plog("CloudKitSync: unhandled save error: \(failed.error.localizedDescription)")
-            return
-        }
+        let ckError = failed.error
 
         switch ckError.code {
         case .serverRecordChanged:
