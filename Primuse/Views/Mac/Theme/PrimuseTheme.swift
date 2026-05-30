@@ -61,8 +61,16 @@ enum PMColor {
     static let warn = hex(0xF0B078)
     static let bad  = hex(0xFF7565)
 
-    // 默认品牌色 (赤陶), 实际 accent 由 ThemeService 动态驱动
-    static let brand = hex(0xC96442)
+    // 默认品牌色 (赤陶) — 用户没选时的回退, 也用在色板里"默认"项的固定展示。
+    static let brandDefault = hex(0xC96442)
+
+    /// 当前品牌色 — 用户在「外观」里选, 持久化在 MacUIPreferences。整个 Mac UI
+    /// 90+ 处自定义控件 (按钮 / 进度条 / active 高亮 / ambient fallback) 的 accent
+    /// 都读它, 所以改这一处即全局换色。读取发生在 view body 内, Observation 会
+    /// 注册依赖, 切换后相关视图自动重渲染。@MainActor 因为读的是主线程隔离的
+    /// MacUIPreferences — SwiftUI view body 本就在主线程, 90+ 调用点都满足。
+    @MainActor
+    static var brand: Color { MacUIPreferences.shared.brandColor }
 
     // 行 hover (selected 由 modifier 用 accent 拼)
     static let rowHover = dyn(dark: Color.white.opacity(0.07), light: Color.black.opacity(0.05))
@@ -777,9 +785,60 @@ extension View {
     }
 }
 
+// MARK: - Localization helper
+
+/// Mac UI 本地化简写。用英文原文当 key, 中文译文放在 zh-Hans.lproj;
+/// 其它语言 (含英文本身) 没有对应词条时回退到英文 key 本身。整套 Mac 界面
+/// 的硬编码文案都走它, 这样 `Views/Mac` 不再夹带中文字面量。
+@inline(__always)
+func Lz(_ english: String.LocalizationValue) -> String {
+    String(localized: english)
+}
+
+// MARK: - Color scheme override (light / dark / system)
+
+/// 用户在「外观」里选的明暗模式 — 应用到 `NSApp.appearance`, 同时驱动所有
+/// `dyn()` 动态色。`.system` 时交还给系统跟随。
+enum PMColorSchemeOverride: String, CaseIterable, Sendable {
+    case system, light, dark
+}
+
+// MARK: - Alternate app icons (macOS dock 图标)
+
+/// 一套可切换的 App 图标。macOS 不支持 iOS 的 `setAlternateIconName`, 只能在
+/// 运行时换 dock 图标 (`NSApp.applicationIconImage`) 并持久化选择、下次启动重放;
+/// Finder 里 .app 包的图标不变 (沙盒应用改不了自身包)。
+struct MacAppIcon: Identifiable, Equatable, Sendable {
+    /// 稳定标识。"" = 默认 (用 bundle 自带的 AppIcon-Mac)。
+    let id: String
+    /// 资源目录里的预览 imageset 名 (universal, 含明暗变体)。
+    let previewAsset: String
+    /// 本地化显示名的 key (复用 iOS 已有的 icon_* 词条)。
+    let nameKey: String
+    /// 这套图标的品牌色 — 仅用于色环展示, 不强行改全局 accent。
+    let tint: Color
+
+    /// 默认项 + 7 套备选, 跟资源目录里的 AppIcon{n}Preview 一一对应。
+    static let all: [MacAppIcon] = [
+        MacAppIcon(id: "",         previewAsset: "AppIconPreview",  nameKey: "icon_default", tint: PMColor.brandDefault),
+        MacAppIcon(id: "AppIcon1", previewAsset: "AppIcon1Preview", nameKey: "icon_theme_1", tint: Color(red: 0.39, green: 0.32, blue: 0.98)),
+        MacAppIcon(id: "AppIcon2", previewAsset: "AppIcon2Preview", nameKey: "icon_theme_2", tint: Color(red: 0.55, green: 0.32, blue: 0.85)),
+        MacAppIcon(id: "AppIcon3", previewAsset: "AppIcon3Preview", nameKey: "icon_theme_3", tint: Color(red: 0.20, green: 0.78, blue: 0.78)),
+        MacAppIcon(id: "AppIcon4", previewAsset: "AppIcon4Preview", nameKey: "icon_theme_4", tint: Color(red: 0.92, green: 0.72, blue: 0.20)),
+        MacAppIcon(id: "AppIcon5", previewAsset: "AppIcon5Preview", nameKey: "icon_theme_5", tint: Color(red: 0.95, green: 0.45, blue: 0.78)),
+        MacAppIcon(id: "AppIcon6", previewAsset: "AppIcon6Preview", nameKey: "icon_theme_6", tint: Color(red: 0.45, green: 0.55, blue: 0.95)),
+        MacAppIcon(id: "AppIcon7", previewAsset: "AppIcon7Preview", nameKey: "icon_theme_7", tint: Color(red: 0.55, green: 0.50, blue: 0.92)),
+    ]
+
+    static func option(for id: String) -> MacAppIcon {
+        all.first { $0.id == id } ?? all[0]
+    }
+}
+
 // MARK: - User preferences key (appearance + lyrics font scale)
 
-/// 把 macOS UI 偏好 (玻璃 / 经典模式, 歌词字号缩放, 侧栏宽度) 集中存到 UserDefaults。
+/// 把 macOS UI 偏好 (玻璃 / 经典模式, 歌词字号缩放, 侧栏宽度, 品牌色, 明暗模式,
+/// App 图标) 集中存到 UserDefaults。
 @MainActor
 @Observable
 final class MacUIPreferences {
@@ -798,10 +857,37 @@ final class MacUIPreferences {
         didSet { UserDefaults.standard.set(ambientStrength, forKey: Self.keyAmbient) }
     }
 
+    /// 品牌色十六进制 (无 #)。驱动 `PMColor.brand`。
+    var brandColorHex: String {
+        didSet { UserDefaults.standard.set(brandColorHex, forKey: Self.keyBrand) }
+    }
+    /// 明暗模式覆盖。didSet 立即应用到 NSApp.appearance。
+    var colorScheme: PMColorSchemeOverride {
+        didSet {
+            UserDefaults.standard.set(colorScheme.rawValue, forKey: Self.keyColorScheme)
+            applyColorScheme()
+        }
+    }
+    /// 当前 App 图标 id ("" = 默认)。didSet 立即换 dock 图标。
+    var appIconID: String {
+        didSet {
+            UserDefaults.standard.set(appIconID, forKey: Self.keyAppIcon)
+            applyAppIcon()
+        }
+    }
+
+    /// 当前品牌色 (SwiftUI Color)。
+    var brandColor: Color { Color(hex: brandColorHex) }
+
     private static let keyAppearance   = "pm.mac.appearance"
     private static let keyLyricsScale  = "pm.mac.lyricsScale"
     private static let keySidebarWidth = "pm.mac.sidebarWidth"
     private static let keyAmbient      = "pm.mac.ambientStrength"
+    private static let keyBrand        = "pm.mac.brandColor"
+    private static let keyColorScheme  = "pm.mac.colorScheme"
+    private static let keyAppIcon      = "pm.mac.appIcon"
+
+    static let defaultBrandHex = "C96442"
 
     private init() {
         let d = UserDefaults.standard
@@ -811,6 +897,37 @@ final class MacUIPreferences {
         let width = d.object(forKey: Self.keySidebarWidth) as? Double ?? Double(PMSize.sidebarDefault)
         sidebarWidth = CGFloat(max(Double(PMSize.sidebarMin), min(Double(PMSize.sidebarMax), width)))
         ambientStrength = d.object(forKey: Self.keyAmbient) as? Double ?? 0.7
+        brandColorHex = d.string(forKey: Self.keyBrand) ?? Self.defaultBrandHex
+        colorScheme = PMColorSchemeOverride(rawValue: d.string(forKey: Self.keyColorScheme) ?? "") ?? .system
+        appIconID = d.string(forKey: Self.keyAppIcon) ?? ""
+    }
+
+    /// 启动时把持久化的明暗模式 + App 图标重放一遍 (didSet 在 init 期不触发,
+    /// 所以必须显式调一次)。在 AppDelegate.applicationDidFinishLaunching 里调。
+    func applyOnLaunch() {
+        applyColorScheme()
+        applyAppIcon()
+    }
+
+    /// 把 colorScheme 应用到整个 app (含 AppKit 的 mini player / 菜单栏窗口)。
+    func applyColorScheme() {
+        switch colorScheme {
+        case .system: NSApp.appearance = nil
+        case .light:  NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:   NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
+    /// 换运行时 dock 图标。"" 时清空, 回退到 bundle 自带图标。
+    func applyAppIcon() {
+        guard !appIconID.isEmpty else {
+            NSApp.applicationIconImage = nil
+            return
+        }
+        let asset = MacAppIcon.option(for: appIconID).previewAsset
+        if let image = NSImage(named: asset) {
+            NSApp.applicationIconImage = image
+        }
     }
 }
 

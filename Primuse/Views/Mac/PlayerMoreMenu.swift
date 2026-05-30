@@ -520,7 +520,7 @@ private struct MacSleepTimerPopover: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("自定义 (分钟)")
+                        Text(Lz("Custom (minutes)"))
                             .font(.system(size: 11))
                             .foregroundStyle(PMColor.textFaint)
                         Spacer()
@@ -534,7 +534,7 @@ private struct MacSleepTimerPopover: View {
                         player.scheduleSleep(minutes: Int(customMinutes))
                         onClose()
                     } label: {
-                        Text("设置自定义定时")
+                        Text(Lz("Set Custom Timer"))
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -568,7 +568,7 @@ private struct MacSleepTimerPopover: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("睡眠定时器")
+            Text(Lz("Sleep Timer"))
                 .font(.system(size: 13.5, weight: .semibold))
                 .foregroundStyle(PMColor.text)
             Text("P-14 · SleepTimerService")
@@ -637,12 +637,12 @@ private struct MacSleepTimerPopover: View {
     private var statusText: String {
         if let end = player.sleepTimerEndDate {
             let remaining = max(0, Int(end.timeIntervalSince(now)))
-            return "剩余 \(TimeInterval(remaining).formattedDuration)"
+            return "\(Lz("Remaining")) \(TimeInterval(remaining).formattedDuration)"
         }
         if player.sleepStopAfterSongID != nil {
-            return "当前歌曲结束后停止"
+            return Lz("Stop After Current Song")
         }
-        return "未启用"
+        return Lz("Not Enabled")
     }
 }
 #endif

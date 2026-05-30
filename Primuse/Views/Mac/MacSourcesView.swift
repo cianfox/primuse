@@ -56,12 +56,12 @@ struct MacSourcesView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .bottom, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("音乐源")
+                    Text(Lz("Music Sources"))
                         .font(.system(size: 11, weight: .semibold))
                         .tracking(0.8)
                         .textCase(.uppercase)
                         .foregroundStyle(PMColor.textMuted)
-                    Text("已连接")
+                    Text(Lz("Connected"))
                         .font(.system(size: 32, weight: .bold))
                         .tracking(-0.5)
                         .foregroundStyle(PMColor.text)

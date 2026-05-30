@@ -448,21 +448,21 @@ struct MacHomeView: View {
     private var pipelineSection: some View {
         HStack(spacing: PMSpace.s8) {
             pipelineNode("externaldrive.fill", "Sources",
-                         statusText: "\(enabledSourcesCount) 在线",
+                         statusText: "\(enabledSourcesCount) \(Lz("online"))",
                          isActive: !sourcesStore.sources.isEmpty)
             pipelineConnector(isActive: !activeScans.isEmpty || hasContent)
             pipelineNode("arrow.triangle.2.circlepath", "Scan",
-                         statusText: activeScans.isEmpty ? "无扫描" : "\(activeScans.count) 进行中",
+                         statusText: activeScans.isEmpty ? Lz("No Scan") : "\(activeScans.count) \(Lz("in progress"))",
                          isActive: !activeScans.isEmpty || hasContent)
             pipelineConnector(isActive: hasContent)
             pipelineNode("tag.fill", "Metadata",
                          statusText: backfill.remainingCount(forSource: nil) == 0
-                             ? "已完成"
-                             : "\(backfill.remainingCount(forSource: nil)) 待回填",
+                             ? Lz("Done")
+                             : "\(backfill.remainingCount(forSource: nil)) \(Lz("pending backfill"))",
                          isActive: hasContent)
             pipelineConnector(isActive: player.currentSong != nil)
             pipelineNode("play.fill", "Listen",
-                         statusText: player.currentSong?.title ?? "未播放",
+                         statusText: player.currentSong?.title ?? Lz("Not Playing"),
                          isActive: player.currentSong != nil)
         }
         .padding(.horizontal, 22)

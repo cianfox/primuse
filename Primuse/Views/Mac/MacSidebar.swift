@@ -199,11 +199,11 @@ struct MacSidebar: View {
             sectionHeader("mac_sidebar_tools")
 
             item(route: .playlistImport, icon: "tray.and.arrow.down",
-                 title: "导入歌单 (M3U8/JSON)")
+                 title: "Import Playlist (M3U8/JSON)")
             item(route: .duplicates, icon: "arrow.triangle.2.circlepath",
-                 title: "重复歌曲清理")
+                 title: "Duplicate Song Cleanup")
             item(route: .scrobble, icon: "waveform.path.ecg",
-                 title: "Scrobble 配置")
+                 title: "Scrobble Configuration")
         }
         .padding(.horizontal, 6)
     }

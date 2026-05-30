@@ -184,6 +184,9 @@ final class PrimuseAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             Self.shared = self
 
+            // 重放持久化的明暗模式 + Dock 图标 (didSet 在 init 期不触发)。
+            MacUIPreferences.shared.applyOnLaunch()
+
             let bar = MacMenuBarController()
             bar.install()
             self.menuBar = bar
