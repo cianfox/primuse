@@ -224,7 +224,7 @@ final class CloudKitSyncService {
             plog("CloudKitSync: starting fetchChanges()")
             try await engine.fetchChanges()
             plog("CloudKitSync: fetchChanges OK, starting sendChanges()")
-            try await engine.sendChanges()
+            try await sendChangesResolvingRecoverableFailures(using: engine)
             plog("CloudKitSync: sendChanges OK")
             self.didCompleteInitialUpload = true
             self.status = .upToDate
@@ -537,11 +537,92 @@ final class CloudKitSyncService {
         status = .syncing
         do {
             try await engine.fetchChanges()
-            try await engine.sendChanges()
+            try await sendChangesResolvingRecoverableFailures(using: engine)
             status = .upToDate
             lastSyncedAt = Date()
         } catch {
             status = mapToSyncStatus(error)
+        }
+    }
+
+    /// `sendChanges()` may throw a top-level partial failure even when every
+    /// per-record error is recoverable. Repair those entries immediately, then
+    /// give the engine one clean retry so startup doesn't leave sync looking
+    /// failed after a harmless "record already exists" conflict.
+    private func sendChangesResolvingRecoverableFailures(using engine: CKSyncEngine) async throws {
+        do {
+            try await engine.sendChanges()
+        } catch {
+            guard resolveRecoverablePartialFailure(error, syncEngine: engine) else {
+                throw error
+            }
+            plog("CloudKitSync: resolved recoverable send conflicts, retrying sendChanges()")
+            try await engine.sendChanges()
+        }
+    }
+
+    @discardableResult
+    private func resolveRecoverablePartialFailure(_ error: any Error, syncEngine: CKSyncEngine) -> Bool {
+        guard let ckError = error as? CKError,
+              ckError.code == .partialFailure,
+              let partialErrors = ckError.partialErrorsByItemID else {
+            return false
+        }
+
+        var handledAny = false
+        var hasUnhandled = false
+
+        for (itemID, itemError) in partialErrors {
+            guard let recordID = itemID as? CKRecord.ID,
+                  let itemCKError = itemError as? CKError else {
+                hasUnhandled = true
+                continue
+            }
+
+            if resolveRecoverableRecordSaveFailure(
+                recordID: recordID,
+                error: itemCKError,
+                syncEngine: syncEngine
+            ) {
+                handledAny = true
+            } else {
+                hasUnhandled = true
+            }
+        }
+
+        return handledAny && !hasUnhandled
+    }
+
+    private func resolveRecoverableRecordSaveFailure(
+        recordID: CKRecord.ID,
+        error: CKError,
+        syncEngine: CKSyncEngine
+    ) -> Bool {
+        guard isSyncableRecordID(recordID) else {
+            dropPendingRecordZoneChanges(for: recordID, syncEngine: syncEngine)
+            return true
+        }
+
+        switch error.code {
+        case .serverRecordChanged:
+            guard let local = makeRecord(for: recordID) else {
+                dropPendingRecordZoneChanges(for: recordID, syncEngine: syncEngine)
+                return true
+            }
+            resolveServerRecordChanged(local: local, error: error, syncEngine: syncEngine)
+            return true
+        case .invalidArguments:
+            dropPendingRecordZoneChanges(for: recordID, syncEngine: syncEngine)
+            return true
+        case .unknownItem:
+            if let recordType = recordMetadata(for: recordID)?.recordType {
+                applyRemoteDeletion(recordID: recordID, recordType: recordType)
+            } else {
+                dropPendingRecordZoneChanges(for: recordID, syncEngine: syncEngine)
+            }
+            return true
+        default:
+            return false
         }
     }
 
@@ -680,11 +761,18 @@ final class CloudKitSyncService {
 
     func playlistsChanged(ids: [String]) {
         guard CloudSyncChannel.isEnabled(.playlists) else { return }
-        enqueueSaves(recordType: RecordType.playlist, ids: ids)
+        // Apple Music 镜像歌单(本机资料库全集 / 用户自建镜像)是本地只读镜像,
+        // 内容全是 musicKit:// 本地引用, 推到 CloudKit 对其它设备/家庭成员毫无
+        // 意义; 且每次 Apple Music sync 都整体覆盖, updatedAt 不停抖动 → 与
+        // server etag 持续冲突(oplock / "save same record twice")。一律不同步。
+        let syncable = ids.filter { !AppleMusicLibraryService.isAppleMusicMirrorPlaylist($0) }
+        guard !syncable.isEmpty else { return }
+        enqueueSaves(recordType: RecordType.playlist, ids: syncable)
     }
 
     func playlistDeleted(id: String) {
         guard CloudSyncChannel.isEnabled(.playlists) else { return }
+        guard !AppleMusicLibraryService.isAppleMusicMirrorPlaylist(id) else { return }
         enqueueDeletes(recordType: RecordType.playlist, ids: [id])
     }
 
@@ -787,6 +875,62 @@ final class CloudKitSyncService {
                     zoneID: Self.zoneFor(recordType: recordType, id: id))
     }
 
+    private func recordMetadata(for recordID: CKRecord.ID) -> (recordType: String, localID: String)? {
+        let parts = recordID.recordName.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        return (parts[0], parts[1])
+    }
+
+    private func isSyncableRecordID(_ recordID: CKRecord.ID) -> Bool {
+        guard let metadata = recordMetadata(for: recordID) else { return true }
+        if metadata.recordType == RecordType.playlist,
+           AppleMusicLibraryService.isAppleMusicMirrorPlaylist(metadata.localID) {
+            return false
+        }
+        return true
+    }
+
+    private func pendingRecordID(from change: CKSyncEngine.PendingRecordZoneChange) -> CKRecord.ID {
+        switch change {
+        case .saveRecord(let recordID), .deleteRecord(let recordID):
+            return recordID
+        }
+    }
+
+    private func dropPendingRecordZoneChanges(for recordID: CKRecord.ID, syncEngine: CKSyncEngine) {
+        syncEngine.state.remove(pendingRecordZoneChanges: [
+            .saveRecord(recordID),
+            .deleteRecord(recordID)
+        ])
+        removeSystemFields(for: recordID)
+    }
+
+    private func filteredPendingRecordZoneChanges(
+        _ changes: [CKSyncEngine.PendingRecordZoneChange],
+        syncEngine: CKSyncEngine
+    ) -> [CKSyncEngine.PendingRecordZoneChange] {
+        var kept: [CKSyncEngine.PendingRecordZoneChange] = []
+        var dropped: [CKSyncEngine.PendingRecordZoneChange] = []
+
+        for change in changes {
+            if isSyncableRecordID(pendingRecordID(from: change)) {
+                kept.append(change)
+            } else {
+                dropped.append(change)
+            }
+        }
+
+        if !dropped.isEmpty {
+            syncEngine.state.remove(pendingRecordZoneChanges: dropped)
+            for change in dropped {
+                removeSystemFields(for: pendingRecordID(from: change))
+            }
+            plog("CloudKitSync: dropped \(dropped.count) stale Apple Music mirror pending change(s)")
+        }
+
+        return kept
+    }
+
     /// On first start, push everything we have locally — including soft-deleted
     /// tombstones — so the engine can de-dupe against existing server records
     /// via change tags. Each call respects the per-channel toggles.
@@ -854,6 +998,14 @@ final class CloudKitSyncService {
         try? data.write(to: systemFieldsURL, options: .atomic)
     }
 
+    /// systemFieldsCache 的 key。必须带上 zoneName: 同一条 record 在启用/关闭
+    /// 家庭共享时会在 PrimuseSync ↔ PrimuseFamily 之间迁移, 只用 recordName 做
+    /// key 会让两个 zone 的同 id 记录共用一个 etag 槽 → changeTag 串台 → 保存时
+    /// 持续 oplock(serverRecordChanged)冲突。
+    private static func systemFieldsKey(for recordID: CKRecord.ID) -> String {
+        "\(recordID.zoneID.zoneName)/\(recordID.recordName)"
+    }
+
     /// 把 `record` 的 system fields(含 changeTag/etag)序列化下来,以便下次
     /// 重建 CKRecord 时复用。CKSyncEngine 必须看到带 changeTag 的 record 才会
     /// 把 saveRecord 翻译成 update,否则 server 直接拒。
@@ -863,7 +1015,7 @@ final class CloudKitSyncService {
         record.encodeSystemFields(with: coder)
         coder.finishEncoding()
         let data = coder.encodedData
-        let key = record.recordID.recordName
+        let key = Self.systemFieldsKey(for: record.recordID)
         if systemFieldsCache[key] != data {
             systemFieldsCache[key] = data
             persistSystemFieldsCache()
@@ -872,7 +1024,7 @@ final class CloudKitSyncService {
 
     fileprivate func removeSystemFields(for recordID: CKRecord.ID) {
         loadSystemFieldsCacheIfNeeded()
-        if systemFieldsCache.removeValue(forKey: recordID.recordName) != nil {
+        if systemFieldsCache.removeValue(forKey: Self.systemFieldsKey(for: recordID)) != nil {
             persistSystemFieldsCache()
         }
     }
@@ -885,7 +1037,7 @@ final class CloudKitSyncService {
 
     private func cachedRecord(for recordID: CKRecord.ID) -> CKRecord? {
         loadSystemFieldsCacheIfNeeded()
-        guard let data = systemFieldsCache[recordID.recordName],
+        guard let data = systemFieldsCache[Self.systemFieldsKey(for: recordID)],
               let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else {
             return nil
         }
@@ -1268,7 +1420,10 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         let scope = context.options.scope
-        let pending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        let scopedPending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+        let pending = await MainActor.run {
+            self.filteredPendingRecordZoneChanges(scopedPending, syncEngine: syncEngine)
+        }
 
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending) { recordID in
             let record = await MainActor.run { self.makeRecord(for: recordID) }
@@ -1314,6 +1469,14 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
             status = .quotaExceeded
         case .notAuthenticated:
             status = .accountUnavailable(.noAccount)
+        case .invalidArguments:
+            // CKError 12, 常见信息 "You can't save the same record twice" — 同一
+            // 条 record 在一次 send 周期里被重复保存(引擎自动重试 + 冲突处理手动
+            // 重排叠加)。把这条多余的 pending 丢掉打断死循环, 并清掉可能已失真的
+            // system fields; 下次本地真有改动时会带新的 changeTag 干净地重传。
+            // 不在此处立即重排, 否则可能与引擎自身重试再次撞车形成新循环。
+            syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            removeSystemFields(for: recordID)
         default:
             plog("CloudKitSync: unhandled save error code \(ckError.code.rawValue): \(ckError.localizedDescription)")
         }
@@ -1357,6 +1520,7 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
             let serverUpdated = (server["updatedAt"] as? Date) ?? .distantPast
             if serverUpdated >= localUpdated {
                 applyRemoteRecord(server)
+                syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(local.recordID)])
                 return  // local save dropped
             }
             // Local wins: keep our store as-is and re-push.
@@ -1439,10 +1603,12 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
 
     @MainActor
     private func makeRecord(for recordID: CKRecord.ID) -> CKRecord? {
-        let parts = recordID.recordName.split(separator: "/", maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { return nil }
-        let recordType = parts[0]
-        let localID = parts[1]
+        guard isSyncableRecordID(recordID),
+              let metadata = recordMetadata(for: recordID) else {
+            return nil
+        }
+        let recordType = metadata.recordType
+        let localID = metadata.localID
         // 优先从缓存还原带 changeTag 的 record;否则只能新建 (server 会当成 insert)
         let record = cachedRecord(for: recordID)
             ?? CKRecord(recordType: recordType, recordID: recordID)
