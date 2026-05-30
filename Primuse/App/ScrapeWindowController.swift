@@ -85,4 +85,61 @@ final class ScrapeWindowController: NSObject, NSWindowDelegate {
         return false // 不真正销毁,只 hide,下次 show() 复用 window
     }
 }
+
+/// 设置窗口 —— 用独立 NSWindow 而不是 SwiftUI `Settings {}` scene。
+///
+/// SwiftUI 的 `Settings` scene 会强制一个原生标题栏 (`.windowStyle(.hiddenTitleBar)`
+/// 对它无效), 把我们按设计稿自绘的标题栏 (三色灯 / ‹ › / 居中标题) 顶到原生白条
+/// 下面盖住。改用 fullSizeContentView + 透明标题栏 + 隐藏系统按钮的自定义窗口,
+/// 跟主窗口、刮削窗口同一套 chrome, 自绘标题栏才能铺到窗口最顶。
+@MainActor
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowController()
+
+    private var window: NSWindow?
+
+    private override init() { super.init() }
+
+    /// 打开设置窗口 (Cmd+, / 菜单触发)。已开则置前。
+    func show() {
+        if let win = window {
+            NSApp.activate(ignoringOtherApps: true)
+            win.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        win.toolbar = nil
+        win.backgroundColor = .clear
+        win.isMovableByWindowBackground = true
+        win.minSize = NSSize(width: 940, height: 680)
+        [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ].forEach { win.standardWindowButton($0)?.isHidden = true }
+        win.center()
+        win.setFrameAutosaveName("PrimuseSettings")
+        win.isReleasedWhenClosed = false
+        win.contentViewController = NSHostingController(
+            rootView: MacSettingsView().applyPrimuseEnvironments()
+        )
+        win.delegate = self
+        self.window = win
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
+        Task { @MainActor in self.window?.orderOut(nil) }
+        return false
+    }
+}
 #endif

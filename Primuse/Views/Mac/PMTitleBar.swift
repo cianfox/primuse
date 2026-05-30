@@ -22,18 +22,6 @@ struct PMTitleBar: View {
         HStack(spacing: 8) {
             PMWindowTrafficLights()
 
-            HStack(spacing: 4) {
-                PMRoundBtn(icon: "chevron.left", size: 26, iconSize: 12, style: .glass,
-                           help: "back") {
-                    NotificationCenter.default.post(name: .primuseDetailGoBack, object: nil)
-                }
-                PMRoundBtn(icon: "chevron.right", size: 26, iconSize: 12, style: .glass,
-                           help: "forward") {
-                    NotificationCenter.default.post(name: .primuseDetailGoForward, object: nil)
-                }
-            }
-            .padding(.leading, 8)
-
             Spacer(minLength: 12)
 
             // 设计稿对比: 搜索框比当前版本更窄 + 更高 (高/宽比约 30/25 = 1.2x)。

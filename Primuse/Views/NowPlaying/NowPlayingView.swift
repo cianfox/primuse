@@ -145,12 +145,7 @@ struct NowPlayingView: View {
                 .presentationDetents([.large])
             }
         }
-        .sheet(isPresented: $showSimilarSongs) {
-            if let song = player.currentSong {
-                SimilarSongsSheet(seed: song)
-                    .presentationDetents([.large])
-            }
-        }
+        .similarSongsPanel(isPresented: $showSimilarSongs, seed: player.currentSong)
         .sheet(isPresented: $showCastPicker) {
             CastDevicePickerSheet()
                 .presentationDetents([.medium, .large])
@@ -1377,10 +1372,7 @@ struct SongInfoSheet: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(PMColor.cardBorder, lineWidth: 0.5)
         }
-        .sheet(isPresented: $showSimilarSongs) {
-            SimilarSongsSheet(seed: song)
-                .frame(minWidth: 420, minHeight: 420)
-        }
+        .similarSongsPanel(isPresented: $showSimilarSongs, seed: song)
     }
 
     private var macInfoRows: [(label: String, value: String, monospace: Bool)] {

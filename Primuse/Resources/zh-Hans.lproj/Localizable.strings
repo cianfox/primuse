@@ -284,6 +284,8 @@
 "similar_empty_hint" = "Last.fm 给的推荐都不在你的资料库里。";
 "similar_source_lastfm" = "推荐数据来自 Last.fm";
 "similar_section_lastfm" = "听众也喜欢 (Last.fm)";
+"play_similar_radio" = "播放相似电台";
+"similar_subtitle_format" = "基于「%@」· %@";
 "apple_music_needs_subscription" = "需要 Apple Music 订阅才能在猿音里播放，可以去 Apple Music App 开通后再试。";
 "apple_music_unavailable" = "当前账号或地区不支持 Apple Music 订阅播放。";
 "apple_music_notice_notDetermined" = "Apple Music 尚未授权，去 设置 → Apple Music 启用后可同步显示曲库搜索结果。";
@@ -1019,6 +1021,7 @@
 "source_diag_advice_invalid_response" = "音乐源返回了无法解析的响应。";
 
 // MARK: - macOS Playback menu
+"settings_menu_item" = "设置…";
 "playback_menu" = "播放";
 "play_pause" = "播放/暂停";
 "next_song" = "下一首";

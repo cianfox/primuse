@@ -601,6 +601,14 @@ struct PrimuseApp: App {
             SidebarCommands()
             ToolbarCommands()
             CommandGroup(replacing: .newItem) {}
+            // 自定义设置窗口 (独立 NSWindow, 见 SettingsWindowController) 取代
+            // SwiftUI `Settings {}` scene —— 后者强制原生标题栏盖住自绘标题栏。
+            CommandGroup(replacing: .appSettings) {
+                Button("settings_menu_item") {
+                    SettingsWindowController.shared.show()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .toolbar) {
                 Button("show_desktop_lyrics") {
                     PrimuseAppDelegate.shared?.toggleDesktopLyrics()
@@ -672,14 +680,5 @@ struct PrimuseApp: App {
         }
         #endif
 
-        #if os(macOS)
-        Settings {
-            injectServices { MacSettingsView() }
-        }
-        .windowStyle(.hiddenTitleBar)
-        // 防止切到内容少的 tab (RecentlyDeleted 空 / Replay Gain 关闭后
-        // 的 Playback Settings) 时整个 Settings 窗口突兀缩小。
-        .windowResizability(.contentMinSize)
-        #endif
     }
 }

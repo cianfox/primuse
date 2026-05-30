@@ -108,12 +108,6 @@ struct PlayerMoreMenu<MenuLabel: View>: View {
                 }
             }
         }
-        .sheet(isPresented: $showSimilarSongs) {
-            if let song = player.currentSong {
-                SimilarSongsSheet(seed: song)
-                    .frame(minWidth: 420, minHeight: 420)
-            }
-        }
         .alert(String(localized: "scrape_song"),
                isPresented: Binding(get: { scrapeAlertMessage != nil },
                                     set: { if !$0 { scrapeAlertMessage = nil } })) {
@@ -158,10 +152,37 @@ struct PlayerMoreMenu<MenuLabel: View>: View {
                     disabled: player.currentSong == nil) {
                 showAddToPlaylist = true
             }
-            menuRow(title: "similar_songs",
-                    symbol: "sparkles",
-                    disabled: player.currentSong == nil) {
-                showSimilarSongs = true
+            // 相似歌曲 —— 飞出二级浮层 (和字号子菜单一致),点外部自动消失,
+            // 不是之前那个没关闭按钮的固定 sheet。整行 hit-testable。
+            Button {
+                guard player.currentSong != nil else { return }
+                showSimilarSongs.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .frame(width: 18)
+                        .foregroundStyle(PMColor.textMuted)
+                    Text("similar_songs")
+                        .font(.callout)
+                        .foregroundStyle(PMColor.text)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(PMColor.textFaint)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .pmRowBackground(cornerRadius: 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(player.currentSong == nil)
+            .popover(isPresented: $showSimilarSongs, arrowEdge: .leading) {
+                if let song = player.currentSong {
+                    MacSimilarSongsPopover(seed: song) {
+                        showSimilarSongs = false
+                        menuShown = false
+                    }
+                }
             }
             if let song = player.currentSong {
                 if let album = matchingAlbum(for: song) {
@@ -643,6 +664,283 @@ private struct MacSleepTimerPopover: View {
             return Lz("Stop After Current Song")
         }
         return Lz("Not Enabled")
+    }
+}
+
+// MARK: - Similar Songs Popover (相似歌曲浮层)
+
+/// 设计稿「相似歌曲」浮层 —— 从 More 菜单 / 歌曲右键飞出的悬浮面板,点外部
+/// 自动消失 (系统 popover 行为),不再是没关闭按钮的固定 sheet。
+///
+/// 把本地特征相似 (MusicDiscoveryEngine, 看 metadata 重叠) 和 Last.fm 听众
+/// 重叠 (看播放行为) 合并成一个按匹配度排序的列表:每行一条匹配进度条 + 0~99
+/// 分值,来源是 Apple Music 的标 AM。底部一个整宽「播放相似电台」。
+struct MacSimilarSongsPopover: View {
+    let seed: Song
+    /// 关闭整组浮层 (含父级 More 菜单)。播放后或点外部时调用。
+    var onClose: () -> Void
+
+    @Environment(AudioPlayerService.self) private var player
+    @Environment(MusicLibrary.self) private var library
+    @Environment(SourcesStore.self) private var sourcesStore
+
+    @State private var lastFmCandidates: [SimilarTracksCandidate] = []
+    @State private var isLoadingLastFm = true
+
+    /// 合并去重后的展示行。`affinity` 统一到 0~1,本地分按软上限折算。
+    private struct Row: Identifiable {
+        let song: Song
+        let affinity: Double
+        var id: String { song.id }
+        var score: Int { min(99, max(1, Int((affinity * 100).rounded()))) }
+    }
+
+    private var localResults: [MusicDiscoveryResult] {
+        MusicDiscoveryEngine.similarSongs(to: seed, in: library, limit: 30)
+    }
+
+    private var rows: [Row] {
+        var byID: [String: Row] = [:]
+        // 本地特征分用 120 作软上限:同专辑 (~46+) 叠到接近满,同艺术家+流派+年代
+        // (~84) 折到 0.7 左右,跟 Last.fm 的 0~1 同量级,合并排序才不串味。
+        for result in localResults {
+            let affinity = min(1.0, max(0.0, result.score / 120.0))
+            if affinity >= (byID[result.song.id]?.affinity ?? -1) {
+                byID[result.song.id] = Row(song: result.song, affinity: affinity)
+            }
+        }
+        for candidate in lastFmCandidates {
+            guard let song = candidate.librarySong else { continue }
+            let affinity = min(1.0, max(0.0, candidate.match))
+            if affinity >= (byID[song.id]?.affinity ?? -1) {
+                byID[song.id] = Row(song: song, affinity: affinity)
+            }
+        }
+        return byID.values.sorted {
+            $0.affinity != $1.affinity
+                ? $0.affinity > $1.affinity
+                : $0.song.title.localizedCompare($1.song.title) == .orderedAscending
+        }
+    }
+
+    private var subtitle: String {
+        let source = lastFmCandidates.isEmpty ? String(localized: "library") : "Last.fm"
+        return String(format: String(localized: "similar_subtitle_format"), seed.title, source)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            divider
+            content
+            divider
+            footer
+        }
+        .frame(width: 320)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(PMColor.bg.opacity(0.72))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(PMColor.cardBorder, lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.24), radius: 22, y: 10)
+        .task(id: seed.id) { await loadLastFm() }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(PMColor.divider).frame(height: 0.5)
+    }
+
+    private var header: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(PMColor.brand)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("similar_songs")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(PMColor.text)
+                Text(verbatim: subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(PMColor.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 13)
+        .padding(.bottom, 9)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        let displayRows = rows
+        if displayRows.isEmpty {
+            VStack(spacing: 8) {
+                if isLoadingLastFm {
+                    ProgressView().controlSize(.small)
+                    Text("similar_loading")
+                        .font(.system(size: 11))
+                        .foregroundStyle(PMColor.textMuted)
+                        .multilineTextAlignment(.center)
+                } else {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 20))
+                        .foregroundStyle(PMColor.textFaint)
+                    Text("similar_empty")
+                        .font(.system(size: 12))
+                        .foregroundStyle(PMColor.textMuted)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 30)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(displayRows) { row in
+                        rowView(row)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+            }
+            .frame(maxHeight: 360)
+        }
+    }
+
+    private func rowView(_ row: Row) -> some View {
+        Button {
+            play(row.song)
+        } label: {
+            HStack(spacing: 10) {
+                CachedArtworkView(
+                    coverRef: row.song.coverArtFileName,
+                    songID: row.song.id,
+                    size: 38,
+                    cornerRadius: 6,
+                    sourceID: row.song.sourceID,
+                    filePath: row.song.filePath
+                )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.song.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(PMColor.text)
+                        .lineLimit(1)
+                    Text(row.song.artistName ?? String(localized: "unknown_artist"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(PMColor.textMuted)
+                        .lineLimit(1)
+                    matchBar(row.affinity)
+                }
+
+                if isAppleMusic(row.song) {
+                    Text(verbatim: "AM")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(PMColor.bad)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(PMColor.bad.opacity(0.14), in: Capsule())
+                }
+
+                Text("\(row.score)")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(PMColor.textFaint)
+                    .frame(minWidth: 22, alignment: .trailing)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .pmRowBackground(cornerRadius: 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func matchBar(_ fraction: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(PMColor.divider)
+                Capsule()
+                    .fill(PMColor.brand)
+                    .frame(width: max(2, geo.size.width * fraction))
+            }
+        }
+        .frame(height: 3)
+        .padding(.top, 1)
+    }
+
+    private var footer: some View {
+        Button {
+            playRadio()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("play_similar_radio")
+                    .font(.system(size: 12.5, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 32)
+            .background(PMColor.brand, in: .rect(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(rows.isEmpty)
+        .opacity(rows.isEmpty ? 0.5 : 1)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private func isAppleMusic(_ song: Song) -> Bool {
+        guard let type = sourcesStore.source(id: song.sourceID)?.type else { return false }
+        return type == .appleMusic || type == .appleMusicLibrary
+    }
+
+    private func play(_ song: Song) {
+        let tail = rows.map(\.song).filter { $0.id != song.id }
+        let queue = ([song] + tail).filteredPlayable()
+        guard let first = queue.first else { return }
+        player.shuffleEnabled = false
+        player.setQueue(queue, startAt: 0)
+        onClose()
+        Task { await player.play(song: first) }
+    }
+
+    private func playRadio() {
+        let queue = MusicDiscoveryEngine.songRadio(from: seed, in: library, limit: 48)
+            .map(\.song)
+            .filteredPlayable()
+        guard let first = queue.first else { return }
+        player.shuffleEnabled = false
+        player.setQueue(queue, startAt: 0)
+        onClose()
+        Task { await player.play(song: first) }
+    }
+
+    private func loadLastFm() async {
+        isLoadingLastFm = true
+        guard !LastFmCredentialsStore.effectiveAPIKey().isEmpty else {
+            isLoadingLastFm = false
+            return
+        }
+        let service = AppServices.shared.similarTracks
+        let pool = library.visibleSongs
+        do {
+            lastFmCandidates = try await service.fetchSimilar(
+                to: seed,
+                limit: 30,
+                library: pool,
+                includeUnmatched: false
+            )
+        } catch {
+            lastFmCandidates = []
+        }
+        isLoadingLastFm = false
     }
 }
 #endif

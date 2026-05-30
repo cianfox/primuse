@@ -68,6 +68,31 @@ struct MacSettingsView: View {
 
     @State private var tab: Tab = .playback
     @State private var sidebarFilter = ""
+    // 跟 macOS 系统设置一样: 标题栏 ‹ › 按浏览历史前进/后退面板。
+    @State private var backStack: [Tab] = []
+    @State private var fwdStack: [Tab] = []
+
+    private var canGoBack: Bool { !backStack.isEmpty }
+    private var canGoForward: Bool { !fwdStack.isEmpty }
+
+    private func selectTab(_ newTab: Tab) {
+        guard newTab != tab else { return }
+        backStack.append(tab)
+        fwdStack.removeAll()
+        tab = newTab
+    }
+
+    private func goBack() {
+        guard let prev = backStack.popLast() else { return }
+        fwdStack.append(tab)
+        tab = prev
+    }
+
+    private func goForward() {
+        guard let next = fwdStack.popLast() else { return }
+        backStack.append(tab)
+        tab = next
+    }
 
     private var filteredTabs: [Tab] {
         let query = sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,27 +125,30 @@ struct MacSettingsView: View {
     }
 
     private var settingsTitleBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             PMWindowTrafficLights()
 
+            // ‹ › 面板前进/后退 — 设计稿标题栏紧挨三色灯的一组导航按钮。
             HStack(spacing: 4) {
-                PMRoundBtn(icon: "chevron.left", size: 24, iconSize: 12, style: .plain,
-                           help: "back") {}
-                PMRoundBtn(icon: "chevron.right", size: 24, iconSize: 12, style: .plain,
-                           help: "forward") {}
+                PMRoundBtn(icon: "chevron.left", size: 24, iconSize: 12,
+                           style: .plain, help: "back") { goBack() }
+                    .disabled(!canGoBack)
+                    .opacity(canGoBack ? 1 : 0.35)
+                PMRoundBtn(icon: "chevron.right", size: 24, iconSize: 12,
+                           style: .plain, help: "forward") { goForward() }
+                    .disabled(!canGoForward)
+                    .opacity(canGoForward ? 1 : 0.35)
             }
-            .padding(.leading, 6)
-
-            Spacer()
+            .padding(.leading, 8)
 
             Text(verbatim: tab.title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(PMColor.text)
                 .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-            Spacer()
-
-            Color.clear.frame(width: 82, height: 1)
+            // 跟左侧三色灯 + 导航按钮等宽的占位, 让标题在窗口里大致居中。
+            Color.clear.frame(width: 80, height: 1)
         }
         .padding(.horizontal, 14)
         .frame(height: PMSize.titlebar)
@@ -180,7 +208,7 @@ struct MacSettingsView: View {
 
     private func sidebarItem(_ item: Tab) -> some View {
         let selected = item == tab
-        return Button { tab = item } label: {
+        return Button { selectTab(item) } label: {
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(selected ? AnyShapeStyle(Color.white.opacity(0.22))
@@ -529,8 +557,13 @@ private struct MacSTPicker<T: Hashable>: View {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .strokeBorder(PMColor.dividerStrong, lineWidth: 0.5)
             }
+            .contentShape(.rect(cornerRadius: 5))
         }
-        .menuStyle(.borderlessButton)
+        // `.borderlessButton` 会丢掉自定义 label, 退化成原生「⌄ 标题」下拉;
+        // `.button` + 透明 buttonStyle 才会把上面那个描边盒子当作触发器渲染,
+        // `.menuIndicator(.hidden)` 去掉系统自动补的箭头 (我们自己画了)。
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
     }
@@ -1309,14 +1342,6 @@ private struct MacSTLyricsView: View {
     @State private var settings = LyricsTranslationSettingsStore.shared
     @AppStorage("lyricsFontScale") private var lyricsFontScale = 1.0
 
-    private var targetLanguageName: String {
-        let current = LyricsTranslationSettingsStore.availableTargetLanguages.first {
-            $0.code == settings.targetLanguageCode
-        }
-        guard let current else { return Lz("Chinese (Simplified)") }
-        return String(localized: String.LocalizationValue(current.displayKey))
-    }
-
     var body: some View {
         // 删了"离线模型"/"翻译颜色"/"仅 NowPlaying 展开时显示翻译" 三行 —— 这些 mock
         // 控件没接到任何 Store, 之前是纯视觉占位, 真翻译走的是云端 API (LyricsTranslationSettingsStore)。
@@ -1329,16 +1354,15 @@ private struct MacSTLyricsView: View {
                     ))
                 }
                 MacSTRow(Lz("Target Language")) {
-                    Menu {
-                        ForEach(LyricsTranslationSettingsStore.availableTargetLanguages, id: \.code) { language in
-                            Button(String(localized: String.LocalizationValue(language.displayKey))) {
-                                settings.targetLanguageCode = language.code
-                            }
+                    MacSTPicker(
+                        selection: Binding(
+                            get: { settings.targetLanguageCode },
+                            set: { settings.targetLanguageCode = $0 }
+                        ),
+                        options: LyricsTranslationSettingsStore.availableTargetLanguages.map {
+                            ($0.code, String(localized: String.LocalizationValue($0.displayKey)))
                         }
-                    } label: {
-                        MacSTSelect(value: targetLanguageName)
-                    }
-                    .buttonStyle(.plain)
+                    )
                 }
             }
         }

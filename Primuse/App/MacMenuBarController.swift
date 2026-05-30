@@ -10,6 +10,7 @@ import PrimuseKit
 final class MacMenuBarController: NSObject, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    private var iconObserver: NSObjectProtocol?
 
     /// Toggle whether the status item shows the current song title next to
     /// the icon. Stored in UserDefaults so it survives launches; users who
@@ -22,8 +23,7 @@ final class MacMenuBarController: NSObject, NSPopoverDelegate {
     func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Primuse")
-            button.image?.isTemplate = true
+            button.image = statusBarImage()
             button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(togglePopover(_:))
@@ -46,6 +46,19 @@ final class MacMenuBarController: NSObject, NSPopoverDelegate {
 
         observePlayerState()
         refreshStatusItem()
+        observeAppIconChange()
+    }
+
+    /// App 图标切换后强制重画状态项图标 —— refreshStatusItem 平时只在 image == nil
+    /// 时设, 不会主动跟着换, 所以这里收到通知直接覆盖。
+    private func observeAppIconChange() {
+        iconObserver = NotificationCenter.default.addObserver(
+            forName: .primuseAppIconChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.statusItem?.button?.image = self?.statusBarImage()
+            }
+        }
     }
 
     /// Re-arms whenever any of the tracked observable values changes.
@@ -66,20 +79,30 @@ final class MacMenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
+    /// 菜单栏图标:用 App 自己的图标(猿音品牌图),而不是通用音符符号。
+    /// 全彩、非模板(品牌图不做单色着色)。取不到时兜底回音符模板符号。
+    private func statusBarImage() -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        if let icon = NSApp.applicationIconImage, icon.isValid {
+            let img = NSImage(size: size)
+            img.lockFocus()
+            icon.draw(in: NSRect(origin: .zero, size: size),
+                      from: .zero, operation: .sourceOver, fraction: 1.0)
+            img.unlockFocus()
+            img.isTemplate = false
+            return img
+        }
+        let fallback = NSImage(systemSymbolName: "music.note", accessibilityDescription: "Primuse") ?? NSImage()
+        fallback.isTemplate = true
+        return fallback
+    }
+
     private func refreshStatusItem() {
         guard let button = statusItem?.button else { return }
         let player = AppServices.shared.playerService
 
-        let symbolName: String
-        if player.currentSong == nil {
-            symbolName = "music.note"
-        } else if player.isPlaying {
-            symbolName = "play.fill"
-        } else {
-            symbolName = "pause.fill"
-        }
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Primuse")
-        button.image?.isTemplate = true
+        // 图标固定用 App 品牌图(播放状态在 popover 里体现,不再切音符/播放/暂停)。
+        if button.image == nil { button.image = statusBarImage() }
 
         if showTitle, let title = player.currentSong?.title, !title.isEmpty {
             // Title 旁边一个空格,避免和图标贴在一起。
@@ -166,6 +189,14 @@ extension View {
             .environment(services.scanService)
             .environment(services.cloudSync)
             .environment(services.metadataBackfill)
+            // 下面这些是 MacSettingsView 各 tab 需要的, 菜单栏 popover 用不到也无害。
+            .environment(services.updateChecker)
+            .environment(services.coverTintProvider)
+            .environment(services.appleMusic)
+            .environment(services.appleMusicLibrary)
+            .environment(services.dlnaRenderer)
+            .environment(services.visualizer)
+            .environment(services.duplicateCleanup)
     }
 }
 #endif

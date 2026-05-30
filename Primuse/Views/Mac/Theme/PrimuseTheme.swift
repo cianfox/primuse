@@ -833,6 +833,32 @@ struct MacAppIcon: Identifiable, Equatable, Sendable {
     static func option(for id: String) -> MacAppIcon {
         all.first { $0.id == id } ?? all[0]
     }
+
+    /// 把满幅方形预览图渲染成标准 macOS 图标外形 (连续圆角 squircle + 四周留白),
+    /// 再交给 `applicationIconImage`。预览 PNG 是不带 alpha 的满幅方图, 直接当 dock
+    /// 图标会又大又方, 跟系统其它图标 (含本 app 默认图标) 的圆角 + 留白对不上。
+    @MainActor
+    static func dockIconImage(previewAsset asset: String) -> NSImage? {
+        guard let src = NSImage(named: asset) else { return nil }
+        let side: CGFloat = 512
+        let inset = side * 0.0977          // ≈ macOS 图标网格留白 (100 / 1024)
+        let body = side - inset * 2
+        let radius = body * 0.2247         // ≈ macOS 图标圆角比例
+        let content = Image(nsImage: src)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: body, height: body)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .frame(width: side, height: side)   // 居中 + 四周透明留白
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 2
+        return renderer.nsImage
+    }
+}
+
+extension Notification.Name {
+    /// App 图标切换后广播 —— 让菜单栏状态项重画图标 (它默认只设一次)。
+    static let primuseAppIconChanged = Notification.Name("primuse.appIcon.changed")
 }
 
 // MARK: - User preferences key (appearance + lyrics font scale)
@@ -918,16 +944,18 @@ final class MacUIPreferences {
         }
     }
 
-    /// 换运行时 dock 图标。"" 时清空, 回退到 bundle 自带图标。
+    /// 换运行时 dock 图标。"" 时清空, 回退到 bundle 自带图标; 否则把预览图渲染成
+    /// 标准 macOS 图标外形再设上去。完事广播一条通知, 让菜单栏图标也跟着换。
     func applyAppIcon() {
-        guard !appIconID.isEmpty else {
+        if appIconID.isEmpty {
             NSApp.applicationIconImage = nil
-            return
+        } else {
+            let asset = MacAppIcon.option(for: appIconID).previewAsset
+            if let shaped = MacAppIcon.dockIconImage(previewAsset: asset) {
+                NSApp.applicationIconImage = shaped
+            }
         }
-        let asset = MacAppIcon.option(for: appIconID).previewAsset
-        if let image = NSImage(named: asset) {
-            NSApp.applicationIconImage = image
-        }
+        NotificationCenter.default.post(name: .primuseAppIconChanged, object: nil)
     }
 }
 

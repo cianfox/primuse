@@ -284,6 +284,8 @@
 "similar_empty_hint" = "None of Last.fm's recommendations matched your library.";
 "similar_source_lastfm" = "Recommendations from Last.fm";
 "similar_section_lastfm" = "Listeners also like (Last.fm)";
+"play_similar_radio" = "Play Similar Radio";
+"similar_subtitle_format" = "Based on “%@” · %@";
 "apple_music_needs_subscription" = "An active Apple Music subscription is required to play this track in Primuse. Subscribe in the Apple Music app and try again.";
 "apple_music_unavailable" = "Apple Music streaming isn't available for this account or region.";
 "apple_music_notice_notDetermined" = "Apple Music isn't connected yet. Go to Settings → Apple Music to enable catalog search.";
@@ -1018,6 +1020,7 @@
 "source_diag_advice_invalid_response" = "The source returned an unreadable response.";
 
 // MARK: - macOS Playback menu
+"settings_menu_item" = "Settings…";
 "playback_menu" = "Playback";
 "play_pause" = "Play / Pause";
 "next_song" = "Next";
@@ -1188,3 +1191,4 @@
 "source" = "Source";
 "delete_forever" = "Delete forever";
 "deleted_at_format" = "Deleted %@";
+"track_duration_short" = "Time";

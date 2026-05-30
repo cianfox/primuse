@@ -36,9 +36,10 @@ struct MacBottomBar: View {
         .padding(.vertical, 8)
         .frame(height: PMSize.bottomBar)
         .background {
-            // 设计规范: A 套玻璃模式 14px 顶部圆角, B 套实色无圆角。底栏铺满窗宽,
-            // 不再浮在中间留左右间距 —— 否则左下 / 右下角会露出窗口底色, 看着像
-            // 多压了一层背景 / 有断层。
+            // 设计稿玻璃底栏: 浮在窗内, 14px 顶部圆角 + 左右 10pt 间距。背景只在圆角
+            // 形状内填充 —— 之前用 NSVisualEffectView 的"吸窗后模糊"会画出一个不跟
+            // 圆角走的实心方块, 盖出一块半透明方形; 改用直接 fill 圆角形状的
+            // ultraThinMaterial, 圆角之外 (四角 + 左右留白) 完全透明, 看得到后面内容。
             let shape = UnevenRoundedRectangle(
                 topLeadingRadius: mode == .glass ? 14 : 0,
                 bottomLeadingRadius: 0,
@@ -48,16 +49,12 @@ struct MacBottomBar: View {
             )
             ZStack {
                 if mode == .glass {
-                    // 玻璃模式: NSVisualEffectView 提供"吸窗后模糊", 上面盖一层
-                    // barGlassFill 半透色拉对比 —— 这样底栏是真正的半透材质, 跟
-                    // 侧栏同一套观感, 不是一张实色卡片浮在内容上。
-                    NSVisualEffectBackdrop(material: .sidebar, blending: .behindWindow)
-                    shape.fill(PMColor.barGlassFill)
+                    shape.fill(.ultraThinMaterial)     // 半透模糊, 只在圆角内
+                    shape.fill(PMColor.barGlassFill)   // 叠一层品牌半透色拉对比 (设计 pm-glass)
                 } else {
-                    // 经典模式: 实色 bgElev, 比窗口 bg 亮一档。
-                    shape.fill(PMColor.bgElev)
+                    shape.fill(PMColor.bgElev)         // 经典模式: 实色
                 }
-                // 顶边 1px 高光 (Apple "玻璃感" 经典配方 inset 0 1px 0 rgba(255,255,255,.3))
+                // 顶边高光 (Apple "玻璃感" 配方 inset 0 1px 0 rgba(255,255,255,.3))
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [.white.opacity(0.4), .white.opacity(0.06)],
@@ -66,13 +63,10 @@ struct MacBottomBar: View {
                     lineWidth: 0.5
                 )
             }
-            .clipShape(shape)
-            // 顶部 0.5pt 分割线, 跟上方内容区分隔 (设计 borderTop)。
-            .overlay(alignment: .top) {
-                Rectangle().fill(PMColor.divider).frame(height: 0.5)
-            }
         }
-        .shadow(color: .black.opacity(mode == .glass ? 0.18 : 0), radius: 10, y: -2)
+        .shadow(color: .black.opacity(mode == .glass ? 0.18 : 0), radius: 12, y: -3)
+        // 设计稿: 玻璃模式左右留 10pt 浮动间距 (用户确认这个间距是要保留的)。
+        .padding(.horizontal, mode == .glass ? 10 : 0)
     }
 
     // MARK: - Left column
@@ -297,11 +291,15 @@ struct MacBottomBar: View {
                 AudioOutputPickerView()
             }
 
-            BottomBarVolumeSlider(value: Binding(
+            // 原生 Slider —— 可拖动。之前的自定义 DragGesture 滑块套在 GeometryReader
+            // 里, onChanged 改 value 触发重渲染会打断拖拽, 只剩点击生效。
+            Slider(value: Binding(
                 get: { Double(engine.volume) },
                 set: { engine.volume = Float($0) }
-            ))
-            .frame(width: 70, height: 14)
+            ), in: 0...1)
+            .controlSize(.mini)
+            .tint(PMColor.text.opacity(0.85))
+            .frame(width: 72)
         }
     }
 
@@ -369,41 +367,6 @@ private struct Scrubber: View {
                         onCommit(Double(frac) * total)
                         dragging = false
                     }
-            )
-        }
-    }
-}
-
-// MARK: - Volume slider
-
-private struct BottomBarVolumeSlider: View {
-    @Binding var value: Double
-
-    @State private var dragging = false
-
-    var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            let frac = CGFloat(max(0, min(1, value)))
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(PMColor.dividerStrong)
-                    .frame(height: 4)
-                Capsule()
-                    .fill(PMColor.text.opacity(0.85))
-                    .frame(width: max(0, min(width, width * frac)), height: 4)
-            }
-            .frame(height: geo.size.height, alignment: .center)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { g in
-                        let frac = max(0, min(1, g.location.x / width))
-                        value = Double(frac)
-                        dragging = true
-                    }
-                    .onEnded { _ in dragging = false }
             )
         }
     }

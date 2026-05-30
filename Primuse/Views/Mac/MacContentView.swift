@@ -37,6 +37,10 @@ struct MacContentView: View {
                         // 布局宽度), 不再额外画一条分割线。
                         .overlay(alignment: .trailing) {
                             SidebarResizeHandle(preferences: preferences)
+                                .frame(width: 10)
+                                .frame(maxHeight: .infinity)
+                                // 右移半个宽度让命中区跨在侧栏与正文的边界上。
+                                .offset(x: 5)
                         }
                         .transition(.move(edge: .leading).combined(with: .opacity))
                 }
@@ -67,27 +71,34 @@ struct MacContentView: View {
                     .transition(.move(edge: .trailing))
                 }
             }
-
-            MacBottomBar(
-                isExpanded: nowPlayingPresented,
-                isQueueShown: queuePresented,
-                onToggleNowPlaying: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        nowPlayingPresented.toggle()
+            // BottomBar 用 safeAreaInset 挂在内容 HStack 底部, 而不是当 VStack 的
+            // 第三行 —— 后者会让底栏自带一条等高的窗口底色 (PMColor.bg) 横条, 浮动
+            // 卡片的圆角和左右留白处透出的就是这条底色, 跟上方 sidebar 的玻璃色对不上,
+            // 看着像卡片背后压了一个方块。改成 safeAreaInset 后 sidebar / detail 的
+            // ignoresSafeArea 背景会一直延伸到窗口底部、铺到卡片背后, 圆角处透出的就是
+            // 各自那一列的背景色, 卡片真正"浮"在内容上。
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                MacBottomBar(
+                    isExpanded: nowPlayingPresented,
+                    isQueueShown: queuePresented,
+                    onToggleNowPlaying: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            nowPlayingPresented.toggle()
+                        }
+                    },
+                    onToggleQueue: {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            queuePresented.toggle()
+                        }
+                    },
+                    onMiniPlayer: {
+                        PrimuseAppDelegate.shared?.toggleMiniPlayer()
+                    },
+                    onFullScreen: {
+                        PrimuseAppDelegate.shared?.toggleFullScreenPlayer()
                     }
-                },
-                onToggleQueue: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        queuePresented.toggle()
-                    }
-                },
-                onMiniPlayer: {
-                    PrimuseAppDelegate.shared?.toggleMiniPlayer()
-                },
-                onFullScreen: {
-                    PrimuseAppDelegate.shared?.toggleFullScreenPlayer()
-                }
-            )
+                )
+            }
         }
         .environment(\.pmAppearance, preferences.appearance)
         .background(PMColor.bg.ignoresSafeArea())
@@ -139,42 +150,58 @@ struct MacContentView: View {
 
 // MARK: - Sidebar resize handle
 
-/// 侧栏宽度拖拽手柄。设计稿里侧栏可在 180–300pt 之间拖动调整。这里只放一条透明的
-/// 命中区, **不**自己画线 —— 它正好骑在侧栏与正文原有的那条边界上, hover 时换成
-/// 左右拖拽光标, 拖动实时改 `MacUIPreferences.sidebarWidth` (夹到 [min, max] 并持久化)。
-private struct SidebarResizeHandle: View {
+/// 侧栏宽度拖拽手柄。设计稿里侧栏可在 180–300pt 之间拖动调整。
+///
+/// 用 AppKit NSView 而不是 SwiftUI DragGesture: 主窗口开了
+/// `isMovableByWindowBackground`, 任何落在"背景"上的拖拽都会被窗口抢去当成
+/// 移动窗口 —— 之前的 DragGesture 既改不动宽度, 又跟窗口移动打架, 表现为
+/// 拖整个窗口 + 宽度一抖一抖。这里的 NSView 把 `mouseDownCanMoveWindow`
+/// 返回 false, 明确告诉窗口"别在我身上发起移动", 拖拽完全由它自己处理,
+/// 实时改 `MacUIPreferences.sidebarWidth` (夹到 [min, max] 并持久化)。
+private struct SidebarResizeHandle: NSViewRepresentable {
     let preferences: MacUIPreferences
-    /// 单次拖拽开始时的宽度基准 —— DragGesture.translation 是相对本次拖拽起点的增量,
-    /// 累加到起点宽度上才不会跳变。
-    @State private var dragStartWidth: CGFloat?
 
-    var body: some View {
-        Color.clear
-            .frame(width: 10)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            // overlay 默认贴在侧栏 trailing 内侧, 右移半个宽度让命中区跨在边界线上。
-            .offset(x: 5)
-            .onHover { inside in
-                if inside {
-                    NSCursor.resizeLeftRight.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let base = dragStartWidth ?? preferences.sidebarWidth
-                        if dragStartWidth == nil { dragStartWidth = base }
-                        let proposed = base + value.translation.width
-                        preferences.sidebarWidth = min(
-                            PMSize.sidebarMax,
-                            max(PMSize.sidebarMin, proposed)
-                        )
-                    }
-                    .onEnded { _ in dragStartWidth = nil }
-            )
+    func makeNSView(context: Context) -> NSView {
+        ResizeHandleNSView(preferences: preferences)
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    /// overlay 默认贴在侧栏 trailing 内侧, 右移半个宽度让 10pt 命中区跨在边界线上。
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        CGSize(width: 10, height: proposal.height ?? 0)
+    }
+}
+
+private final class ResizeHandleNSView: NSView {
+    private let preferences: MacUIPreferences
+    private var startWidth: CGFloat = 0
+    private var startX: CGFloat = 0
+
+    init(preferences: MacUIPreferences) {
+        self.preferences = preferences
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 关键: 落在手柄上的 mouseDown 不触发窗口移动。
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        startWidth = preferences.sidebarWidth
+        startX = event.locationInWindow.x
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // 用窗口坐标系里的绝对位移算, 避免 deltaX 累加在夹紧后产生死区。
+        let dx = event.locationInWindow.x - startX
+        preferences.sidebarWidth = min(
+            PMSize.sidebarMax,
+            max(PMSize.sidebarMin, startWidth + dx)
+        )
     }
 }
 #endif

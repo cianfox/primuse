@@ -31,27 +31,19 @@ struct MacMiniPlayerView: View {
         ZStack {
             ambientBackdrop
             VStack(spacing: 0) {
-                // 固定顶部 32pt top bar — 流量灯左, 折叠箭头右。设计稿 NP-Mini
-                // 的 title bar 高度就是 32pt。之前用 .overlay(.topLeading) 在
-                // titlebarAppearsTransparent + fullSizeContentView 的 NSPanel 上
-                // 显示/命中都不稳定 (用户报告 "展开队列后看不到流量灯, 没法关闭"),
-                // 改成真实布局元素就稳定可靠了。
                 miniTopBar
 
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     coverArea
                     metaArea
                     scrubber
+                    // 传输键(播放/暂停/上下首…)折叠态也常驻,方便不展开就能控制播放。
+                    transport
 
-                    // 折叠态(220pt)只展示封面 / 标题 / 进度,跟设计稿 NP-Mini
-                    // collapsed 一致;传输键、歌词/队列 tab、底部工具条都放到
-                    // 展开态(540pt)。否则折叠高度装不下全部内容,顶部流量灯 +
-                    // 关闭键会被挤出可视区——用户反馈的"顶部消失、没法关闭"正是
-                    // 内容溢出裁切造成的。
+                    // 歌词/队列 tab 只在展开态出现(底部面板的切换条)。
                     if bottomMode != .none {
-                        transport
                         subviewTabs
-                            .padding(.top, 4)
+                            .padding(.top, 2)
                             .transition(.opacity)
                     }
                 }
@@ -69,16 +61,18 @@ struct MacMiniPlayerView: View {
             }
             .animation(.easeInOut(duration: 0.28), value: bottomMode)
         }
-        // 固定内容尺寸:宽恒 300,高随折叠/展开在 220 / 540 间切换。承载这个 view
-        // 的 NSHostingView 会按内容 fitting size 决定 mini player 窗口大小(顶层
-        // hosting view 这个行为关不掉),所以这里把 fitting size 直接钉成设计尺寸,
-        // 窗口就正好是 300×220 / 300×540,不会被 ScrollView 等无界内容撑成一大片。
+        // 内容钉成设计尺寸:宽 300,高随折叠/展开在 220 / 540 间切换。
         .frame(
             width: MiniPlayerWindowController.fixedWidth,
             height: bottomMode == .none
                 ? MiniPlayerWindowController.collapsedHeight
                 : MiniPlayerWindowController.expandedHeight
         )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // mini player 卡片恒为深色背景,强制 dark colorScheme,让歌词 / 队列里
+        // 的 .primary / .secondary / .tertiary 解析成浅色 —— 否则浅色系统外观下
+        // 它们是深色,贴在深底上几乎看不见。
+        .environment(\.colorScheme, .dark)
         .task(id: player.currentSong?.id) { await reloadLyrics() }
         .onChange(of: player.currentTime) { _, t in updateIndex(time: t) }
         .onChange(of: bottomMode) { _, new in onBottomModeChange?(new) }
@@ -95,58 +89,56 @@ struct MacMiniPlayerView: View {
     /// 一定能找到。
     private var miniTopBar: some View {
         HStack(spacing: 8) {
-            PMWindowTrafficLights()
-                .padding(.leading, 12)
             Spacer()
+
             // 折叠 / 展开
             Button {
                 bottomMode = bottomMode == .none ? .lyrics : .none
             } label: {
-                Image(systemName: bottomMode == .none ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Color.black.opacity(0.32), in: .circle)
-                    .overlay { Circle().strokeBorder(.white.opacity(0.22), lineWidth: 0.5) }
+                topBarIcon(bottomMode == .none ? "chevron.up" : "chevron.down")
             }
             .buttonStyle(.plain)
             .help(Text(bottomMode == .none ? "show" : "hide"))
 
-            // 直接关窗 X — 万一系统标准流量灯没渲染出来 (NSPanel +
-            // fullSizeContentView 历史已经踩过坑), 用户依然有明确的关窗入口。
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Color.black.opacity(0.32), in: .circle)
-                    .overlay { Circle().strokeBorder(.white.opacity(0.22), lineWidth: 0.5) }
+            // 关闭(收起窗口)—— 右上角关闭键,替代之前的红绿灯。
+            Button { onClose() } label: {
+                topBarIcon("xmark")
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 12)
             .help(Text("close"))
         }
-        .frame(height: 36)
-        .background {
-            Rectangle()
-                .fill(Color.black.opacity(0.18))
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(.white.opacity(0.10)).frame(height: 0.5)
-                }
-        }
+        .padding(.trailing, 12)
+        .frame(height: 40)
+        // 不放背景色带 + 分隔线:控件直接浮在 ambient 渐变上,顶部不再有断层色带。
+    }
+
+    private func topBarIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white.opacity(0.85))
+            .frame(width: 26, height: 26)
+            .background(.white.opacity(0.10), in: .circle)
     }
 
     // MARK: - Backdrop
 
     private var ambientBackdrop: some View {
-        AmbientBackdrop(
-            accent: theme.accentColor,
-            darkAccent: theme.darkAccent,
-            strength: 0.78
-        )
-        .ignoresSafeArea()
+        // 不用共享的 `AmbientBackdrop` —— 它内部的 `.drawingGroup()` 在 mini player
+        // 这个 hosting 上下文里会把 ZStack 的兄弟层(主内容 VStack)整组渲染掉,
+        // 只剩背景一片深色(就是用户截图里"空白卡片"的根因)。这里用一个不依赖
+        // drawingGroup 的简单不透明深色 + 主题色斜向微光,既不透明又不破坏内容渲染。
+        PMColor.ambientDarkBase
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        theme.accentColor.opacity(0.28),
+                        .clear,
+                        theme.darkAccent.opacity(0.22),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
     }
 
     /// 折叠态居中显示的 96pt 封面 — 跟设计稿 NP-Mini 一致。
@@ -171,6 +163,12 @@ struct MacMiniPlayerView: View {
         }
         .frame(maxWidth: .infinity)
         .shadow(color: .black.opacity(0.32), radius: 12, y: 5)
+        .contentShape(Rectangle())
+        // 点封面切换折叠/展开 —— 跟 Apple Music 一致,也作为顶栏折叠箭头的兜底
+        // 入口(保证折叠态一定能展开到歌词/队列)。
+        .onTapGesture {
+            bottomMode = bottomMode == .none ? .lyrics : .none
+        }
     }
 
     /// 标题/艺术家 — 居中显示, 紧贴 cover 下方。
@@ -226,7 +224,7 @@ struct MacMiniPlayerView: View {
                 bottomMode = (bottomMode == .lyrics) ? .none : .lyrics
             } label: {
                 miniIcon(bottomMode == .lyrics ? "text.bubble.fill" : "text.bubble",
-                         tint: bottomMode == .lyrics ? Color.accentColor : .secondary)
+                         tint: bottomMode == .lyrics ? theme.accentColor : .secondary)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
@@ -237,14 +235,14 @@ struct MacMiniPlayerView: View {
                 bottomMode = (bottomMode == .queue) ? .none : .queue
             } label: {
                 miniIcon(bottomMode == .queue ? "list.bullet.indent" : "list.bullet",
-                         tint: bottomMode == .queue ? Color.accentColor : .secondary)
+                         tint: bottomMode == .queue ? theme.accentColor : .secondary)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
             .help(Text("queue_title"))
 
             Button { airPlayShown.toggle() } label: {
-                miniIcon("airplayaudio", tint: airPlayShown ? Color.accentColor : .secondary)
+                miniIcon("airplayaudio", tint: airPlayShown ? theme.accentColor : .secondary)
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
@@ -260,11 +258,15 @@ struct MacMiniPlayerView: View {
                 .foregroundStyle(.white.opacity(0.62))
                 .frame(width: 14)
 
-            MiniVolumeSlider(value: Binding(
+            // 原生 Slider —— 可拖动调节。自定义 DragGesture 滑块在 GeometryReader 里
+            // onChanged 改 value 会打断拖拽,且无边框窗口的拖动背景会抢走手势。
+            Slider(value: Binding(
                 get: { Double(engine.volume) },
                 set: { engine.volume = Float($0) }
-            ))
-            .frame(width: 60, height: 14)
+            ), in: 0...1)
+            .controlSize(.mini)
+            .tint(.white.opacity(0.85))
+            .frame(width: 64)
 
             PlayerMoreMenu {
                 miniIcon("ellipsis", tint: .secondary)
@@ -304,6 +306,7 @@ struct MacMiniPlayerView: View {
             ScrubberLine(
                 value: player.currentTime,
                 total: max(player.duration, 0.01),
+                tint: theme.accentColor,
                 onSeek: { player.seek(to: $0) }
             )
             HStack {
@@ -311,43 +314,57 @@ struct MacMiniPlayerView: View {
                 Spacer()
                 Text(formatTime(player.duration))
             }
-            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            .font(.caption2).monospacedDigit().foregroundStyle(.white.opacity(0.5))
         }
     }
 
     // MARK: - Transport
 
     private var transport: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 18) {
+            // shuffle / repeat 带淡圆底,高亮时上强调色(随专辑色),跟设计稿一致。
             Button { player.shuffleEnabled.toggle() } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(player.shuffleEnabled ? Color.accentColor : .secondary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(player.shuffleEnabled ? theme.accentColor : .white.opacity(0.7))
+                    .frame(width: 30, height: 30)
+                    .background(.white.opacity(0.06), in: .circle)
             }
             .buttonStyle(.plain)
 
             Button { Task { await player.previous() } } label: {
-                Image(systemName: "backward.fill").font(.system(size: 18, weight: .semibold))
+                Image(systemName: "backward.end.fill")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
 
+            // 播放/暂停 —— 实心强调色圆,设计稿里最醒目的粉色圆。
             Button { player.togglePlayPause() } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 26, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .contentTransition(.symbolEffect(.replace))
+                ZStack {
+                    Circle().fill(theme.accentColor).frame(width: 46, height: 46)
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .contentTransition(.symbolEffect(.replace))
+                        .offset(x: player.isPlaying ? 0 : 1)
+                }
             }
             .buttonStyle(.plain)
 
             Button { Task { await player.next() } } label: {
-                Image(systemName: "forward.fill").font(.system(size: 18, weight: .semibold))
+                Image(systemName: "forward.end.fill")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
             }
             .buttonStyle(.plain)
 
             Button { cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
-                    .font(.system(size: 14))
-                    .foregroundStyle(player.repeatMode != .off ? Color.accentColor : .secondary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(player.repeatMode != .off ? theme.accentColor : .white.opacity(0.7))
+                    .frame(width: 30, height: 30)
+                    .background(.white.opacity(0.06), in: .circle)
             }
             .buttonStyle(.plain)
         }
@@ -451,7 +468,7 @@ struct MacMiniPlayerView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(isPlaying ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
+        .background(isPlaying ? theme.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
                     in: .rect(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -559,6 +576,7 @@ struct MacMiniPlayerView: View {
 private struct ScrubberLine: View {
     let value: Double
     let total: Double
+    var tint: Color = .secondary
     var onSeek: (Double) -> Void
 
     @State private var isDragging = false
@@ -577,35 +595,7 @@ private struct ScrubberLine: View {
             }
         )
         .controlSize(.small)
-        .tint(.secondary)
-    }
-}
-
-private struct MiniVolumeSlider: View {
-    @Binding var value: Double
-
-    var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            let fraction = CGFloat(max(0, min(1, value)))
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.18))
-                    .frame(height: 3)
-                Capsule()
-                    .fill(.white.opacity(0.78))
-                    .frame(width: width * fraction, height: 3)
-            }
-            .frame(height: geo.size.height, alignment: .center)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        guard width > 0 else { return }
-                        value = Double(max(0, min(1, gesture.location.x / width)))
-                    }
-            )
-        }
+        .tint(tint)
     }
 }
 #endif
