@@ -1055,6 +1055,11 @@
 // MARK: - macOS UI gaps (1.4.0 audit)
 "sources_count_format" = "共 %d 个音乐源";
 "songs_count_inline" = "首歌";
+"source_state_online" = "在线";
+"source_state_attention" = "需要处理";
+"sources_attention_banner_title" = "%d 个源需要处理";
+"source_synced_ago_format" = "%@ 已同步";
+"source_never_synced" = "尚未同步";
 "close" = "关闭";
 "more" = "更多";
 "new" = "新";

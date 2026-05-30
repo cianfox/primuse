@@ -2,14 +2,11 @@
 import SwiftUI
 import PrimuseKit
 
-/// macOS-native sources management. Replaces the iOS list-with-toolbar +
-/// stacked full-width buttons with a top action bar (Add) plus dense rows
-/// showing icon / name / host / song count, and inline action buttons that
-/// blend with the sheet chrome rather than an iOS-style blue full-width bar.
-///
-/// Avoids the `.toolbar { ToolbarItem(.primaryAction) }` from
-/// `SourcesView` that ends up merged into the Settings TabView's tab bar
-/// — using a plain inline button keeps the + where users expect it.
+/// macOS-native sources management aligned with design SRC-23..28: an eyebrow
+/// + "Connected" title, a status-breakdown summary line, an attention banner
+/// for sources that need re-auth, and a flat 2-column card grid. Each card
+/// carries a status dot, a mono host line, a stats / scan-progress body, and a
+/// row of text pills (rescan / browse / settings) plus an enable switch.
 struct MacSourcesView: View {
     @Environment(SourceManager.self) private var sourceManager
     @Environment(SourcesStore.self) private var sourceStore
@@ -23,6 +20,14 @@ struct MacSourcesView: View {
     @State private var connectingSource: MusicSource?
     @State private var cloudDirectoryNameRefreshID = UUID()
 
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
+    private let statusBlue = Color(red: 0.24, green: 0.48, blue: 0.72)
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             actionBar
@@ -31,7 +36,6 @@ struct MacSourcesView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $showAddSource) {
             SourceTypeSelectionView { source in sourceStore.add(source) }
-                .frame(minWidth: 520, minHeight: 480)
         }
         .sheet(item: $editingSource) { source in
             AddSourceView(sourceType: source.type, editingSource: source) { updated in
@@ -80,7 +84,7 @@ struct MacSourcesView: View {
                 .buttonStyle(.plain)
             }
 
-            Text(String(format: String(localized: "sources_count_format"), sources.count))
+            Text(summaryText)
                 .font(.system(size: 13))
                 .foregroundStyle(PMColor.textMuted)
         }
@@ -110,28 +114,21 @@ struct MacSourcesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: PMSpace.xl) {
-                    ForEach(groupedSources, id: \.0) { category, items in
-                        VStack(alignment: .leading, spacing: PMSpace.s8) {
-                            Text(category.displayName)
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .tracking(0.8)
-                                .textCase(.uppercase)
-                                .foregroundStyle(PMColor.textFaint)
-                                .padding(.horizontal, 4)
+                VStack(alignment: .leading, spacing: PMSpace.m14) {
+                    if !attentionSources.isEmpty {
+                        attentionBanner
+                    }
 
-                            // 设计稿要求 2 列卡片网格;少量源时单列,多列自适应。
-                            LazyVGrid(
-                                columns: [GridItem(.adaptive(minimum: 320, maximum: 460),
-                                                   spacing: PMSpace.m14, alignment: .top)],
-                                alignment: .leading,
-                                spacing: PMSpace.m14
-                            ) {
-                                ForEach(items, id: \.id) { source in
-                                    sourceRow(source)
-                                        .pmCard(cornerRadius: PMRadius.l)
-                                }
-                            }
+                    // 设计稿: 单一「已连接」分组 + 2 列自适应卡片网格。
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 320, maximum: 460),
+                                           spacing: PMSpace.m14, alignment: .top)],
+                        alignment: .leading,
+                        spacing: PMSpace.m14
+                    ) {
+                        ForEach(sources, id: \.id) { source in
+                            sourceCard(source)
+                                .pmCard(cornerRadius: PMRadius.l)
                         }
                     }
                 }
@@ -143,99 +140,95 @@ struct MacSourcesView: View {
         }
     }
 
-    // MARK: - Row
+    // MARK: - Attention banner (SRC-24)
 
-    private func sourceRow(_ source: MusicSource) -> some View {
+    private var attentionBanner: some View {
+        let first = attentionSources.first
+        return HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(PMColor.bad)
+                .frame(width: 30, height: 30)
+                .background(PMColor.bad.opacity(0.16), in: .rect(cornerRadius: 7))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(String(format: String(localized: "sources_attention_banner_title"), attentionSources.count))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(PMColor.text)
+                Text("source_auth_failed_message_generic")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(PMColor.textMuted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if let first {
+                Button("connect_select_dirs") { connectingSource = first }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(PMColor.text)
+                    .padding(.horizontal, 12)
+                    .frame(height: 26)
+                    .background(PMColor.matBtn, in: .rect(cornerRadius: 6))
+            }
+        }
+        .padding(12)
+        .pmCard(cornerRadius: PMRadius.l)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(PMColor.bad)
+                .frame(width: 3)
+                .padding(.vertical, 8)
+        }
+    }
+
+    // MARK: - Card
+
+    private func sourceCard(_ source: MusicSource) -> some View {
         let dirs = decodeDirs(source.extraConfig)
         let scanning = scanService.scanStates[source.id]
+        let state = runtimeState(source)
         let displayedSongCount = if let scanning, scanning.isScanning || scanning.canResume {
             scanning.scannedCount
         } else {
             source.songCount
         }
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Image(systemName: source.type.iconName)
                     .font(.title3)
                     .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 40, height: 40)
                     .background(source.isEnabled ? Color.accentColor.gradient : Color.gray.gradient,
-                                in: .rect(cornerRadius: 7))
+                                in: .rect(cornerRadius: 9))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(source.name)
-                            .font(.body).fontWeight(.medium)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        if !source.isEnabled {
-                            Text("disabled")
-                                .font(.caption2)
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(.quaternary, in: .capsule)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    HStack(spacing: 4) {
-                        Text(source.type.displayName)
-                        if let host = source.host, !host.isEmpty { Text("·"); Text(host) }
-                        if displayedSongCount > 0 {
-                            Text("·")
-                            Text(String(format: String(localized: "songs_count_inline"), displayedSongCount))
-                                .monospacedDigit()
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    Text(source.name)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(PMColor.text)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(hostLine(source))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(PMColor.textFaint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 4)
-
-                rowActions(source: source, dirs: dirs, scanning: scanning)
+                Spacer(minLength: 8)
+                statusBadge(state)
             }
 
-            if !dirs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(dirs, id: \.self) { dir in
-                            Label(directoryDisplayName(for: dir, source: source),
-                                  systemImage: "folder.fill")
-                                .font(.caption2)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(.quaternary, in: .capsule)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.leading, 44)
-            }
+            cardBody(source, scanning: scanning, displayedSongCount: displayedSongCount)
 
-            if let scan = scanning, scan.isScanning || scan.canResume {
-                scanProgress(scan)
-                    .padding(.leading, 44)
-            } else {
-                let bare = backfill.remainingCount(forSource: source.id)
-                if bare > 0 {
-                    HStack(spacing: 8) {
-                        ProgressView().scaleEffect(0.55).tint(.secondary)
-                        Text("backfill_in_progress").font(.caption2)
-                        Text("·").font(.caption2)
-                        Text(String(format: String(localized: "backfill_remaining"), bare))
-                            .font(.caption2).monospacedDigit()
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 44)
-                }
-            }
+            Rectangle().fill(PMColor.divider).frame(height: 0.5)
+
+            actionsRow(source, scanning: scanning, dirs: dirs)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(14)
         .id("\(source.id)-\(cloudDirectoryNameRefreshID.uuidString)")
-        .opacity(source.isEnabled ? 1.0 : 0.55)
+        .opacity(source.isEnabled ? 1.0 : 0.6)
         .contextMenu {
             Button {
                 toggleSourceEnabled(source)
@@ -255,92 +248,223 @@ struct MacSourcesView: View {
         }
     }
 
+    // MARK: - Card body
+
     @ViewBuilder
-    private func rowActions(source: MusicSource, dirs: [String], scanning: ScanService.ScanState?) -> some View {
-        HStack(spacing: 6) {
-            // Apple Music Library 跟 media server 一样:全库自动扫描,不需要
-            // "连接 + 选目录"那一步,直接给一个扫描按钮即可。
-            if source.type.isMediaServer || source.type == .appleMusicLibrary {
-                Button {
-                    runScan(source)
-                } label: {
-                    Image(systemName: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass")
+    private func cardBody(_ source: MusicSource, scanning: ScanService.ScanState?, displayedSongCount: Int) -> some View {
+        if let scan = scanning, scan.isScanning || scan.canResume {
+            scanBox(scan)
+        } else {
+            let bare = backfill.remainingCount(forSource: source.id)
+            if bare > 0 {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).scaleEffect(0.8)
+                    Text("backfill_in_progress").font(.system(size: 11))
+                    Text(verbatim: "·").font(.system(size: 11))
+                    Text(String(format: String(localized: "backfill_remaining"), bare))
+                        .font(.system(size: 11)).monospacedDigit()
+                    Spacer()
                 }
-                .disabled(scanning?.isScanning == true)
-                .help(Text(scanning?.canResume == true ? "resume_scan" : "scan"))
+                .foregroundStyle(PMColor.textMuted)
+                .padding(10)
+                .background(PMColor.bgDeep.opacity(0.5), in: .rect(cornerRadius: 9))
             } else {
-                Button {
-                    connectingSource = source
-                } label: {
-                    Image(systemName: dirs.isEmpty ? "link" : "folder.badge.gear")
-                }
-                .help(Text(dirs.isEmpty ? "connect_select_dirs" : "manage_dirs"))
-
-                if !dirs.isEmpty {
-                    Button {
-                        runScan(source)
-                    } label: {
-                        Image(systemName: scanning?.canResume == true ? "arrow.clockwise.circle" : "waveform.badge.magnifyingglass")
+                HStack(spacing: 6) {
+                    if displayedSongCount > 0 {
+                        Text(verbatim: displayedSongCount.formatted())
+                            .foregroundStyle(PMColor.text)
+                            .monospacedDigit()
+                        Text(Lz("songs_count_inline"))
+                        Text(verbatim: "·")
                     }
-                    .disabled(scanning?.isScanning == true)
-                    .help(Text(scanning?.canResume == true ? "resume_scan" : "scan"))
+                    Text(syncedText(source))
+                    Spacer()
                 }
+                .font(.system(size: 12))
+                .foregroundStyle(PMColor.textMuted)
             }
-
-            Menu {
-                Button {
-                    editingSource = source
-                } label: {
-                    Label("edit", systemImage: "pencil")
-                }
-                Button {
-                    toggleSourceEnabled(source)
-                } label: {
-                    Label(source.isEnabled ? "disable" : "enable",
-                          systemImage: source.isEnabled ? "eye.slash" : "eye")
-                }
-                Divider()
-                Button(role: .destructive) {
-                    deleteSource(source)
-                } label: {
-                    Label("delete", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .menuStyle(.borderlessButton)
-            .frame(width: 30)
-            .menuIndicator(.hidden)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        // 不同源类型的按钮数 1~3 个,不固定宽度时每行最右的「...」menu
-        // 落在不同竖线上,看着不齐。把整组按钮固定到 trailing 对齐 +
-        // 最小宽度,让所有源卡片的菜单按钮垂直对齐。
-        .frame(minWidth: 130, alignment: .trailing)
     }
 
-    private func scanProgress(_ scan: ScanService.ScanState) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func scanBox(_ scan: ScanService.ScanState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if scan.isScanning, !scan.currentFile.isEmpty {
+                Text(scan.currentFile)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(PMColor.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             if scan.totalCount > 0 {
-                ProgressView(value: min(scan.progress, 1.0))
+                ProgressView(value: min(scan.progress, 1.0)).tint(PMColor.brand)
             } else {
                 ProgressView().controlSize(.small)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
-                Text(scan.isScanning ? scan.currentFile : String(localized: "scan_resume_hint"))
-                    .lineLimit(1)
+                Text(scan.isScanning ? "scanning" : "scan_resume_hint")
                 Spacer()
                 if scan.totalCount > 0 {
-                    Text("\(scan.scannedCount)/\(scan.totalCount)").monospacedDigit()
+                    Text(verbatim: "\(scan.scannedCount)/\(scan.totalCount)").monospacedDigit()
                 } else {
                     Text(String(format: String(localized: "new_songs_added"), scan.addedCount))
                         .monospacedDigit()
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(.system(size: 10.5))
+            .foregroundStyle(PMColor.textMuted)
         }
+        .padding(10)
+        .background(PMColor.bgDeep.opacity(0.5), in: .rect(cornerRadius: 9))
+    }
+
+    // MARK: - Status badge
+
+    private func statusBadge(_ state: SourceRuntimeState) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(stateColor(state)).frame(width: 7, height: 7)
+            Text(stateLabel(state))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(stateColor(state))
+        }
+        .fixedSize()
+    }
+
+    // MARK: - Actions row
+
+    @ViewBuilder
+    private func actionsRow(_ source: MusicSource, scanning: ScanService.ScanState?, dirs: [String]) -> some View {
+        HStack(spacing: 6) {
+            // Media server / Apple Music 资料库:全库自动扫描,无需「连接 + 选目录」。
+            if source.type.isMediaServer || source.type == .appleMusicLibrary {
+                scanPill(source, scanning: scanning)
+                pill("settings_title", systemImage: "slider.horizontal.3") { editingSource = source }
+            } else if dirs.isEmpty {
+                pill("connect_select_dirs", systemImage: "link", tint: PMColor.brand) { connectingSource = source }
+                pill("settings_title", systemImage: "slider.horizontal.3") { editingSource = source }
+            } else {
+                scanPill(source, scanning: scanning)
+                pill("browse", systemImage: "folder") { connectingSource = source }
+                pill("settings_title", systemImage: "slider.horizontal.3") { editingSource = source }
+            }
+
+            Spacer(minLength: 4)
+
+            macSwitch(isOn: source.isEnabled) { setEnabled(source, $0) }
+        }
+    }
+
+    @ViewBuilder
+    private func scanPill(_ source: MusicSource, scanning: ScanService.ScanState?) -> some View {
+        if scanning?.isScanning == true {
+            pill("pause", systemImage: "pause.fill") { scanService.cancelScan(for: source.id) }
+        } else {
+            let resuming = scanning?.canResume == true
+            pill(resuming ? "resume_scan" : "rescan",
+                 systemImage: resuming ? "arrow.clockwise" : "arrow.triangle.2.circlepath",
+                 tint: PMColor.ok) {
+                runScan(source)
+            }
+        }
+    }
+
+    private func pill(
+        _ title: LocalizedStringKey,
+        systemImage: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        MacPillButton(title: title, systemImage: systemImage, tint: tint, action: action)
+    }
+
+    private func macSwitch(isOn: Bool, set: @escaping (Bool) -> Void) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.18, dampingFraction: 0.9)) { set(!isOn) }
+        } label: {
+            Capsule()
+                .fill(isOn ? PMColor.ok : PMColor.dividerStrong)
+                .frame(width: 32, height: 18)
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.22), radius: 2, y: 1)
+                        .padding(2)
+                }
+        }
+        .buttonStyle(.plain)
+        .help(Text(isOn ? "disable" : "enable"))
+    }
+
+    // MARK: - Runtime state
+
+    private enum SourceRuntimeState { case online, scanning, attention, disabled }
+
+    private func runtimeState(_ source: MusicSource) -> SourceRuntimeState {
+        if !source.isEnabled { return .disabled }
+        if scanService.scanStates[source.id]?.isScanning == true { return .scanning }
+        if isAttention(source) { return .attention }
+        return .online
+    }
+
+    /// A source "needs attention" when its last scan attempt this session failed
+    /// before making progress — a preflight / credential error leaves a
+    /// non-resumable state with a message but zero scanned files.
+    private func isAttention(_ source: MusicSource) -> Bool {
+        guard source.isEnabled, let s = scanService.scanStates[source.id] else { return false }
+        return !s.isScanning && !s.canResume && s.scannedCount == 0 && s.totalCount == 0 && !s.currentFile.isEmpty
+    }
+
+    private func stateColor(_ state: SourceRuntimeState) -> Color {
+        switch state {
+        case .online: PMColor.ok
+        case .scanning: statusBlue
+        case .attention: PMColor.bad
+        case .disabled: PMColor.textFaint
+        }
+    }
+
+    private func stateLabel(_ state: SourceRuntimeState) -> LocalizedStringKey {
+        switch state {
+        case .online: "source_state_online"
+        case .scanning: "scanning"
+        case .attention: "source_state_attention"
+        case .disabled: "disabled"
+        }
+    }
+
+    private var attentionSources: [MusicSource] {
+        sources.filter { runtimeState($0) == .attention }
+    }
+
+    private var summaryText: String {
+        let total = sources.count
+        let online = sources.filter { runtimeState($0) == .online }.count
+        let scanning = sources.filter { runtimeState($0) == .scanning }.count
+        let attention = sources.filter { runtimeState($0) == .attention }.count
+        let disabled = sources.filter { !$0.isEnabled }.count
+
+        var parts = [String(format: String(localized: "sources_count_format"), total)]
+        if online > 0 { parts.append("\(online) \(String(localized: "source_state_online"))") }
+        if scanning > 0 { parts.append("\(scanning) \(String(localized: "scanning"))") }
+        if attention > 0 { parts.append("\(attention) \(String(localized: "source_state_attention"))") }
+        if disabled > 0 { parts.append("\(disabled) \(String(localized: "disabled"))") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func hostLine(_ source: MusicSource) -> String {
+        if let host = source.host, !host.isEmpty {
+            return "\(source.type.displayName) · \(host)"
+        }
+        return source.type.displayName
+    }
+
+    private func syncedText(_ source: MusicSource) -> String {
+        guard let date = source.lastScannedAt else {
+            return String(localized: "source_never_synced")
+        }
+        let relative = Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+        return String(format: String(localized: "source_synced_ago_format"), relative)
     }
 
     // MARK: - Connection sheet (delegates to existing browsers)
@@ -386,12 +510,9 @@ struct MacSourcesView: View {
         sourceStore.sources.filter { $0.type != .appleMusic }
     }
 
-    private var groupedSources: [(SourceCategory, [MusicSource])] {
-        let grouped = Dictionary(grouping: sources) { $0.type.category }
-        return SourceCategory.allCases.compactMap { cat in
-            guard let items = grouped[cat], !items.isEmpty else { return nil }
-            return (cat, items)
-        }
+    private func setEnabled(_ source: MusicSource, _ enabled: Bool) {
+        updateSource(source.id) { $0.isEnabled = enabled }
+        library.updateDisabledSourceIDs(disabledSourceIDs)
     }
 
     private func toggleSourceEnabled(_ source: MusicSource) {
@@ -441,17 +562,6 @@ struct MacSourcesView: View {
         sourceStore.update(sourceID, mutate: mutate)
     }
 
-    private func directoryDisplayName(for path: String, source: MusicSource) -> String {
-        if source.type.isCloudDrive,
-           let displayName = CloudDirectoryNameStore.displayName(for: path, sourceID: source.id),
-           !displayName.isEmpty {
-            return displayName
-        }
-        if path == "/" { return String(localized: "shared_folders") }
-        let lastComponent = (path as NSString).lastPathComponent
-        return lastComponent.isEmpty ? path : lastComponent
-    }
-
     private func decodeDirs(_ config: String?) -> [String] {
         guard let config, let data = config.data(using: .utf8),
               let dirs = try? JSONDecoder().decode([String].self, from: data) else { return [] }
@@ -460,6 +570,38 @@ struct MacSourcesView: View {
 
     private func encodeDirs(_ dirs: [String]) -> String? {
         (try? JSONEncoder().encode(dirs)).flatMap { String(data: $0, encoding: .utf8) }
+    }
+}
+
+// MARK: - Pill button
+
+/// Small hover-aware text pill matching the design's `pm-mat-btn`. A standalone
+/// view so each pill owns its own hover state.
+private struct MacPillButton: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    var tint: Color?
+    let action: () -> Void
+
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tint ?? PMColor.textMuted)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background((tint ?? PMColor.text).opacity(hover ? 0.16 : 0.10), in: .rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.12), value: hover)
     }
 }
 #endif

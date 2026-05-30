@@ -126,3 +126,8 @@
 "update_banner_title_format" = "Primuse %@ is out";
 "update_banner_subtitle" = "Update via the App Store";
 "update_banner_action" = "Update";
+"source_state_online" = "En ligne";
+"source_state_attention" = "Action requise";
+"sources_attention_banner_title" = "%d source(s) nécessite(nt) une action";
+"source_synced_ago_format" = "Synchronisé %@";
+"source_never_synced" = "Pas encore synchronisé";

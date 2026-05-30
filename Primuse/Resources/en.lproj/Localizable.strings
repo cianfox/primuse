@@ -1054,6 +1054,11 @@
 // MARK: - macOS UI gaps (1.4.0 audit)
 "sources_count_format" = "%d sources";
 "songs_count_inline" = "songs";
+"source_state_online" = "Online";
+"source_state_attention" = "Needs attention";
+"sources_attention_banner_title" = "%d source(s) need attention";
+"source_synced_ago_format" = "Synced %@";
+"source_never_synced" = "Not synced yet";
 "close" = "Close";
 "more" = "More";
 "new" = "New";
