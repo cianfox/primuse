@@ -462,7 +462,7 @@ struct MacDirTreeBrowser: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            PMWindowTrafficLights()
+            PMWindowTrafficLights(closeOnly: true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: title)
                     .font(.system(size: 13, weight: .semibold))

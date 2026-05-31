@@ -252,7 +252,11 @@ struct MacMiniPlayerView: View {
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .circle)
             .popover(isPresented: $airPlayShown, arrowEdge: .top) {
+                // 迷你播放器是恒定深色, 输出 popover 强制 dark 外观 (PMColor 走
+                // NSAppearance, 不吃 .environment(\.colorScheme)), 否则浅色 App 下
+                // 会从深色播放器里弹出一个亮白 popover, 跟卡片对不上。
                 AudioOutputPickerView()
+                    .preferredColorScheme(.dark)
             }
             .help(Text("audio_output"))
 
@@ -346,14 +350,22 @@ struct MacMiniPlayerView: View {
             Button { player.togglePlayPause() } label: {
                 ZStack {
                     Circle().fill(theme.accentColor).frame(width: 46, height: 46)
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
-                        .offset(x: player.isPlaying ? 0 : 1)
+                    // 加载/缓冲时显示转圈, 跟主界面底栏播放键一致, 免得用户以为卡住了。
+                    if player.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                            .contentTransition(.symbolEffect(.replace))
+                            .offset(x: player.isPlaying ? 0 : 1)
+                    }
                 }
             }
             .buttonStyle(.plain)
+            .disabled(player.isLoading)
 
             Button { Task { await player.next() } } label: {
                 Image(systemName: "forward.end.fill")
@@ -440,11 +452,13 @@ struct MacMiniPlayerView: View {
                 }
             }
             .padding(.vertical, 4)
+            // 隐藏器放进 ScrollView 内容里 (而不是挂在 ScrollView 外层的
+            // .background) —— 这样 enclosingScrollView 能直接拿到队列自己的
+            // NSScrollView。迷你播放器这种多层嵌套下, 外层 .background 那个
+            // 隐藏器是兄弟节点, 找不到, 滚动条隐不掉。
+            .pmForceHideScrollers()
         }
         .scrollIndicators(.hidden)
-        // 系统「总是显示滚动条」时 .scrollIndicators(.hidden) 不生效, 直接在底层
-        // NSScrollView 上强制隐藏。
-        .pmForceHideScrollers()
     }
 
     private func queueRow(index: Int, song overrideSong: Song? = nil, isPlaying: Bool = false) -> some View {

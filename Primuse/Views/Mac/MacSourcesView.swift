@@ -18,6 +18,7 @@ struct MacSourcesView: View {
     @State private var showAddSource = false
     @State private var editingSource: MusicSource?
     @State private var connectingSource: MusicSource?
+    @State private var sourceToDelete: MusicSource?
     @State private var cloudDirectoryNameRefreshID = UUID()
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
@@ -57,6 +58,25 @@ struct MacSourcesView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudDirectoryNameStore.didChangeNotification)) { _ in
             cloudDirectoryNameRefreshID = UUID()
+        }
+        .confirmationDialog(
+            Text(verbatim: "移除此音乐源？"),
+            isPresented: Binding(
+                get: { sourceToDelete != nil },
+                set: { if !$0 { sourceToDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: sourceToDelete
+        ) { source in
+            Button(role: .destructive) {
+                deleteSource(source)
+                sourceToDelete = nil
+            } label: {
+                Text(verbatim: "移除「\(source.name)」")
+            }
+            Button("cancel", role: .cancel) { sourceToDelete = nil }
+        } message: { _ in
+            Text(verbatim: "会从资料库移除该源及其歌曲记录，本地 / 远端文件不受影响。")
         }
     }
 
@@ -127,7 +147,9 @@ struct MacSourcesView: View {
 
                     // 设计稿: 单一「已连接」分组 + 2 列自适应卡片网格。
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 320, maximum: 460),
+                        // 卡片放大一点 (min 440), 这样操作行的「重新扫描/浏览/设置/
+                        // 删除」几个按钮不会被挤到截断成「重…」。
+                        columns: [GridItem(.adaptive(minimum: 440, maximum: 600),
                                            spacing: PMSpace.m14, alignment: .top)],
                         alignment: .leading,
                         spacing: PMSpace.m14
@@ -227,6 +249,9 @@ struct MacSourcesView: View {
             }
 
             cardBody(source, scanning: scanning, displayedSongCount: displayedSongCount)
+                // 给内容区一个统一最小高度: "扫描中"(三行进度) 和 "已同步"(一行)
+                // 的卡片高度就一致了, 不会某张在扫描时突然变高、其它变矮。
+                .frame(maxWidth: .infinity, minHeight: 46, alignment: .topLeading)
 
             Rectangle().fill(PMColor.divider).frame(height: 0.5)
 
@@ -353,6 +378,9 @@ struct MacSourcesView: View {
                 pill("browse", systemImage: "folder") { connectingSource = source }
                 pill("settings_title", systemImage: "slider.horizontal.3") { editingSource = source }
             }
+
+            // 移除音乐源 —— 之前只藏在右键菜单里, 用户找不到; 这里给个显式入口。
+            pill("delete", systemImage: "trash", tint: PMColor.bad) { sourceToDelete = source }
 
             Spacer(minLength: 4)
 

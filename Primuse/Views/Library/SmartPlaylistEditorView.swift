@@ -202,7 +202,7 @@ struct SmartPlaylistEditorView: View {
 
     private var macHeader: some View {
         HStack(spacing: 12) {
-            PMWindowTrafficLights()
+            PMWindowTrafficLights(closeOnly: true)
 
             Text(verbatim: "智能歌单 · \(name.isEmpty ? "新建智能歌单" : name)")
                 .font(.system(size: 13, weight: .semibold))

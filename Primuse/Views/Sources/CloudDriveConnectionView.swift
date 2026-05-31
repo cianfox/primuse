@@ -32,23 +32,11 @@ struct CloudDriveConnectionView: View {
                 selectedDirectories: $selectedDirectories
             )
         } else {
+            #if os(macOS)
+            macAuthChrome
+            #else
             NavigationStack {
-                Group {
-                    switch step {
-                    case .checking:
-                        checkingView
-                    case .needsSetup:
-                        setupGuideView
-                    case .readyToAuth:
-                        authPromptView
-                    case .authorizing:
-                        authorizingView
-                    case .failed:
-                        failedView
-                    case .browsing:
-                        EmptyView() // Handled above
-                    }
-                }
+                stepContent
                 .navigationTitle(source.name)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -58,12 +46,87 @@ struct CloudDriveConnectionView: View {
                     }
                 }
             }
-            #if os(macOS)
-            .frame(minWidth: 560, idealWidth: 620, minHeight: 500, idealHeight: 560)
-            #endif
             .onAppear { checkStatus() }
+            #endif
         }
     }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch step {
+        case .checking:
+            checkingView
+        case .needsSetup:
+            setupGuideView
+        case .readyToAuth:
+            authPromptView
+        case .authorizing:
+            authorizingView
+        case .failed:
+            failedView
+        case .browsing:
+            EmptyView() // Handled above
+        }
+    }
+
+    #if os(macOS)
+    /// 云盘 OAuth 授权页的设计稿外壳 —— closeOnly traffic-light 窗头
+    /// (「百度网盘 · OAuth」+ SRC 号) + 步骤内容 + 取消底栏, 跟其它源弹框统一,
+    /// 不再用 NavigationStack 的原生标题栏 (那个跟整套自定义弹框对不上)。
+    private var macAuthChrome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                PMWindowTrafficLights(closeOnly: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: "\(source.type.displayName) · OAuth")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(PMColor.text)
+                    Text(verbatim: "\(cloudSpecCode) · 系统浏览器授权")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(PMColor.textFaint)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 56)
+
+            Rectangle().fill(PMColor.divider).frame(height: 0.5)
+
+            stepContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Rectangle().fill(PMColor.divider).frame(height: 0.5)
+
+            HStack {
+                Spacer()
+                Button("cancel") { dismiss() }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(PMColor.text)
+                    .padding(.horizontal, 16)
+                    .frame(height: 30)
+                    .background(PMColor.glassBtn, in: .rect(cornerRadius: 7))
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 56)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(PMColor.bg)
+        .onAppear { checkStatus() }
+    }
+
+    private var cloudSpecCode: String {
+        switch source.type {
+        case .baiduPan:    return "SRC-16"
+        case .aliyunDrive: return "SRC-17"
+        case .googleDrive: return "SRC-18"
+        case .oneDrive:    return "SRC-19"
+        case .dropbox:     return "SRC-20"
+        default:           return "SRC-16"
+        }
+    }
+    #endif
 
     // MARK: - Checking View
 

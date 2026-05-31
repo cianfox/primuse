@@ -682,21 +682,41 @@ private struct PMNSScrollerHider: NSViewRepresentable {
         DispatchQueue.main.async { hide(from: nsView) }
     }
     private func hide(from view: NSView) {
-        // 沿 superview 向上找 NSScrollView (SwiftUI ScrollView 在 macOS 上
-        // 实际就是 NSScrollView)。
-        var node: NSView? = view.superview
-        while let n = node {
-            if let sv = n as? NSScrollView {
-                sv.hasVerticalScroller = false
-                sv.hasHorizontalScroller = false
-                sv.verticalScroller?.isHidden = true
-                sv.horizontalScroller?.isHidden = true
-                sv.scrollerStyle = .overlay
-                sv.autohidesScrollers = true
+        // 1. 这个 0×0 view 若正好在 scroll 内容里, enclosingScrollView 直接命中。
+        if let sv = view.enclosingScrollView {
+            configure(sv)
+            return
+        }
+        // 2. 但我们是用 `.background(...)` 挂上去的 —— SwiftUI 把它放成 NSScrollView
+        //    的"兄弟"节点, 单纯沿 superview 往上找不到它 (这正是之前隐藏不掉的根因)。
+        //    改成逐层往上, 在每一层的子树里找最近的 NSScrollView。
+        var ancestor: NSView? = view.superview
+        var hops = 0
+        while let a = ancestor, hops < 8 {
+            if let sv = Self.firstScrollView(in: a) {
+                configure(sv)
                 return
             }
-            node = n.superview
+            ancestor = a.superview
+            hops += 1
         }
+    }
+
+    private func configure(_ sv: NSScrollView) {
+        sv.hasVerticalScroller = false
+        sv.hasHorizontalScroller = false
+        sv.verticalScroller?.isHidden = true
+        sv.horizontalScroller?.isHidden = true
+        sv.scrollerStyle = .overlay
+        sv.autohidesScrollers = true
+    }
+
+    private static func firstScrollView(in view: NSView) -> NSScrollView? {
+        if let sv = view as? NSScrollView { return sv }
+        for sub in view.subviews {
+            if let found = firstScrollView(in: sub) { return found }
+        }
+        return nil
     }
 }
 
@@ -779,18 +799,25 @@ struct PMWindowTrafficLights: View {
         case zoom
     }
 
+    /// 只保留关闭按钮 —— 弹框 / 设置这类窗口里最小化、缩放没意义, 留一个红色
+    /// 关闭灯即可。主窗口标题栏仍用默认的三色灯。
+    var closeOnly: Bool = false
+
     @State private var hostWindow: NSWindow?
 
     var body: some View {
         HStack(spacing: 8) {
             trafficButton(color: Color(red: 1.0, green: 0.372, blue: 0.341), action: .close)
                 .accessibilityLabel(Text("Close"))
-            trafficButton(color: Color(red: 1.0, green: 0.741, blue: 0.180), action: .minimize)
-                .accessibilityLabel(Text("Minimize"))
-            trafficButton(color: Color(red: 0.157, green: 0.788, blue: 0.255), action: .zoom)
-                .accessibilityLabel(Text("Zoom"))
+            if !closeOnly {
+                trafficButton(color: Color(red: 1.0, green: 0.741, blue: 0.180), action: .minimize)
+                    .accessibilityLabel(Text("Minimize"))
+                trafficButton(color: Color(red: 0.157, green: 0.788, blue: 0.255), action: .zoom)
+                    .accessibilityLabel(Text("Zoom"))
+            }
         }
-        .frame(width: 52, height: 26, alignment: .center)
+        .frame(width: closeOnly ? PMSize.trafficLight : 52, height: 26,
+               alignment: closeOnly ? .leading : .center)
         .background {
             PMWindowResolver { window in
                 hostWindow = window

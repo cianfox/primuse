@@ -186,10 +186,9 @@ struct MacContentView: View {
     private func toolSheet(_ tool: MacTool) -> some View {
         switch tool {
         case .playlistImport:
-            // PlaylistImportView 的 macBody 是个贪心 ScrollView, 自身不定尺寸;
-            // 给 sheet 一个合理下限, 免得它在弹框里塌成一小块。
+            // PlaylistImportView 的 macBody 现在自带固定尺寸 (620×680), 不再
+            // 套外层 frame —— 否则会像之前那样把内容挤偏 / 留白。
             PlaylistImportView()
-                .frame(minWidth: 860, minHeight: 740)
         case .duplicates:
             DuplicateSongsView()
         case .scrobble:

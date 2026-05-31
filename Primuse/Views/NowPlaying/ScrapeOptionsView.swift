@@ -190,7 +190,7 @@ struct ScrapeOptionsView: View {
 
     private var macChrome: some View {
         HStack(spacing: 14) {
-            PMWindowTrafficLights()
+            PMWindowTrafficLights(closeOnly: true)
             VStack(alignment: .leading, spacing: 2) {
                 Text("刮削 · \(song.title)")
                     .font(.system(size: 13, weight: .semibold))

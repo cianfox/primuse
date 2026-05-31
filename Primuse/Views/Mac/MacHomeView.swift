@@ -354,7 +354,7 @@ struct MacHomeView: View {
     }
 
     private var sourceStatusCard: some View {
-        homeCard(title: "home_sources_title", spec: "SRC · LIB-14") {
+        homeCard(title: "音乐源状态", spec: "SRC-* · LIB-14/15") {
             VStack(alignment: .leading, spacing: PMSpace.m) {
                 HStack(spacing: PMSpace.m) {
                     metric(value: enabledSourcesCount, label: "home_enabled_sources")
@@ -362,23 +362,37 @@ struct MacHomeView: View {
                     metric(value: backfill.remainingCount(forSource: nil), label: "home_pending_details")
                 }
                 Rectangle().fill(PMColor.divider).frame(height: 0.5).padding(.vertical, 2)
-                if let scan = activeScans.first {
-                    VStack(alignment: .leading, spacing: 6) {
-                        scanProgressBar(scan)
-                        Text(scan.currentFile.isEmpty ? String(localized: "scan_in_progress") : scan.currentFile)
-                            .font(.system(size: 11))
-                            .foregroundStyle(PMColor.textFaint)
-                            .lineLimit(1)
-                    }
+                if let entry = activeScanEntry {
+                    // 文件扫描 (发现新歌)。
+                    sourceTaskBox(
+                        title: entry.source.name,
+                        phase: entry.state.isScanning ? "读取文件" : "待续扫",
+                        detail: entry.state.currentFile,
+                        progress: entry.state.totalCount > 0 ? min(entry.state.progress, 1) : 0,
+                        indeterminate: entry.state.totalCount == 0
+                    )
+                } else if backfill.isRunning || backfill.hasPendingWork {
+                    // 元数据回填 (读取本地文件标签补全基础信息) —— 就是源卡片上那个
+                    // 「读取标签中 · 剩余 N 首」。之前首页完全没检测它, 所以明明在跑却
+                    // 显示「暂无扫描任务」。
+                    let processed = backfill.processedCount
+                    let total = processed + backfill.remainingCount
+                    sourceTaskBox(
+                        title: "元数据回填",
+                        phase: "读取标签",
+                        detail: String(format: String(localized: "backfill_remaining"), backfill.remainingCount),
+                        progress: total > 0 ? Double(processed) / Double(total) : 0,
+                        indeterminate: total == 0
+                    )
                 } else if scraperService.isScraping {
-                    // 元数据刮削 (扫描标签) 也是一种进行中的源任务, 之前完全没在这里反映。
-                    VStack(alignment: .leading, spacing: 6) {
-                        taskProgressBar(scraperService.progress)
-                        Text(scrapingStatusText)
-                            .font(.system(size: 11))
-                            .foregroundStyle(PMColor.textFaint)
-                            .lineLimit(1)
-                    }
+                    // 在线刮削封面 / 歌词。
+                    sourceTaskBox(
+                        title: "元数据刮削",
+                        phase: "封面 / 歌词",
+                        detail: scraperService.currentSongTitle,
+                        progress: scraperService.progress,
+                        indeterminate: scraperService.totalCount == 0
+                    )
                 } else {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
@@ -389,6 +403,62 @@ struct MacHomeView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// 当前正在扫描的源 (含其 sourceID 对应的 MusicSource) —— scanStates 的 key 才是
+    /// sourceID, .values 拿不到, 所以这里遍历配对。
+    private var activeScanEntry: (source: MusicSource, state: ScanService.ScanState)? {
+        for (id, state) in scanService.scanStates where state.isScanning || state.canResume {
+            if let src = sourcesStore.sources.first(where: { $0.id == id }) {
+                return (src, state)
+            }
+        }
+        return nil
+    }
+
+    /// 设计稿的「源任务」进度块: 源名 · 阶段 + 当前文件 + 带百分比的进度条。
+    private func sourceTaskBox(title: String, phase: String, detail: String,
+                               progress: Double, indeterminate: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle().fill(PMColor.brand).frame(width: 6, height: 6)
+                Text(verbatim: title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(PMColor.text)
+                    .lineLimit(1)
+                Text(verbatim: "· \(phase)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(PMColor.textMuted)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            if !detail.isEmpty {
+                Text(verbatim: detail)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(PMColor.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: 8) {
+                if indeterminate {
+                    ProgressView().controlSize(.small)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    taskProgressBar(progress)
+                    Text(verbatim: "\(Int(min(max(progress, 0), 1) * 100))%")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(PMColor.textMuted)
+                        .monospacedDigit()
+                        .frame(width: 36, alignment: .trailing)
+                }
+            }
+        }
+        .padding(10)
+        .background(PMColor.bgDeep.opacity(0.35), in: .rect(cornerRadius: 9))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(PMColor.cardBorder, lineWidth: 0.5)
         }
     }
 
@@ -857,7 +927,9 @@ struct MacHomeView: View {
 
     /// "扫描中" = 文件扫描任务 + 正在进行的元数据刮削 (扫描标签)。
     private var activeTaskCount: Int {
-        activeScans.count + (scraperService.isScraping ? 1 : 0)
+        activeScans.count
+            + (scraperService.isScraping ? 1 : 0)
+            + ((backfill.isRunning || backfill.hasPendingWork) ? 1 : 0)
     }
 
     /// 刮削进行中的状态文案: "已处理/总数 · 当前歌曲" (当前曲名拿得到才拼)。

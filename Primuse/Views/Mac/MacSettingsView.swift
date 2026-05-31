@@ -107,7 +107,8 @@ struct MacSettingsView: View {
 
     private var settingsTitleBar: some View {
         HStack(spacing: 0) {
-            PMWindowTrafficLights()
+            // 设置窗口是弹框性质, 最小化/缩放没意义, 只留一个关闭灯。
+            PMWindowTrafficLights(closeOnly: true)
 
             Text(verbatim: tab.title)
                 .font(.system(size: 13, weight: .semibold))
@@ -115,8 +116,8 @@ struct MacSettingsView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
 
-            // 跟左侧三色灯等宽的占位, 让标题在窗口里居中。
-            Color.clear.frame(width: 52, height: 1)
+            // 跟左侧关闭灯等宽的占位, 让标题在窗口里居中。
+            Color.clear.frame(width: PMSize.trafficLight, height: 1)
         }
         .padding(.horizontal, 14)
         .frame(height: PMSize.titlebar)

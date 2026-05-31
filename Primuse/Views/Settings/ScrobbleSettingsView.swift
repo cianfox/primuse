@@ -344,11 +344,18 @@ struct ScrobbleSettingsView: View {
                 } else {
                     HStack(spacing: 8) {
                         macTinyButton(isLoggingInLastFm ? "连接中" : "连接 Last.fm", icon: "person.badge.shield.checkmark", tint: PMColor.bad) {
-                            Task { await beginLastFmAuthorization() }
+                            // 没有可用的 API Key/Secret 时, 不要把按钮静默禁用
+                            // (plain 按钮禁用后外观不变, 用户只会觉得"点不动")。
+                            // 改成点了就展开「高级密钥」引导填写, 并给一句说明。
+                            if LastFmCredentialsStore.effectiveAPIKey().isEmpty
+                                || LastFmCredentialsStore.effectiveAPISecret().isEmpty {
+                                withAnimation { showLastFmAdvanced = true }
+                                lastFmError = "请先在下方「高级密钥」里填写 Last.fm API Key 与 Secret，再连接。"
+                            } else {
+                                Task { await beginLastFmAuthorization() }
+                            }
                         }
-                        .disabled(isLoggingInLastFm
-                                  || LastFmCredentialsStore.effectiveAPIKey().isEmpty
-                                  || LastFmCredentialsStore.effectiveAPISecret().isEmpty)
+                        .disabled(isLoggingInLastFm)
 
                         Spacer()
 

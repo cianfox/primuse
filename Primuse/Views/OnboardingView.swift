@@ -103,7 +103,7 @@ struct OnboardingView: View {
 
     private var macTitleBar: some View {
         HStack(spacing: 14) {
-            PMWindowTrafficLights()
+            PMWindowTrafficLights(closeOnly: true)
             Spacer()
             Text("步骤 \(pageIndex + 1) / 3")
                 .font(.system(size: 11, weight: .medium))

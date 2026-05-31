@@ -94,44 +94,29 @@ struct PlaylistImportView: View {
     }
 
     #if os(macOS)
+    /// 整面板铺满 sheet (PMColor.bg 打底), 跟「重复清理 / Scrobble」两个弹框
+    /// 一致 —— 不再是一张 760 宽、带阴影的浮动卡片浮在更大的窗口里 (那样会留
+    /// 大片空白 + 卡片浮空感)。结构: 顶栏 + 内容(引导/预览) + 底栏。
     private var macBody: some View {
-        ZStack {
-            PMColor.bg.ignoresSafeArea()
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 18) {
-                    macPanel
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 36)
-                .padding(.vertical, 34)
-                .padding(.bottom, 110)
-            }
-        }
-    }
-
-    private var macPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
             macHeader
 
-            Divider().overlay(PMColor.divider)
+            Rectangle().fill(PMColor.divider).frame(height: 0.5)
 
-            if let preview {
-                macPreview(preview)
-            } else {
-                macIntro
+            Group {
+                if let preview {
+                    macPreview(preview)
+                } else {
+                    macIntro
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            Divider().overlay(PMColor.divider)
+            Rectangle().fill(PMColor.divider).frame(height: 0.5)
             macFooter
         }
-        .frame(width: 760)
-        .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(PMColor.bgElev.opacity(0.88))
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(PMColor.cardBorder, lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.20), radius: 28, y: 14)
+        .frame(width: 620, height: 680)
+        .background(PMColor.bg)
     }
 
     private var macHeader: some View {
@@ -176,45 +161,44 @@ struct PlaylistImportView: View {
     }
 
     private var macIntro: some View {
-        VStack(spacing: 18) {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(PMColor.card.opacity(0.72))
-                .frame(height: 188)
-                .overlay {
-                    VStack(spacing: 12) {
-                        Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 44, weight: .regular))
-                            .foregroundStyle(PMColor.brand)
-                        Text("选择一个歌单文件开始")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(PMColor.text)
-                        Text("支持 .m3u / .m3u8 / .json，导入前会先展示匹配与缺失条目。")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(PMColor.textMuted)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.horizontal, 48)
-                }
+        VStack(spacing: 14) {
+            Spacer(minLength: 0)
+
+            Image(systemName: "doc.badge.plus")
+                .font(.system(size: 46, weight: .regular))
+                .foregroundStyle(PMColor.brand)
+            Text("选择一个歌单文件开始")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(PMColor.text)
+            Text("支持 .m3u / .m3u8 / .json，导入前会先展示匹配与缺失条目。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(PMColor.textMuted)
+                .multilineTextAlignment(.center)
 
             HStack(spacing: 8) {
                 macFormatPill("M3U8")
                 macFormatPill("M3U")
                 macFormatPill("JSON")
-                Spacer()
-                Button {
-                    showFileImporter = true
-                } label: {
-                    Label("选择文件", systemImage: "folder")
-                        .font(.system(size: 12.5, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .frame(height: 30)
-                .background(PMColor.brand, in: .rect(cornerRadius: 7))
             }
+            .padding(.top, 4)
+
+            Button {
+                showFileImporter = true
+            } label: {
+                Label("选择文件", systemImage: "folder")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .frame(height: 34)
+                    .background(PMColor.brand, in: .rect(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
+
+            Spacer(minLength: 0)
         }
-        .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
     }
 
     private func macPreview(_ p: PlaylistImporter.ImportPreview) -> some View {
@@ -396,23 +380,13 @@ struct PlaylistImportView: View {
                 .padding(.horizontal, 14)
                 .background(PMColor.glassBtn, in: .rect(cornerRadius: 6))
 
-            if preview == nil {
-                Button {
-                    showFileImporter = true
-                } label: {
-                    Label("选择文件", systemImage: "folder")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .frame(height: 28)
-                .padding(.horizontal, 14)
-                .background(PMColor.brand, in: .rect(cornerRadius: 6))
-            } else {
+            // 引导态的「选择文件」主按钮在内容区里, 这里底栏不再重复; 只有
+            // 解析出预览后才在底栏放「仅创建已匹配」主操作。
+            if let preview {
                 Button {
                     confirm()
                 } label: {
-                    Text(verbatim: "仅创建已匹配 (\(preview?.matchedCount ?? 0))")
+                    Text(verbatim: "仅创建已匹配 (\(preview.matchedCount))")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(height: 28)
