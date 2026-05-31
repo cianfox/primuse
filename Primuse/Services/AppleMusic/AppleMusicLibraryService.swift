@@ -41,6 +41,22 @@ final class AppleMusicLibraryService {
             || playlistID.hasPrefix(userPlaylistIDPrefix)
     }
 
+    private struct UserPlaylistMirror: Sendable {
+        let id: String
+        let name: String
+        let songIDs: [String]
+
+        var songSetSignature: String {
+            Set(songIDs).sorted().joined(separator: "\u{1F}")
+        }
+    }
+
+    private enum UserPlaylistFetchResult: Sendable {
+        case mirror(UserPlaylistMirror)
+        case empty(id: String, name: String)
+        case failed(id: String, name: String, error: String)
+    }
+
     enum SyncState: Sendable {
         case idle
         case syncing
@@ -307,11 +323,11 @@ final class AppleMusicLibraryService {
             // 拉用户在 Apple Music 里建的 playlists, 每个映射成独立的本地镜像歌单
             // (跟「Apple Music 资料库」全集并存)。tracks 走 .with([.tracks])
             // 延迟加载关系, 失败的 playlist 跳过不阻塞整体 sync。
-            await syncUserPlaylists()
+            let syncedUserPlaylistCount = await syncUserPlaylists()
 
             lastSyncAt = Date()
             state = .done(songCount: songs.count, at: lastSyncAt!)
-            plog("🎵 Apple Music library synced: \(songs.count) songs → playlist \(Self.systemPlaylistID)")
+            plog("🎵 Apple Music library synced: \(songs.count) songs, \(syncedUserPlaylistCount) playlists → playlist \(Self.systemPlaylistID)")
         } catch is CancellationError {
             state = .idle
         } catch {
@@ -325,7 +341,8 @@ final class AppleMusicLibraryService {
     /// 会被刷新 (ensurePlaylist 已经处理 name 同步)。
     /// 实现: MusicLibraryRequest<Playlist> 拉用户全部歌单 (含分页), 每个用
     /// `.with([.tracks])` 把 tracks 拉过来, 转 PrimuseKit.Song 后 replace 进对应歌单。
-    private func syncUserPlaylists() async {
+    @discardableResult
+    private func syncUserPlaylists() async -> Int {
         do {
             var request = MusicLibraryRequest<MusicKit.Playlist>()
             request.limit = 100
@@ -334,26 +351,52 @@ final class AppleMusicLibraryService {
             allPlaylists.append(contentsOf: response.items)
             var currentBatch = response.items
             while currentBatch.hasNextBatch {
-                if Task.isCancelled { return }
+                if Task.isCancelled { return 0 }
                 guard let next = try await currentBatch.nextBatch() else { break }
                 allPlaylists.append(contentsOf: next)
                 currentBatch = next
             }
             plog("🎵 Apple Music user playlists: \(allPlaylists.count)")
 
+            var fetchedMirrors: [UserPlaylistMirror] = []
+            var failedIDs = Set<String>()
             for amPlaylist in allPlaylists {
-                if Task.isCancelled { return }
-                await syncSinglePlaylist(amPlaylist)
+                if Task.isCancelled { return 0 }
+                switch await fetchUserPlaylistMirror(amPlaylist) {
+                case .mirror(let mirror):
+                    fetchedMirrors.append(mirror)
+                case .empty(let id, let name):
+                    plog("🎵 AM playlist '\(name)' is empty, pruning local mirror \(id)")
+                case .failed(let id, let name, let error):
+                    failedIDs.insert(id)
+                    plog("⚠️AM playlist '\(name)' fetch tracks failed: \(error)")
+                }
             }
+
+            let mirrorsToKeep = Self.resolveUserPlaylistMirrors(fetchedMirrors)
+            for mirror in mirrorsToKeep {
+                library.ensurePlaylist(id: mirror.id, name: mirror.name)
+                library.replacePlaylistSongs(playlistID: mirror.id, songIDs: mirror.songIDs)
+                plog("🎵 AM playlist '\(mirror.name)' → \(mirror.songIDs.count) songs")
+            }
+
+            let keepIDs = Set(mirrorsToKeep.map(\.id)).union(failedIDs)
+            library.prunePlaylists(
+                withIDPrefix: Self.userPlaylistIDPrefix,
+                keepingIDs: keepIDs
+            )
+            return mirrorsToKeep.count
         } catch is CancellationError {
             // ignore
+            return 0
         } catch {
             plog("⚠️Apple Music playlist sync failed: \(error.localizedDescription)")
+            return 0
         }
     }
 
-    private func syncSinglePlaylist(_ amPlaylist: MusicKit.Playlist) async {
-        let pid = "primuse.system.appleMusic.playlist.\(amPlaylist.id.rawValue)"
+    private func fetchUserPlaylistMirror(_ amPlaylist: MusicKit.Playlist) async -> UserPlaylistFetchResult {
+        let pid = "\(Self.userPlaylistIDPrefix)\(amPlaylist.id.rawValue)"
         do {
             let detailed = try await amPlaylist.with([.tracks])
             let tracks = detailed.tracks ?? []
@@ -363,12 +406,69 @@ final class AppleMusicLibraryService {
                 songCache[s.id.rawValue] = s
                 return Self.toPrimuseSong(s).id
             }
-            library.ensurePlaylist(id: pid, name: amPlaylist.name)
-            library.replacePlaylistSongs(playlistID: pid, songIDs: songIDs)
-            plog("🎵 AM playlist '\(amPlaylist.name)' → \(songIDs.count) songs")
+            if songIDs.isEmpty {
+                return .empty(id: pid, name: amPlaylist.name)
+            }
+            return .mirror(UserPlaylistMirror(
+                id: pid,
+                name: amPlaylist.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                songIDs: Self.uniqued(songIDs)
+            ))
         } catch {
-            plog("⚠️AM playlist '\(amPlaylist.name)' fetch tracks failed: \(error.localizedDescription)")
+            return .failed(id: pid, name: amPlaylist.name, error: error.localizedDescription)
         }
+    }
+
+    private static func resolveUserPlaylistMirrors(_ mirrors: [UserPlaylistMirror]) -> [UserPlaylistMirror] {
+        let groupedByName = Dictionary(grouping: mirrors) { normalizedPlaylistName($0.name) }
+        var resolved: [UserPlaylistMirror] = []
+
+        for group in groupedByName.values {
+            let stableGroup = group.sorted { lhs, rhs in
+                if lhs.name.localizedCaseInsensitiveCompare(rhs.name) != .orderedSame {
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+                return lhs.id < rhs.id
+            }
+
+            var seenSongSets = Set<String>()
+            var uniqueMirrors: [UserPlaylistMirror] = []
+            for mirror in stableGroup {
+                guard seenSongSets.insert(mirror.songSetSignature).inserted else {
+                    plog("🎵 Skipping duplicate Apple Music playlist mirror '\(mirror.name)' (\(mirror.id))")
+                    continue
+                }
+                uniqueMirrors.append(mirror)
+            }
+
+            if uniqueMirrors.count == 1, let only = uniqueMirrors.first {
+                resolved.append(only)
+            } else {
+                for (index, mirror) in uniqueMirrors.enumerated() {
+                    let displayName = index == 0 ? mirror.name : "\(mirror.name) (\(index + 1))"
+                    resolved.append(UserPlaylistMirror(
+                        id: mirror.id,
+                        name: displayName,
+                        songIDs: mirror.songIDs
+                    ))
+                }
+            }
+        }
+
+        return resolved.sorted { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private static func normalizedPlaylistName(_ name: String) -> String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+    }
+
+    private static func uniqued(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
     }
 
     /// MusicKit.Song → PrimuseKit.Song 映射。

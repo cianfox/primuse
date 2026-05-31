@@ -1225,6 +1225,27 @@ final class MusicLibrary {
         }
     }
 
+    /// Permanently remove generated playlists that mirror an external source and
+    /// are no longer part of that source's latest authoritative snapshot.
+    func prunePlaylists(withIDPrefix prefix: String, keepingIDs: Set<String>) {
+        let staleIDs = allPlaylists
+            .filter { $0.id.hasPrefix(prefix) && !keepingIDs.contains($0.id) }
+            .map(\.id)
+        guard !staleIDs.isEmpty else { return }
+
+        let staleIDSet = Set(staleIDs)
+        allPlaylists.removeAll { staleIDSet.contains($0.id) }
+        for id in staleIDs {
+            playlistSongIDs[id] = nil
+            pendingPlaylistIdentities[id] = nil
+        }
+        sortPlaylists()
+        persistSnapshot()
+        for id in staleIDs {
+            notifyPlaylistDeleted(id)
+        }
+    }
+
     // MARK: - Smart Playlists
 
     /// 创建 / 更新一份智能歌单。Caller 自己构造 SmartPlaylist (含 rules), 这里

@@ -675,7 +675,14 @@ final class CloudKitSyncService {
 
     func playlistsChanged(ids: [String]) {
         guard CloudSyncChannel.isEnabled(.playlists) else { return }
-        enqueueSaves(recordType: RecordType.playlist, ids: ids)
+        let mirrorIDs = ids.filter { AppleMusicLibraryService.isAppleMusicMirrorPlaylist($0) }
+        let regularIDs = ids.filter { !AppleMusicLibraryService.isAppleMusicMirrorPlaylist($0) }
+        enqueueSaves(recordType: RecordType.playlist, ids: regularIDs)
+        // Apple Music mirrors are regenerated locally from each device's
+        // MusicKit library. Keeping them in Primuse CloudKit creates stale,
+        // empty, or duplicate playlists on devices that cannot resolve the
+        // same Apple Music library.
+        enqueueDeletes(recordType: RecordType.playlist, ids: mirrorIDs)
     }
 
     func playlistDeleted(id: String) {
@@ -1039,6 +1046,10 @@ final class CloudKitSyncService {
         }
 
         guard let id = parseLocalID(from: recordID, recordType: recordType) else { return }
+        if recordType == RecordType.playlist,
+           AppleMusicLibraryService.isAppleMusicMirrorPlaylist(id) {
+            return
+        }
 
         // Recycle-bin recovery race: if the local copy has been restored
         // (isDeleted == false) since the remote prune was scheduled, treat
@@ -1078,6 +1089,7 @@ final class CloudKitSyncService {
     private func isLocallyRestored(recordType: String, id: String) -> Bool {
         switch recordType {
         case RecordType.playlist:
+            if AppleMusicLibraryService.isAppleMusicMirrorPlaylist(id) { return false }
             return library.allPlaylists.first(where: { $0.id == id }).map { !$0.isDeleted } ?? false
         case RecordType.smartPlaylist:
             return library.allSmartPlaylists.first(where: { $0.id == id }).map { !$0.isDeleted } ?? false
@@ -1103,6 +1115,7 @@ final class CloudKitSyncService {
     // MARK: - Playlist mapping
 
     private func populatePlaylistRecord(_ record: CKRecord, playlistID: String) -> Bool {
+        guard !AppleMusicLibraryService.isAppleMusicMirrorPlaylist(playlistID) else { return false }
         guard let playlist = library.playlist(id: playlistID) else { return false }
         record["name"] = playlist.name
         record["createdAt"] = playlist.createdAt
@@ -1124,6 +1137,7 @@ final class CloudKitSyncService {
               let name = record["name"] as? String,
               let createdAt = record["createdAt"] as? Date,
               let updatedAt = record["updatedAt"] as? Date else { return }
+        guard !AppleMusicLibraryService.isAppleMusicMirrorPlaylist(id) else { return }
         let coverArtPath = record["coverArtPath"] as? String
         let songIDs = (record["songIDs"] as? [String]) ?? []
         let identities = decodeIdentities(record[Self.songIdentitiesField] as? Data)
@@ -1469,6 +1483,10 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
     @MainActor
     private func mergePlaylistRecord(local: CKRecord, server: CKRecord) {
         guard let id = parseLocalID(from: server.recordID, recordType: RecordType.playlist) else { return }
+        guard !AppleMusicLibraryService.isAppleMusicMirrorPlaylist(id) else {
+            enqueueDeletes(recordType: RecordType.playlist, ids: [id])
+            return
+        }
 
         let localIDs = (local["songIDs"] as? [String]) ?? []
         let serverIdentities = decodeIdentities(server[Self.songIdentitiesField] as? Data)
