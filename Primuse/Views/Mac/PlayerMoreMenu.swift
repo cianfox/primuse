@@ -653,6 +653,11 @@ struct MacSimilarSongsPopover: View {
 
     @State private var lastFmCandidates: [SimilarTracksCandidate] = []
     @State private var isLoadingLastFm = true
+    // 缓存计算结果, 不在 body 里实时算。否则 `rows` 每次 body 重算都会跑一遍全库
+    // 相似度 (MusicDiscoveryEngine.similarSongs over 全库); 回填/播放进度在改
+    // library.songs 时 body 又频繁重算 → 滚动时一帧算一次全库, 极卡。
+    @State private var localRows: [Row] = []
+    @State private var displayRows: [Row] = []
 
     /// 合并去重后的展示行。`affinity` 统一到 0~1,本地分按软上限折算。
     private struct Row: Identifiable {
