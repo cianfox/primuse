@@ -696,7 +696,6 @@
 "stats_privacy_footer" = "听歌记录仅保存在本设备本地,不会上传到云端,也不会同步到其他设备。";
 "password_show" = "显示密码";
 "password_hide" = "隐藏密码";
-"password_ascii_hint" = "建议使用英文/半角输入,避免全角符号导致认证失败。";
 "source_auth_failed_title" = "音乐源登录失败";
 "source_auth_failed_re_enter" = "重新输入密码";
 "source_auth_failed_message_generic" = "登录失败,请检查账号密码或 NAS 状态。";

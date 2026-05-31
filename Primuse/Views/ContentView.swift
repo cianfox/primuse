@@ -96,22 +96,22 @@ struct ContentView: View {
     @ViewBuilder
     private var tabRoot: some View {
         TabView(selection: $selectedTab) {
-            HomeView(switchToSettingsTab: { selectedTab = 3 })
-                .tabItem { Label(String(localized: "home_title"), systemImage: "house.fill") }
-                .tag(0)
+            Tab(String(localized: "home_title"), systemImage: "house.fill", value: 0) {
+                HomeView(switchToSettingsTab: { selectedTab = 3 })
+            }
 
-            LibraryView(deepLink: $libraryDeepLink)
-                .tabItem { Label(String(localized: "library_title"), systemImage: "books.vertical") }
-                .tag(1)
+            Tab(String(localized: "library_title"), systemImage: "books.vertical", value: 1) {
+                LibraryView(deepLink: $libraryDeepLink)
+            }
 
-            SearchView(searchText: $searchText)
-                .tabItem { Label(String(localized: "search_title"), systemImage: "magnifyingglass") }
-                .tag(2)
-                .id("primuse.tab.search")
+            Tab(String(localized: "search_title"), systemImage: "magnifyingglass", value: 2, role: .search) {
+                SearchView(searchText: $searchText)
+                    .id("primuse.tab.search")
+            }
 
-            SettingsView()
-                .tabItem { Label(String(localized: "settings_title"), systemImage: "gearshape") }
-                .tag(3)
+            Tab(String(localized: "settings_title"), systemImage: "gearshape", value: 3) {
+                SettingsView()
+            }
         }
     }
 
