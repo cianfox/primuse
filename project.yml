@@ -95,6 +95,11 @@ targets:
       - path: Primuse
         excludes:
           - "**/.DS_Store"
+          # Info plists are consumed via the `info.path` setting below.
+          # Copying the macOS plist into the iOS app bundle confuses
+          # codesign/Simulator and leaves the real executable unsigned.
+          - "Info.plist"
+          - "Info-macOS.plist"
           - "**/AppSecrets.example.swift"
           - "**/AppSecrets.local.swift*"
     resources:
