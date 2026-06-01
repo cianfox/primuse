@@ -203,8 +203,8 @@ struct SourcesView: View {
                     ) {
                         openAppleMusicSettings = true
                     }
-                } else if source.type.isMediaServer {
-                    // Media servers scan all libraries directly — no directory selection needed
+                } else if source.type.isServerLibrary {
+                    // 服务端整库源(媒体服务器 / Subsonic)直接全库扫描 — 无需选目录
                     sourceActionButton("source_diagnostics_short", systemImage: "stethoscope") {
                         diagnosingSource = source
                     }

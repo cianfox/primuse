@@ -7,24 +7,24 @@ actor MetadataService {
 
     struct SongMetadata {
         var title: String
-        var artist: String?
-        var albumTitle: String?
-        var trackNumber: Int?
-        var discNumber: Int?
-        var year: Int?
-        var genre: String?
-        var duration: TimeInterval
-        var sampleRate: Int?
-        var bitRate: Int?
-        var bitDepth: Int?
-        var coverArtData: Data?
-        var coverArtFileName: String?
-        var lyricsFileName: String?
-        var lyrics: [LyricLine]?
-        var replayGainTrackGain: Double?
-        var replayGainTrackPeak: Double?
-        var replayGainAlbumGain: Double?
-        var replayGainAlbumPeak: Double?
+        var artist: String? = nil
+        var albumTitle: String? = nil
+        var trackNumber: Int? = nil
+        var discNumber: Int? = nil
+        var year: Int? = nil
+        var genre: String? = nil
+        var duration: TimeInterval = 0
+        var sampleRate: Int? = nil
+        var bitRate: Int? = nil
+        var bitDepth: Int? = nil
+        var coverArtData: Data? = nil
+        var coverArtFileName: String? = nil
+        var lyricsFileName: String? = nil
+        var lyrics: [LyricLine]? = nil
+        var replayGainTrackGain: Double? = nil
+        var replayGainTrackPeak: Double? = nil
+        var replayGainAlbumGain: Double? = nil
+        var replayGainAlbumPeak: Double? = nil
     }
 
     /// Load metadata with priority: sidecar → embedded → online
@@ -135,6 +135,43 @@ actor MetadataService {
             }
         }
 
+        return result
+    }
+
+    /// 只用已知元数据查在线源补缺,**不读音频文件**。给服务端曲库源
+    /// (Subsonic/Navidrome 等)用 —— 它们 title/artist/album 由服务端权威提供,
+    /// 既不该为读 embedded tag 去拉(可能转码的)音频流, 也只补空缺字段。
+    /// `needsCover`/`needsLyrics` 默认 false: 服务端源的封面/歌词由服务端
+    /// (getCoverArt / getLyricsBySongId)提供, 不让在线刮削用脏标题错配盖掉。
+    func fillMissingOnline(
+        title: String,
+        artist: String?,
+        album: String?,
+        year: Int?,
+        genre: String?,
+        duration: TimeInterval,
+        needsCover: Bool = false,
+        needsLyrics: Bool = false
+    ) async -> SongMetadata {
+        var result = SongMetadata(
+            title: title,
+            artist: artist,
+            albumTitle: album,
+            year: year,
+            genre: genre,
+            duration: duration
+        )
+        let needsMetadata = (artist?.isEmpty ?? true)
+            || (album?.isEmpty ?? true)
+            || year == nil
+            || (genre?.isEmpty ?? true)
+        guard needsMetadata || needsCover || needsLyrics else { return result }
+        await fetchOnlineMetadata(
+            for: &result,
+            needsMetadata: needsMetadata,
+            needsCover: needsCover,
+            needsLyrics: needsLyrics
+        )
         return result
     }
 

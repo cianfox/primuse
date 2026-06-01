@@ -79,7 +79,7 @@ final class ScanService {
         // 量列举。其余 NAS / Cloud / Protocol / Local 都依赖 extraConfig
         // 里持久化的目录列表。
         let dirs: [String]
-        if source.type.isMediaServer || source.type == .appleMusicLibrary {
+        if source.type.isServerLibrary || source.type == .appleMusicLibrary {
             dirs = ["/"]
         } else {
             dirs = decodeDirs(source.extraConfig)
@@ -141,6 +141,7 @@ final class ScanService {
                 )
             case .smb, .webdav, .ftp, .sftp, .nfs, .upnp,
                  .jellyfin, .emby, .plex,
+                 .subsonic, .navidrome, .airsonic, .gonic,
                  .qnap, .ugreen, .fnos, .s3,
                  .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox,
                  .local, .appleMusicLibrary:

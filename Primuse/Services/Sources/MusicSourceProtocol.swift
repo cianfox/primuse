@@ -152,6 +152,24 @@ protocol SongScanningConnector: MusicSourceConnector {
     func scanSongs(from path: String) async throws -> AsyncThrowingStream<ConnectorScannedSong, Error>
 }
 
+/// 服务端曲库源(Subsonic / Navidrome 等)向服务器回报播放的能力。
+/// Navidrome 不把单纯的 stream 视为一次播放, 必须显式 scrobble 才会更新
+/// 播放次数 / "最近播放" / 转发到服务端配置的 Last.fm·ListenBrainz。
+/// - submission == false → "正在播放" (now playing, 不计入历史)
+/// - submission == true  → "已播放" (计入播放次数 / 历史)
+/// 失败不抛错 —— 回报是尽力而为, 失败不该影响播放。
+protocol ServerScrobblingConnector: MusicSourceConnector {
+    func scrobble(songPath: String, submission: Bool) async
+}
+
+/// 服务端直接提供歌词的能力 (Subsonic getLyricsBySongId / getLyrics)。
+/// 返回 LRC 文本(带 `[mm:ss.xx]` 时间轴)或纯文本(无时间轴), 交由
+/// `LyricsParser` 统一解析; 没有歌词时返回 nil。服务端歌词不是"同目录
+/// .lrc"模型, 所以走这条能力而非 LyricsLoader 的 sidecar 路径。
+protocol ServerLyricsConnector: MusicSourceConnector {
+    func fetchServerLyrics(for path: String) async -> String?
+}
+
 /// Implemented by cloud connectors whose identity is rooted in an OAuth
 /// account (Baidu / Aliyun / Dropbox / OneDrive / Google Drive). Lets the
 /// upper layer ask "which user does this token belong to" so multiple

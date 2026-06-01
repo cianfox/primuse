@@ -287,7 +287,7 @@ struct AddSourceView: View {
             macSection("webdav_config") {
                 macTextRow("base_path_hint", text: $basePath, focus: .basePath)
             }
-        case .jellyfin, .emby, .plex:
+        case .jellyfin, .emby, .plex, .subsonic, .navidrome, .airsonic, .gonic:
             macSection("server_config") {
                 macTextRow("base_path_hint", text: $basePath, focus: .basePath)
             }
@@ -592,7 +592,7 @@ struct AddSourceView: View {
                     .autocorrectionDisabled().submitLabel(.next)
                     .onSubmit { focusedField = .username }
             }
-        case .jellyfin, .emby, .plex:
+        case .jellyfin, .emby, .plex, .subsonic, .navidrome, .airsonic, .gonic:
             Section("server_config") {
                 TextField("base_path_hint", text: $basePath)
                     .focused($focusedField, equals: .basePath)

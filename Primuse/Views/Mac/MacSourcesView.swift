@@ -366,8 +366,8 @@ struct MacSourcesView: View {
     @ViewBuilder
     private func actionsRow(_ source: MusicSource, scanning: ScanService.ScanState?, dirs: [String]) -> some View {
         HStack(spacing: 6) {
-            // Media server / Apple Music 资料库:全库自动扫描,无需「连接 + 选目录」。
-            if source.type.isMediaServer || source.type == .appleMusicLibrary {
+            // 服务端整库源(媒体服务器 / Subsonic) / Apple Music 资料库:全库自动扫描,无需「连接 + 选目录」。
+            if source.type.isServerLibrary || source.type == .appleMusicLibrary {
                 scanPill(source, scanning: scanning)
                 pill("settings_title", systemImage: "slider.horizontal.3") { editingSource = source }
             } else if dirs.isEmpty {

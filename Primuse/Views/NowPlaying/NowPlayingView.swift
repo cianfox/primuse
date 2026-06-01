@@ -981,6 +981,31 @@ struct NowPlayingView: View {
             do {
                 let connector = try await capturedSourceManager.auxiliaryConnector(for: song)
                 let connectMs = Date().timeIntervalSince(tier3Start) * 1000
+
+                // 服务端歌词 (Subsonic getLyricsBySongId 等) —— 服务端曲库源不是
+                // "同目录 .lrc" 模型, 走 connector 的 ServerLyricsConnector 能力。
+                // 服务端源在此终结: 即使服务端没歌词也不去 fetchRange .lrc
+                // (对 Subsonic 那会拉到音频流, 既浪费又解析失败)。
+                if let server = connector as? ServerLyricsConnector {
+                    if let raw = await server.fetchServerLyrics(for: song.filePath) {
+                        let parsed = LyricsParser.parseText(raw)
+                        if !parsed.isEmpty {
+                            if let currentCache,
+                               Self.lyricsFingerprint(parsed) == Self.lyricsFingerprint(currentCache) {
+                                return
+                            }
+                            _ = await MetadataAssetStore.shared.cacheLyrics(parsed, forSongID: songID)
+                            plog(String(format: "📜 loadLyrics '%@' server-lyrics OK in %.0fms (%d lines)", songTitle, Date().timeIntervalSince(tier3Start) * 1000, parsed.count))
+                            if player.currentSong?.id == songID {
+                                setLyrics(parsed)
+                            }
+                            return
+                        }
+                    }
+                    plog(String(format: "📜 loadLyrics '%@' server-lyrics empty (connect=%.0fms)", songTitle, connectMs))
+                    return
+                }
+
                 let songDir = (song.filePath as NSString).deletingLastPathComponent
                 let baseName = ((song.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
                 let lrcPath: String

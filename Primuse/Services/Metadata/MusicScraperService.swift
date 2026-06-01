@@ -368,11 +368,11 @@ final class MusicScraperService {
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                     .filter { !$0.isEmpty }
             )
-            let albumsNeedingCover = library.albums.filter { album in
+            let albumsNeedingCover = library.visibleAlbums.filter { album in
                 (isWholeVisibleLibrary || targetAlbumIDs.contains(album.id))
                     && !assetStore.hasAlbumCover(forAlbumID: album.id)
             }
-            let artistsNeedingImage = library.artists.filter { artist in
+            let artistsNeedingImage = library.visibleArtists.filter { artist in
                 let name = artist.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 return (isWholeVisibleLibrary || targetArtistIDs.contains(artist.id) || targetArtistNames.contains(name))
                     && !assetStore.hasArtistImage(forArtistID: artist.id)
@@ -458,6 +458,31 @@ final class MusicScraperService {
     }
 
     private func processedSongWithAssets(_ song: Song, forceRescrape: Bool, storeAssets: Bool = true) async throws -> ProcessedResult? {
+        // 服务端曲库源(Subsonic/Navidrome、Jellyfin/Emby/Plex): 元数据以服务端为
+        // 权威, 自动刮削只「补空缺、绝不覆盖」。不读(可能转码的)音频流 —— 用歌曲
+        // 已有 title/artist/album 直接查在线源, 只填 nil/空 的 artist/album/year/
+        // genre。封面(getCoverArt)/歌词(getLyricsBySongId)由服务端提供, 不让在线
+        // 刮削用脏标题错配盖掉, 因此不补 cover/lyrics。即使是「重新刮削」(forceRescrape)
+        // 也只补空缺, 不覆盖已有值。
+        if await sourceManager.isServerLibrarySource(for: song) {
+            let needsMeta = (song.artistName?.isEmpty ?? true)
+                || (song.albumTitle?.isEmpty ?? true)
+                || song.year == nil
+                || (song.genre?.isEmpty ?? true)
+            guard needsMeta else { return nil }
+            let metadata = await metadataService.fillMissingOnline(
+                title: song.title,
+                artist: song.artistName,
+                album: song.albumTitle,
+                year: song.year,
+                genre: song.genre,
+                duration: song.duration
+            )
+            let merged = filledServerSong(song, with: metadata)
+            guard merged != song else { return nil }
+            return ProcessedResult(song: merged, coverData: nil, lyricsLines: nil)
+        }
+
         let fileURL = try await sourceManager.resolveURL(for: song)
         let placeholderTitle = fileURL.deletingPathExtension().lastPathComponent
 
@@ -570,6 +595,20 @@ final class MusicScraperService {
         }
 
         return needsTitle || needsArtist || needsAlbum || needsYear || needsGenre || needsCover || needsLyrics
+    }
+
+    /// 服务端源专用的严格「只补空缺」合并 —— 只填 nil/空 的
+    /// artist/album/year/genre/track/disc。标题、时长、采样率等服务端权威字段
+    /// 一律不动; 封面/歌词也不碰(由服务端提供)。
+    private func filledServerSong(_ song: Song, with m: MetadataService.SongMetadata) -> Song {
+        var s = song
+        if (s.artistName?.isEmpty ?? true), let v = m.artist, !v.isEmpty { s.artistName = v }
+        if (s.albumTitle?.isEmpty ?? true), let v = m.albumTitle, !v.isEmpty { s.albumTitle = v }
+        if s.year == nil { s.year = m.year }
+        if (s.genre?.isEmpty ?? true), let v = m.genre, !v.isEmpty { s.genre = v }
+        if s.trackNumber == nil { s.trackNumber = m.trackNumber }
+        if s.discNumber == nil { s.discNumber = m.discNumber }
+        return s
     }
 
     private func mergedSong(

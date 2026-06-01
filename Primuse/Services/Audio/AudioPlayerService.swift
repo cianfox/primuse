@@ -292,6 +292,13 @@ final class AudioPlayerService {
         observeSpatialAudioSettings()
         observePlaybackRate()
 
+        // 服务端曲库源(Subsonic/Navidrome)回报回调 —— 把 ScrobbleService 的播放
+        // 事件按源路由到对应 connector 的 /rest/scrobble。非服务端源 no-op。
+        ScrobbleService.shared.serverScrobbleHandler = { [weak self] song, submission in
+            guard let manager = self?.sourceManager else { return }
+            Task { await manager.reportServerScrobble(for: song, submission: submission) }
+        }
+
         // Defer heavy system registrations to avoid blocking first frame
         Task { @MainActor [weak self] in
             AudioSessionManager.shared.configureForPlayback()
@@ -730,6 +737,14 @@ final class AudioPlayerService {
             // file and we get instant playback.
             let stream: AsyncThrowingStream<AVAudioPCMBuffer, Error>
             if isRemoteURL {
+                if SourceManager.isTranscodedStreamURL(url), assetReaderDecoder.canDecode(url: url) {
+                    // 服务端转码流(Subsonic WMA→mp3, 大小未知): 走 AVAssetReader 渐进
+                    // 解码。不按 song.fileSize 做 HTTP Range(会读越界), 也不写按
+                    // 大小校验的持久缓存。
+                    plog("▶️ Decoder: AVAssetReader (reason: server transcoded stream, progressive, unknown length) outputFormat: sr=\(outputFormat.sampleRate) ch=\(outputFormat.channelCount)")
+                    await playWithFallbackDecoder(song: song, url: url, outputFormat: outputFormat, playID: id)
+                    return
+                }
                 if let inputSource = await makeHTTPStreamingInputSource(for: song, url: url) {
                     plog("▶️ Decoder: HTTPRangePlaybackSource (reason: scheme=\(url.scheme ?? "?"), range-based HTTP streaming) cache=\(playbackSettings.audioCacheEnabled) outputFormat: sr=\(outputFormat.sampleRate) ch=\(outputFormat.channelCount)")
                     activeDecoderKind = .httpStream
@@ -1154,6 +1169,10 @@ final class AudioPlayerService {
             if let cached = sourceManager?.cachedURL(for: song) {
                 return nativeDecoder.decode(from: cached, outputFormat: outputFormat, onResolveSourceLength: onResolveLength)
             }
+            if SourceManager.isTranscodedStreamURL(url), assetReaderDecoder.canDecode(url: url) {
+                // 服务端转码流: 渐进 AVAssetReader, 不走已知大小的 Range / 缓存。
+                return assetReaderDecoder.decode(from: url, outputFormat: outputFormat)
+            }
             if let inputSource = await makeHTTPStreamingInputSource(for: song, url: url) {
                 return nativeDecoder.decode(from: inputSource, outputFormat: outputFormat, onResolveSourceLength: onResolveLength)
             }
@@ -1193,6 +1212,7 @@ final class AudioPlayerService {
     private func decoderKind(for song: Song, url: URL) -> DecoderKind {
         if url.scheme == SourceManager.cloudStreamingScheme { return .cloudStream }
         if url.scheme == "http" || url.scheme == "https" {
+            if SourceManager.isTranscodedStreamURL(url) { return .assetReader }
             return song.fileSize > 0 ? .httpStream : .streaming
         }
         return .native

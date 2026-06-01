@@ -11,6 +11,15 @@ final class ScrobbleService {
     /// 当前正在播放的歌曲信息 (用于 50%/4min 触发判断)。
     /// AudioPlayerService 切歌时会 reset。
     private var currentSession: PlaySession?
+    /// 当前播放的 Song —— 服务端源(Subsonic/Navidrome)回报要按源路由, 需要
+    /// song.sourceID + filePath, 而 ScrobbleEntry 不带这些。
+    private var currentSong: Song?
+
+    /// 服务端曲库源回报钩子。由 AudioPlayerService 在启动时接上 SourceManager:
+    /// `(song, submission) -> 调 sourceManager.reportServerScrobble`。非服务端
+    /// 源自动 no-op。独立于全局 Last.fm/ListenBrainz 开关 —— Navidrome 自己也
+    /// 要记播放次数。
+    var serverScrobbleHandler: ((_ song: Song, _ submission: Bool) -> Void)?
     /// 失败队列, 持久化到 UserDefaults。
     private var queue: [QueuedEntry] = []
     private static let queueKey = "primuse.scrobble.queue.v1"
@@ -71,18 +80,23 @@ final class ScrobbleService {
 
     /// 用户开始播放新歌 — 创建 session, 同步发 nowPlaying。
     func handlePlaybackStarted(song: Song) {
-        let settings = ScrobbleSettingsStore.shared
-        guard settings.isEnabled, !settings.enabledProviders.isEmpty else {
-            currentSession = nil
-            return
-        }
+        currentSong = song
         let entry = makeEntry(from: song)
+        // session 总是建立 —— 它同时驱动服务端源(Subsonic)的 submission 阈值,
+        // 后者独立于全局 scrobble 开关。全局 provider 的 nowPlaying/submit 仍各自
+        // 在 active providers 为空时 no-op。
         currentSession = PlaySession(
             entry: entry,
             startedAtMonotonic: Self.monotonicNow(),
             hasSentNowPlaying: false,
             hasScrobbled: false
         )
+
+        // 服务端源回报 "正在播放"(submission=false)。非服务端源在 handler 内 no-op。
+        serverScrobbleHandler?(song, false)
+
+        let settings = ScrobbleSettingsStore.shared
+        guard settings.isEnabled, !settings.enabledProviders.isEmpty else { return }
         if settings.sendNowPlaying {
             currentSession?.hasSentNowPlaying = true
             sendNowPlayingAcrossProviders(entry: entry)
@@ -102,12 +116,18 @@ final class ScrobbleService {
 
         session.hasScrobbled = true
         currentSession = session
+        // 服务端源回报 "已播放"(submission=true) —— 计入 Navidrome 播放次数/历史。
+        if let song = currentSong {
+            serverScrobbleHandler?(song, true)
+        }
+        // 全局 provider(Last.fm/ListenBrainz)—— activeProviders 为空时自动 no-op。
         scrobbleAcrossProviders(entry: session.entry)
     }
 
     /// 切歌 / 用户手动停止 — 清 session, 不补 scrobble (因为听不够 50% 不该计入)。
     func handlePlaybackStopped() {
         currentSession = nil
+        currentSong = nil
     }
 
     /// 当前队列长度 — Settings UI 显示。

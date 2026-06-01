@@ -31,6 +31,19 @@ enum LyricsLoader {
 
         do {
             let connector = try await sourceManager.auxiliaryConnector(for: song)
+
+            // Tier 2.5: 服务端歌词 (Subsonic getLyricsBySongId 等)。服务端不是
+            // "同目录 .lrc" 模型, 走 connector 的 ServerLyricsConnector 能力。
+            if let server = connector as? ServerLyricsConnector,
+               let raw = await server.fetchServerLyrics(for: song.filePath) {
+                let parsed = LyricsParser.parseText(raw)
+                if !parsed.isEmpty {
+                    await MetadataAssetStore.shared.cacheLyrics(parsed, forSongID: song.id)
+                    logLoaded(parsed, song: song, tier: "Tier2c-server")
+                    return parsed
+                }
+            }
+
             let songDir = (song.filePath as NSString).deletingLastPathComponent
             let baseName = ((song.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
             let lrcPath: String

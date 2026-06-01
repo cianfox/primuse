@@ -224,6 +224,16 @@ final class SourceManager {
                 secret: KeychainService.getPassword(for: source.id) ?? "",
                 authType: source.authType
             )
+        case .subsonic, .navidrome, .airsonic, .gonic:
+            connector = SubsonicSource(
+                sourceID: source.id,
+                host: source.host ?? "",
+                port: source.port,
+                useSsl: source.useSsl,
+                basePath: source.basePath,
+                username: source.username ?? "",
+                password: KeychainService.getPassword(for: source.id) ?? ""
+            )
         case .qnap:
             connector = QnapSource(
                 sourceID: source.id,
@@ -439,7 +449,7 @@ final class SourceManager {
         checks.append(contentsOf: credentialChecks(for: source))
 
         let selectedDirectories = explicitDirectories ?? decodeSelectedDirectories(source.extraConfig)
-        if source.type.isMediaServer == false, selectedDirectories.isEmpty {
+        if source.type.isServerLibrary == false, selectedDirectories.isEmpty {
             checks.append(SourceDiagnosticCheck(
                 status: .warning,
                 title: String(localized: "source_diag_directory_title"),
@@ -745,6 +755,18 @@ final class SourceManager {
     /// SFBInputSource" — AudioPlayerService intercepts it and routes to
     /// CloudPlaybackSource instead of doing a full download.
     static let cloudStreamingScheme = "primuse-stream"
+
+    /// Query 参数标记: 服务端转码流(大小未知)。AudioPlayerService 看到它就
+    /// 不走"按已知大小做 HTTP Range"那条路, 改用 AVAssetReader 渐进解码,
+    /// 且不做按 fileSize 校验的持久缓存。Subsonic WMA 转码流会带上。
+    /// nonisolated: SubsonicSource(独立 actor)与下面的 nonisolated 静态方法都要读它。
+    nonisolated static let transcodedStreamQueryKey = "primuse_transcoded"
+
+    /// `url` 是否是服务端转码流(带 transcoded 标记)。
+    nonisolated static func isTranscodedStreamURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return components.queryItems?.contains(where: { $0.name == transcodedStreamQueryKey }) ?? false
+    }
 
     func resolveURL(for song: Song) async throws -> URL {
         let sources = try await sourcesProvider()
@@ -1676,6 +1698,11 @@ final class SourceManager {
 
     private func shouldUseRangeStreamingForPlayback(source: MusicSource, song: Song) -> Bool {
         guard source.supportsRangeStreaming, song.fileSize > 0 else { return false }
+        // 服务端转码源: 需要服务端转码的格式(WMA)走渐进流(streamingURL 返回
+        // 转码 mp3), 不能按原文件 fileSize 做 Range, 否则会读越界。
+        if source.type.isSubsonicFamily, SubsonicSource.requiresServerTranscode(song.fileFormat) {
+            return false
+        }
         return !shouldPreferPlainStreamingForPlayback(source: source, song: song)
     }
 
@@ -1764,6 +1791,27 @@ final class SourceManager {
         let conn = connector(for: source)  // cache: true, 复用
         try await conn.connect()  // idempotent on isLoggedIn
         return conn
+    }
+
+    /// 把一次播放回报给"服务端曲库源"(Subsonic/Navidrome 等)。
+    /// submission=false → nowPlaying, true → 计入播放次数/历史。
+    /// 非服务端源(NAS/云盘/本地)直接 no-op。尽力而为, 不抛错。
+    func reportServerScrobble(for song: Song, submission: Bool) async {
+        guard let sources = try? await sourcesProvider(),
+              let source = sources.first(where: { $0.id == song.sourceID }) else { return }
+        guard let conn = connector(for: source) as? ServerScrobblingConnector else { return }
+        await conn.scrobble(songPath: song.filePath, submission: submission)
+    }
+
+    /// 该歌是否来自"服务端曲库源"(Subsonic/Navidrome、Jellyfin/Emby/Plex)。
+    /// 这类源的 title/artist/album/duration 由服务端权威提供, 刮削不应覆盖,
+    /// 也不该为取标签去读(可能转码的)音频流。
+    func isServerLibrarySource(for song: Song) async -> Bool {
+        guard let sources = try? await sourcesProvider(),
+              let source = sources.first(where: { $0.id == song.sourceID }) else {
+            return false
+        }
+        return source.type.isServerLibrary
     }
 
     func supportsSidecarWriting(for song: Song) async -> Bool {
@@ -1918,6 +1966,7 @@ private extension MusicSource {
             || type == .sftp
             || type == .ftp
             || type == .nfs
+            || type.isSubsonicFamily
     }
 }
 

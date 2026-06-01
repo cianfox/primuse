@@ -42,7 +42,7 @@ enum YearlyReportAnalyzer {
         case .synology, .qnap, .ugreen, .fnos: return "externaldrive.fill"
         case .smb, .webdav, .ftp, .sftp, .nfs, .upnp: return "network"
         case .baiduPan, .aliyunDrive, .oneDrive, .dropbox, .googleDrive, .s3: return "icloud.fill"
-        case .jellyfin, .emby, .plex: return "play.tv.fill"
+        case .jellyfin, .emby, .plex, .subsonic, .navidrome, .airsonic, .gonic: return "play.tv.fill"
         case .appleMusic, .appleMusicLibrary: return "music.note"
         }
     }

@@ -48,6 +48,15 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
     case emby
     case plex
 
+    // Server-side music libraries (Subsonic / OpenSubsonic 协议)。
+    // 三个常用实现单列, 方便预填各自默认端口/图标; .subsonic 作通用兜底
+    // (Ampache / Funkwhale / LMS / Astiga 等其它兼容服务)。底层共用同一个
+    // SubsonicSource connector(按服务端 ping 上报的能力自适应)。
+    case subsonic
+    case navidrome
+    case airsonic
+    case gonic
+
     // Cloud Drives
     case baiduPan
     case aliyunDrive
@@ -83,6 +92,10 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .jellyfin: return "Jellyfin"
         case .emby: return "Emby"
         case .plex: return "Plex"
+        case .subsonic: return "Subsonic"
+        case .navidrome: return "Navidrome"
+        case .airsonic: return "Airsonic"
+        case .gonic: return "gonic"
         case .s3: return "S3"
         case .baiduPan:
             return String(localized: "src.displayName.baiduPan", bundle: Bundle.primuseKit)
@@ -112,6 +125,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .jellyfin: return "play.rectangle.on.rectangle"
         case .emby: return "play.rectangle.on.rectangle"
         case .plex: return "play.rectangle.on.rectangle"
+        case .subsonic, .navidrome, .airsonic, .gonic: return "server.rack"
         case .s3: return "cloud"
         case .baiduPan: return "cloud.fill"
         case .aliyunDrive: return "cloud.fill"
@@ -128,12 +142,29 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         self == .jellyfin || self == .emby || self == .plex
     }
 
+    /// Subsonic / OpenSubsonic 协议族(通用 Subsonic + Navidrome/Airsonic/Gonic),
+    /// 共用同一个 SubsonicSource connector。
+    public var isSubsonicFamily: Bool {
+        switch self {
+        case .subsonic, .navidrome, .airsonic, .gonic: return true
+        default: return false
+        }
+    }
+
+    /// 服务端整库源：没有"用户选目录"这一步，靠 "/" 哨兵触发 connector
+    /// 的全库 `scanSongs(from:)`。媒体服务器(Jellyfin/Emby/Plex) + Subsonic
+    /// 系(Navidrome/Airsonic/Gonic)。Apple Music Library 虽也整库扫描, 但
+    /// 走 iTunesLibrary 而非 connector "/" 流程, 故不在此列。
+    public var isServerLibrary: Bool {
+        isMediaServer || isSubsonicFamily
+    }
+
     /// True for sources whose "scope" is the whole source itself, with no
     /// per-folder selection step. Drives the Sources UI to show "scan now"
     /// directly instead of a "connect & pick directories" flow.
     public var scansEntireLibrary: Bool {
         switch self {
-        case .jellyfin, .emby, .plex: return true   // server-side library
+        case .jellyfin, .emby, .plex, .subsonic, .navidrome, .airsonic, .gonic: return true   // server-side library
         case .local, .appleMusicLibrary: return true // already scoped by basePath / library
         default: return false
         }
@@ -143,7 +174,7 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         switch self {
         case .synology, .qnap, .ugreen, .fnos: return .nas
         case .webdav, .smb, .ftp, .sftp, .nfs, .upnp, .s3: return .protocol
-        case .jellyfin, .emby, .plex: return .mediaServer
+        case .jellyfin, .emby, .plex, .subsonic, .navidrome, .airsonic, .gonic: return .mediaServer
         case .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox: return .cloudDrive
         case .appleMusic: return .streaming
         case .local, .appleMusicLibrary: return .local
@@ -165,6 +196,10 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .jellyfin: return 8096
         case .emby: return 8096
         case .plex: return 32400
+        case .subsonic: return 4040   // 原生 Subsonic 默认端口
+        case .navidrome: return 4533
+        case .airsonic: return 4040
+        case .gonic: return 4747
         case .s3: return 443
         case .baiduPan: return 0
         case .aliyunDrive: return 0
@@ -242,6 +277,10 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         case .jellyfin: return "Open Source"
         case .emby: return "Media Server"
         case .plex: return "Plex Media"
+        case .subsonic: return "Subsonic / OpenSubsonic"
+        case .navidrome: return "Navidrome"
+        case .airsonic: return "Airsonic / Airsonic-Advanced"
+        case .gonic: return "gonic"
         case .s3: return "AWS S3 / MinIO / R2"
         case .baiduPan:
             return String(localized: "src.subtitle.baiduPan", bundle: Bundle.primuseKit)
