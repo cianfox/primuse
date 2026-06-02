@@ -16,6 +16,9 @@ enum BuiltInCloudCredentials {
     private static let dropboxClientSecretKey = "PrimuseDropboxClientSecret"
     private static let googleClientIdKey = "PrimuseGoogleClientID"
     private static let oneDriveClientIdKey = "PrimuseOneDriveClientID"
+    // 115 开放平台 App ID(开发者后台申请),构建期经 xcconfig/Info.plist 注入。
+    private static let pan115ClientIdKey = "PrimuseU115ClientID"
+    private static let pan115ClientSecretKey = "PrimuseU115ClientSecret"
 
     // MARK: - Query
 
@@ -48,6 +51,14 @@ enum BuiltInCloudCredentials {
                 return nil
             }
             return (clientId, nil)
+        case .pan115:
+            guard let clientId = stringValue(forInfoDictionaryKey: pan115ClientIdKey) else {
+                return nil
+            }
+            return (
+                clientId,
+                stringValue(forInfoDictionaryKey: pan115ClientSecretKey)
+            )
         // Add more as you register:
         default:
             return nil

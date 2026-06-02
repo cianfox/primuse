@@ -271,6 +271,8 @@ final class SourceManager {
             connector = OneDriveSource(sourceID: source.id)
         case .dropbox:
             connector = DropboxSource(sourceID: source.id)
+        case .pan115:
+            connector = U115Source(sourceID: source.id)
         case .s3:
             // S3 uses host=endpoint, basePath=bucket, extraConfig=JSON{region}
             let extraJson = (try? JSONSerialization.jsonObject(with: Data((source.extraConfig ?? "{}").utf8))) as? [String: String] ?? [:]
