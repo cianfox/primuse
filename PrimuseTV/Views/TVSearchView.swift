@@ -170,11 +170,12 @@ private struct TVSearchSongRow: View {
 
     var body: some View {
         let album = store.albumOf(song)
-        TVFocusButton(radius: 10, scale: 1.02, lift: 0, action: action) { _ in
+        TVFocusButton(radius: 10, scale: 1.02, lift: 0,
+                      action: { store.play(song); action() }) { _ in
             HStack(spacing: 16) {
-                TVCoverArt(tint: album?.tint ?? TVColor.brand,
-                           tint2: album?.tint2 ?? .black,
-                           glyph: album?.glyph ?? "♪", size: 56, radius: 6)
+                TVArtworkView(coverKey: album?.id ?? "", artist: album?.artist ?? song.artist,
+                              album: album?.title ?? "", tint: album?.tint ?? TVColor.brand,
+                              tint2: album?.tint2 ?? .black, glyph: album?.glyph ?? "♪", size: 56, radius: 6)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title).font(.system(size: 22, weight: .semibold)).foregroundStyle(.white)
                     Text("\(song.artist) · \(store.albumOf(song)?.title ?? "")")

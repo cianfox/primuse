@@ -4,25 +4,25 @@ import SwiftUI
 /// tvOS 设置 — 左列常用清单,右列 Siri Remote 图示(对应 TVSettingsArtboard)。
 /// 刻意精简:无 EQ 推子 / 刮削源 / SSL 信任,这些留在 macOS / iOS。
 struct TVSettingsView: View {
+    @Environment(TVStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @State private var isSyncing = false
+    @State private var syncMsg: String?
 
-    private struct Row: Identifiable {
-        let id: String
-        let icon: String
-        let value: String
-        init(_ id: String, _ icon: String, _ value: String) { self.id = id; self.icon = icon; self.value = value }
+    private var version: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0" }
+    private var build: String { (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "1" }
+    private var osVersion: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(v.majorVersion).\(v.minorVersion)"
     }
-    private let rows: [Row] = [
-        .init("音频输出", "hifispeaker.fill", "AirPods Pro · 空间音频"),
-        .init("AirPlay / DLNA", "airplayaudio", "Sony BRAVIA · 客厅"),
-        .init("空间音频", "airpodspro", "开启 · 跟随头部"),
-        .init("ReplayGain", "speaker.wave.2.fill", "Album mode"),
-        .init("睡眠定时器", "moon.zzz.fill", "30 分钟后停止"),
-        .init("歌词字号", "textformat.size", "1.2 ×"),
-        .init("iCloud 同步", "icloud.fill", "已连接 · 潘家共享库"),
-        .init("Scrobble", "waveform", "Last.fm · panforever"),
-        .init("关于 Primuse", "info.circle", "1.0.0 (1) · tvOS 18"),
-    ]
+    private var libraryStat: String {
+        store.albums.isEmpty ? "尚未同步" :
+            "\(TVFmt.count(store.songs.count)) 首 · \(store.albums.count) 张专辑 · \(store.artists.count) 位艺术家"
+    }
+    private var syncValue: String {
+        if isSyncing { return "正在从 iCloud 同步…" }
+        return syncMsg ?? "点按拉取最新曲库"
+    }
 
     var body: some View {
         ZStack {
@@ -32,7 +32,11 @@ struct TVSettingsView: View {
                     TVEyebrow(text: "设置").padding(.bottom, 6)
                     Text("常用").font(TVFont.pageTitle).foregroundStyle(.white).padding(.bottom, 24)
                     VStack(spacing: 12) {
-                        ForEach(rows) { r in settingRow(r) }
+                        settingRow("icloud.fill", "iCloud 同步", syncValue, action: sync)
+                        settingRow("music.note", "曲库", libraryStat)
+                        settingRow("music.note.list", "歌单", "\(store.playlists.count) 个")
+                        settingRow("server.rack", "音乐源", "\(store.sources.count) 个")
+                        settingRow("info.circle", "关于 Primuse", "\(version) (\(build)) · tvOS \(osVersion)")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -43,7 +47,7 @@ struct TVSettingsView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         TVRemoteHint("圆形触控板", "上 / 下移动焦点 · 长按打开选项")
                         TVRemoteHint("播放 / 暂停", "任意位置切歌 · 双按下一首")
-                        TVRemoteHint("Siri 按钮", "「播放周杰伦的七里香」· 全局可用")
+                        TVRemoteHint("Siri 按钮", "语音搜索 · 全局可用")
                         TVRemoteHint("Menu / 返回", "返回上一层 · 长按回主页")
                         TVRemoteHint("TV 按钮", "单按回 Primuse 首页 · 双按多任务")
                     }
@@ -56,19 +60,33 @@ struct TVSettingsView: View {
         .onExitCommand { dismiss() }
     }
 
-    private func settingRow(_ r: Row) -> some View {
-        TVFocusButton(radius: 14, scale: 1.02, lift: 0) { focused in
+    private func sync() {
+        guard !isSyncing else { return }
+        isSyncing = true
+        syncMsg = nil
+        Task {
+            await store.bootstrap()
+            isSyncing = false
+            syncMsg = store.albums.isEmpty ? "未找到曲库快照" : "已同步 · \(TVFmt.count(store.songs.count)) 首"
+        }
+    }
+
+    private func settingRow(_ icon: String, _ title: String, _ value: String,
+                            action: (() -> Void)? = nil) -> some View {
+        TVFocusButton(radius: 14, scale: 1.02, lift: 0, action: { action?() }) { focused in
             HStack(spacing: 18) {
-                Image(systemName: r.icon).font(.system(size: 20, weight: .semibold))
+                Image(systemName: icon).font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 40, height: 40)
                     .background(focused ? AnyShapeStyle(TVColor.brand) : AnyShapeStyle(Color.white.opacity(0.10)),
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Text(r.id).font(.system(size: 22, weight: focused ? .bold : .medium)).foregroundStyle(.white)
+                Text(title).font(.system(size: 22, weight: focused ? .bold : .medium)).foregroundStyle(.white)
                 Spacer(minLength: 0)
-                Text(r.value).font(.system(size: 18)).foregroundStyle(.white.opacity(0.62))
-                Image(systemName: "chevron.right").font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.35))
+                Text(value).font(.system(size: 18)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
+                if action != nil {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
             }
             .padding(.horizontal, 22).padding(.vertical, 16)
             .frame(maxWidth: .infinity)

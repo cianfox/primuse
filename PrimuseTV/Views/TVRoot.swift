@@ -131,22 +131,14 @@ struct TVTabBar: View {
 
             Spacer(minLength: 0)
 
-            // 投放设备(展示态)
-            HStack(spacing: 10) {
-                Image(systemName: "airplayaudio").font(.system(size: 20))
-                Text("AirPods Pro").font(.system(size: 18, weight: .medium))
-            }
-            .foregroundStyle(.white.opacity(0.85))
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .background(.white.opacity(0.12), in: Capsule())
-
-            // 账户 / 设置入口
-            TVFocusButton(radius: 28, accent: .white, scale: 1.08, lift: 0, action: onSettings) { _ in
-                Circle()
-                    .fill(LinearGradient(colors: [Color(hex: "#5b8bd9"), Color(hex: "#2b4e8a")],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 48, height: 48)
-                    .overlay { Text("潘").font(.system(size: 20, weight: .bold)).foregroundStyle(.white) }
+            // 设置入口(原账户头像改为设置按钮)
+            TVFocusButton(radius: 28, accent: .white, scale: 1.08, lift: 0, action: onSettings) { focused in
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(focused ? Color(hex: "#1f1c19") : .white)
+                    .frame(width: 56, height: 56)
+                    .background(focused ? AnyShapeStyle(Color.white)
+                                        : AnyShapeStyle(Color.white.opacity(0.12)), in: Circle())
             }
         }
         .padding(.horizontal, TVSpace.pageH)
@@ -200,11 +192,17 @@ struct TVBottomBar: View {
     var openPlayer: () -> Void
     @FocusState private var focused: Bool
 
+    @ViewBuilder
     var body: some View {
+        if store.hasNowPlaying { bar }   // 没有正在播放时不显示底部条
+    }
+
+    private var bar: some View {
         let np = store.nowPlaying
-        Button(action: openPlayer) {
+        return Button(action: openPlayer) {
             HStack(spacing: 24) {
-                TVCoverArt(tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 62, radius: 8)
+                TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
+                              tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 62, radius: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(np.title).font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.white).lineLimit(1)

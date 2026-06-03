@@ -34,7 +34,8 @@ struct TVOptionsView: View {
 
             VStack {
                 HStack(spacing: 28) {
-                    TVCoverArt(tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 140, radius: 14)
+                    TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
+                                  tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 140, radius: 14)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(np.title).font(.system(size: 36, weight: .bold)).foregroundStyle(.white)
                         Text(np.artist).font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))

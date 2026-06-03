@@ -7,9 +7,7 @@ struct TVHomeView: View {
     var openPlayer: () -> Void = {}
 
     private var hero: TVAlbum {
-        store.album("a08")
-            ?? store.albums.first
-            ?? TVSampleData.albums.first
+        store.albums.first
             ?? TVAlbum(id: "_", title: "Primuse", artist: "", year: 0,
                        tint: TVColor.brand, tint2: .black, glyph: "♪")
     }
@@ -39,7 +37,10 @@ struct TVHomeView: View {
             }
             .ignoresSafeArea()
 
-            ScrollView(.vertical, showsIndicators: false) {
+            if store.albums.isEmpty {
+                TVEmptyState(icon: "music.note.house", title: "还没有曲库").tvPage()
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 30) {
                     heroZone
                     if !store.recentlyPlayed.isEmpty {
@@ -66,6 +67,7 @@ struct TVHomeView: View {
                 }
                 .tvPage()
             }
+            }
         }
     }
 
@@ -82,14 +84,16 @@ struct TVHomeView: View {
                     .lineLimit(2).frame(maxWidth: 760, alignment: .leading)
                     .padding(.top, 14)
                 HStack(spacing: 16) {
-                    TVPillButton(title: "播放", systemImage: "play.fill", style: .solid, action: openPlayer)
-                    TVPillButton(title: "随机", systemImage: "shuffle", action: openPlayer)
+                    TVPillButton(title: "播放", systemImage: "play.fill", style: .solid,
+                                 action: { store.play(album: hero); openPlayer() })
+                    TVPillButton(title: "随机", systemImage: "shuffle",
+                                 action: { store.play(album: hero); openPlayer() })
                     TVPillButton(title: "喜欢", systemImage: "heart")
                 }
                 .padding(.top, 32)
             }
             Spacer(minLength: 0)
-            TVCoverArt(album: hero, size: 380, radius: 18)
+            TVArtworkView(album: hero, size: 380, radius: 18)
                 .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
         }
         .frame(minHeight: 460)

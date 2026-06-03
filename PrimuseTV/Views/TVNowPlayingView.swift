@@ -10,11 +10,30 @@ struct TVNowPlayingView: View {
     @State private var showQueue = false
     @State private var showOptions = false
 
-    private let ticker = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
-
     var body: some View {
-        let np = store.nowPlaying
         ZStack {
+            if store.hasNowPlaying { player } else { emptyState }
+        }
+        .onExitCommand { dismiss() }
+        .fullScreenCover(isPresented: $showQueue) { TVQueueView().environment(store) }
+        .fullScreenCover(isPresented: $showOptions) { TVOptionsView().environment(store) }
+    }
+
+    private var emptyState: some View {
+        ZStack {
+            TVAmbientBackdrop(strength: 0.55)
+            VStack(spacing: 18) {
+                Image(systemName: "play.circle").font(.system(size: 96))
+                    .foregroundStyle(.white.opacity(0.5))
+                Text("未在播放").font(.system(size: 40, weight: .bold)).foregroundStyle(.white)
+                Text("在资料库选一首歌开始").font(.system(size: 22)).foregroundStyle(.white.opacity(0.6))
+            }
+        }
+    }
+
+    private var player: some View {
+        let np = store.nowPlaying
+        return ZStack {
             TVAmbientBackdrop(tint: np.tint, tint2: np.tint2, strength: 1)
 
             HStack(alignment: .top, spacing: 80) {
@@ -23,7 +42,6 @@ struct TVNowPlayingView: View {
             }
             .padding(.horizontal, 100).padding(.top, 80).padding(.bottom, 70)
 
-            // 右上角:队列 / 选项
             VStack {
                 HStack(spacing: 18) {
                     Spacer()
@@ -33,23 +51,7 @@ struct TVNowPlayingView: View {
                 Spacer()
             }
             .padding(.horizontal, 80).padding(.top, 60)
-
-            // 底部提示
-            VStack {
-                Spacer()
-                HStack {
-                    Text("播放 / 暂停 · 上：队列 · 下：选项 · 左 / 右：上一首 / 下一首")
-                    Spacer()
-                    Text("SIRI：「播放周杰伦的七里香」")
-                }
-                .font(.system(size: 16)).foregroundStyle(.white.opacity(0.45))
-                .padding(.horizontal, 100).padding(.bottom, 28)
-            }
         }
-        .onExitCommand { dismiss() }
-        .onReceive(ticker) { _ in store.tick(0.05) }
-        .fullScreenCover(isPresented: $showQueue) { TVQueueView().environment(store) }
-        .fullScreenCover(isPresented: $showOptions) { TVOptionsView().environment(store) }
     }
 
     // MARK: 左列
@@ -58,7 +60,8 @@ struct TVNowPlayingView: View {
         let np = store.nowPlaying
         return VStack(alignment: .leading, spacing: 0) {
             TVEyebrow(text: "正在播放").padding(.bottom, 16)
-            TVCoverArt(tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 420, radius: 20)
+            TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
+                          tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 420, radius: 20)
                 .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
             Text(np.title).font(.system(size: 48, weight: .bold)).tracking(-0.8)
                 .foregroundStyle(.white).lineLimit(2).padding(.top, 26)
@@ -109,7 +112,20 @@ struct TVNowPlayingView: View {
 
     // MARK: 右列 — 歌词
 
+    @ViewBuilder
     private var lyricsColumn: some View {
+        if store.lyrics.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "text.quote").font(.system(size: 48)).foregroundStyle(.white.opacity(0.35))
+                Text("暂无歌词").font(.system(size: 26)).foregroundStyle(.white.opacity(0.5))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        } else {
+            lyricsList
+        }
+    }
+
+    private var lyricsList: some View {
         let cur = store.currentLyricIndex
         let lo = max(0, cur - 2)
         let hi = min(store.lyrics.count, cur + 5)

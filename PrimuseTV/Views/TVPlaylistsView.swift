@@ -46,13 +46,14 @@ struct TVPlaylistCard: View {
     var body: some View {
         let cover = store.album(playlist.coverAlbumID)
         let h = width * 0.8
-        TVFocusButton(radius: TVRadius.card, scale: 1.08, lift: 12, action: action) { _ in
+        TVFocusButton(radius: TVRadius.card, scale: 1.08, lift: 12,
+                      action: { if let a = store.album(playlist.coverAlbumID) { store.play(album: a) }; action() }) { _ in
             VStack(alignment: .leading, spacing: 0) {
                 ZStack {
-                    TVCoverArt(tint: cover?.tint ?? TVColor.brand,
-                               tint2: cover?.tint2 ?? .black,
-                               glyph: cover?.glyph ?? "♪",
-                               size: width, height: h)
+                    TVArtworkView(coverKey: cover?.id ?? "", artist: cover?.artist ?? "",
+                                  album: cover?.title ?? "", tint: cover?.tint ?? TVColor.brand,
+                                  tint2: cover?.tint2 ?? .black, glyph: cover?.glyph ?? "♪",
+                                  size: width, height: h)
                     if playlist.kind == .smart {
                         VStack {
                             HStack {

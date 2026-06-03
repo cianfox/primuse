@@ -31,11 +31,13 @@ struct TVAlbumCard: View {
     var titleOverride: String? = nil
     var subtitleOverride: String? = nil
     var action: () -> Void = {}
+    @Environment(TVStore.self) private var store
 
     var body: some View {
-        TVFocusButton(radius: TVRadius.cover, scale: 1.10, lift: 10, action: action) { _ in
+        TVFocusButton(radius: TVRadius.cover, scale: 1.10, lift: 10,
+                      action: { store.play(album: album); action() }) { _ in
             VStack(alignment: .leading, spacing: 0) {
-                TVCoverArt(album: album, size: width)
+                TVArtworkView(album: album, size: width)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(titleOverride ?? album.title)
                         .font(.system(size: width >= 220 ? 22 : 17, weight: .semibold))
@@ -62,11 +64,12 @@ struct TVSongCard: View {
 
     var body: some View {
         let album = store.albumOf(song)
-        TVFocusButton(radius: TVRadius.cover, scale: 1.10, lift: 10, action: action) { _ in
+        TVFocusButton(radius: TVRadius.cover, scale: 1.10, lift: 10,
+                      action: { store.play(song); action() }) { _ in
             VStack(alignment: .leading, spacing: 0) {
-                TVCoverArt(tint: album?.tint ?? TVColor.brand,
-                           tint2: album?.tint2 ?? .black,
-                           glyph: album?.glyph ?? "♪", size: width)
+                TVArtworkView(coverKey: album?.id ?? "", artist: album?.artist ?? song.artist,
+                              album: album?.title ?? "", tint: album?.tint ?? TVColor.brand,
+                              tint2: album?.tint2 ?? .black, glyph: album?.glyph ?? "♪", size: width)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(song.title).font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.white).lineLimit(1)
@@ -97,6 +100,25 @@ struct TVArtistCard: View {
                     .foregroundStyle(.white).lineLimit(1).frame(width: size + 20)
             }
         }
+    }
+}
+
+// MARK: - 空态
+
+struct TVEmptyState: View {
+    let icon: String
+    let title: String
+    var subtitle: String = "在 iPhone / Mac 上同步曲库后,这里会显示你的音乐"
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: icon).font(.system(size: 80)).foregroundStyle(.white.opacity(0.4))
+            Text(title).font(.system(size: 32, weight: .bold)).foregroundStyle(.white)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.system(size: 20)).foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center).frame(maxWidth: 720)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

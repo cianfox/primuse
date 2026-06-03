@@ -17,7 +17,8 @@ struct TVQueueView: View {
             HStack(alignment: .center, spacing: 80) {
                 VStack(alignment: .leading, spacing: 0) {
                     TVEyebrow(text: "正在播放").padding(.bottom, 20)
-                    TVCoverArt(tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 340, radius: 18)
+                    TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
+                                  tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 340, radius: 18)
                         .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
                     Text(np.title).font(.system(size: 42, weight: .bold)).tracking(-0.6)
                         .foregroundStyle(.white).padding(.top, 26)
@@ -48,8 +49,9 @@ struct TVQueueView: View {
             HStack(spacing: 18) {
                 Text("\(idx + 1)").font(.system(size: 20, design: .monospaced))
                     .foregroundStyle(TVColor.textGhost).frame(width: 28)
-                TVCoverArt(tint: album?.tint ?? TVColor.brand, tint2: album?.tint2 ?? .black,
-                           glyph: album?.glyph ?? "♪", size: 56, radius: 8)
+                TVArtworkView(coverKey: album?.id ?? "", artist: album?.artist ?? song.artist,
+                              album: album?.title ?? "", tint: album?.tint ?? TVColor.brand,
+                              tint2: album?.tint2 ?? .black, glyph: album?.glyph ?? "♪", size: 56, radius: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title).font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.white).lineLimit(1)
