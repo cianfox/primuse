@@ -46,16 +46,39 @@ public enum StreamResolveError: Error, Sendable, Equatable {
     case cannotBuildURL
 }
 
-/// 把一首歌解析成 AVPlayer 可直接播放的网络 URL。实现必须是 Sendable 的纯网络逻辑。
+/// 解析结果:可播放 URL + 播放时需附带的自定义 HTTP 头(UA / Bearer 等)。
+/// 头为空时 AVPlayer 直连;非空时走 AVAssetResourceLoaderDelegate 代理(百度/115/Google)。
+public struct ResolvedStream: Sendable, Equatable {
+    public var url: URL
+    public var headers: [String: String]
+    public init(url: URL, headers: [String: String] = [:]) {
+        self.url = url
+        self.headers = headers
+    }
+}
+
+/// 把一首歌解析成 AVPlayer 可播放的网络流。实现必须是 Sendable 的纯网络逻辑。
 public protocol StreamResolver: Sendable {
+    /// 解析成可直连播放的 URL(鉴权在 query 的源)。
     func streamURL(for song: Song,
                    source: MusicSource,
                    credential: SourceCredential?) async throws -> URL
+
+    /// 解析成 URL + 播放头。默认包装 `streamURL`(无头);需要自定义播放头的源覆盖本方法。
+    func resolve(for song: Song,
+                 source: MusicSource,
+                 credential: SourceCredential?) async throws -> ResolvedStream
 
     /// 会话失效时清掉缓存的会话(如 Synology `_sid`)。无状态源(Subsonic)空实现即可。
     func invalidateSession(sourceID: String) async
 }
 
 public extension StreamResolver {
+    func resolve(for song: Song,
+                 source: MusicSource,
+                 credential: SourceCredential?) async throws -> ResolvedStream {
+        ResolvedStream(url: try await streamURL(for: song, source: source, credential: credential))
+    }
+
     func invalidateSession(sourceID: String) async {}
 }

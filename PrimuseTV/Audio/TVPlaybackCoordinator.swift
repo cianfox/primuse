@@ -42,8 +42,9 @@ final class TVPlaybackCoordinator {
         }
         let credential = TVCredentialStore.credential(for: source, bundle: store.credentialBundle)
         do {
-            let url = try await resolve(song: song, source: source, credential: credential, retried: false)
-            engine.load(url: url,
+            let resolved = try await resolveStream(song: song, source: source, credential: credential, retried: false)
+            engine.load(url: resolved.url,
+                        headers: resolved.headers,
                         title: song.title,
                         artist: song.artistName ?? "",
                         album: song.albumTitle ?? "",
@@ -57,13 +58,13 @@ final class TVPlaybackCoordinator {
     }
 
     /// 会话过期(.authFailed)时清掉会话并重试一次(Synology/cloud 用;Subsonic 无状态不会触发)。
-    private func resolve(song: Song, source: MusicSource,
-                         credential: SourceCredential?, retried: Bool) async throws -> URL {
+    private func resolveStream(song: Song, source: MusicSource,
+                              credential: SourceCredential?, retried: Bool) async throws -> ResolvedStream {
         do {
-            return try await registry.streamURL(for: song, source: source, credential: credential)
+            return try await registry.resolve(for: song, source: source, credential: credential)
         } catch StreamResolveError.authFailed where !retried {
             await registry.invalidateSession(for: source)
-            return try await resolve(song: song, source: source, credential: credential, retried: true)
+            return try await resolveStream(song: song, source: source, credential: credential, retried: true)
         }
     }
 

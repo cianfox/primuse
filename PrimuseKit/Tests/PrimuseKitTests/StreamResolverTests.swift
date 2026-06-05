@@ -76,7 +76,8 @@ import Testing
     let supported = await StreamResolverRegistry().supportedTypes
     #expect(supported.isSuperset(of: [.subsonic, .navidrome, .airsonic, .gonic, .synology, .s3,
                                       .aliyunDrive, .oneDrive, .dropbox, .pan123,
-                                      .jellyfin, .emby, .plex, .qnap, .fnos, .ugreen]))
+                                      .jellyfin, .emby, .plex, .qnap, .fnos, .ugreen,
+                                      .googleDrive, .pan115]))
     #expect(!supported.contains(.smb))          // 原生库源仍不支持
     #expect(!supported.contains(.appleMusic))
     #expect(!supported.contains(.baiduPan))     // 需播放头/UA,待引擎支持后再接
@@ -177,6 +178,23 @@ import Testing
     #expect(CloudDriveStreamResolver.parse123URL(Data(#"{"code":1,"data":{"downloadUrl":"https://p123/a"}}"#.utf8)) == nil)
     #expect(CloudDriveStreamResolver.parse123Token(Data(#"{"code":0,"data":{"accessToken":"TK"}}"#.utf8)) == "TK")
     #expect(CloudDriveStreamResolver.parseOAuthAccessToken(Data(#"{"access_token":"AT","expires_in":3600}"#.utf8)) == "AT")
+}
+
+@Test func cloud115Parsing() {
+    #expect(CloudDriveStreamResolver.parse115URL(Data(#"{"state":1,"data":{"99":{"url":{"url":"https://115cdn/x.mp3"}}}}"#.utf8))?.absoluteString
+            == "https://115cdn/x.mp3")
+    #expect(CloudDriveStreamResolver.parse115AccessToken(Data(#"{"data":{"access_token":"AT115"}}"#.utf8)) == "AT115")
+    #expect(CloudDriveStreamResolver.parse115AccessToken(Data(#"{"access_token":"T2"}"#.utf8)) == "T2")
+}
+
+@Test func googleDriveResolveAddsBearer() async throws {
+    let song = Song(id: "g", title: "T", fileFormat: .flac, filePath: "FILEID123", sourceID: "gd")
+    let source = MusicSource(name: "GD", type: .googleDrive)
+    let resolved = try await CloudDriveStreamResolver().resolve(
+        for: song, source: source, credential: SourceCredential(token: "GT"))
+    #expect(resolved.url.absoluteString
+            == "https://www.googleapis.com/drive/v3/files/FILEID123?alt=media&acknowledgeAbuse=true")
+    #expect(resolved.headers["Authorization"] == "Bearer GT")
 }
 
 @Test func cloudRequestBuilders() {

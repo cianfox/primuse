@@ -31,8 +31,9 @@ public actor StreamResolverRegistry {
             map[type] = nas
         }
         map[.ugreen] = ugreen
-        // 直链无需额外播放头的云盘(百度/115/Google 需播放头,待引擎支持后再接)
-        for type in [MusicSourceType.aliyunDrive, .oneDrive, .dropbox, .pan123] {
+        // 云盘:阿里/OneDrive/Dropbox/123 直链直连;Google/115 经 resource loader 带播放头。
+        // (百度需 fs_id,当前快照未携带,暂不接。)
+        for type in [MusicSourceType.aliyunDrive, .oneDrive, .dropbox, .pan123, .googleDrive, .pan115] {
             map[type] = cloud
         }
         resolvers = map
@@ -54,6 +55,15 @@ public actor StreamResolverRegistry {
             throw StreamResolveError.unsupportedSourceType(source.type)
         }
         return try await resolver.streamURL(for: song, source: source, credential: credential)
+    }
+
+    public func resolve(for song: Song,
+                        source: MusicSource,
+                        credential: SourceCredential?) async throws -> ResolvedStream {
+        guard let resolver = resolvers[source.type] else {
+            throw StreamResolveError.unsupportedSourceType(source.type)
+        }
+        return try await resolver.resolve(for: song, source: source, credential: credential)
     }
 
     public func invalidateSession(for source: MusicSource) async {

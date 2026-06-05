@@ -143,6 +143,7 @@
 		3DB35BA7BA5DF8173F45CA98 /* ImageCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92713492CA49F4357602CCA3 /* ImageCache.swift */; };
 		3DC5D67D820BD075C15A39C2 /* DLNARendererSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41195313270BFC6D837603AE /* DLNARendererSettingsView.swift */; };
 		3E4FAF1208A5629650F15473 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 60849A3BA068DBB563EFA62E /* InfoPlist.strings */; };
+		3E6615C76D4636FBFFDBA789 /* TVStreamResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC2DE503F1A852AEF610314 /* TVStreamResourceLoader.swift */; };
 		3F00AFB0A4245384B5E09A51 /* PlaylistImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B203F3A47D1C2D90996E818D /* PlaylistImportView.swift */; };
 		3F5B02704DF01DF4192B038C /* PlaylistImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B203F3A47D1C2D90996E818D /* PlaylistImportView.swift */; };
 		3F8513D64E7EAB2667895EEC /* OneDriveSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E648713A25DB3912120693A /* OneDriveSource.swift */; };
@@ -846,6 +847,7 @@
 		4AD7C0A9B431AEBEC047E320 /* SSLTrustStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSLTrustStore.swift; sourceTree = "<group>"; };
 		4BF1A706ED97024BCCCCD9F8 /* ScraperConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScraperConfigStore.swift; sourceTree = "<group>"; };
 		4C46A7CFAEE41704BC45A8CB /* SongIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongIdentity.swift; sourceTree = "<group>"; };
+		4CC2DE503F1A852AEF610314 /* TVStreamResourceLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVStreamResourceLoader.swift; sourceTree = "<group>"; };
 		4CFE0AB34758413DB8B02463 /* Primuse-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Primuse-Bridging-Header.h"; sourceTree = "<group>"; };
 		4D5D8BD40FCC0AA7011B551B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4DB4788BFEC669118576E7E2 /* U115Source.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = U115Source.swift; sourceTree = "<group>"; };
@@ -1606,6 +1608,7 @@
 				C891ECCBAEB4EF0ED63759C7 /* TVAudioEngine.swift */,
 				1FFB43F39C3A62C7EBDB2D72 /* TVCredentialStore.swift */,
 				EC2F73BEA2E43BC8044D942F /* TVPlaybackCoordinator.swift */,
+				4CC2DE503F1A852AEF610314 /* TVStreamResourceLoader.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -2646,6 +2649,7 @@
 				3B034BB485AC24583FFA1AC5 /* TVSettingsView.swift in Sources */,
 				7BDB9B181FA964299300C204 /* TVSourcesView.swift in Sources */,
 				69F39E580C4E08F73E195E62 /* TVStore.swift in Sources */,
+				3E6615C76D4636FBFFDBA789 /* TVStreamResourceLoader.swift in Sources */,
 				26FD125E371B9C01ED64F6F9 /* TVTheme.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

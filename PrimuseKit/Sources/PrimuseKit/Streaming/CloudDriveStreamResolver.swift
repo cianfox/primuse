@@ -36,6 +36,51 @@ public actor CloudDriveStreamResolver: StreamResolver {
         }
     }
 
+    // MARK: - resolve(含需自定义播放头的 Google / 115)
+
+    static let pan115UA = "Mozilla/5.0 Primuse/1.0"
+
+    public func resolve(for song: Song, source: MusicSource, credential: SourceCredential?) async throws -> ResolvedStream {
+        let cred = credential ?? SourceCredential()
+        switch source.type {
+        case .aliyunDrive, .oneDrive, .dropbox, .pan123:
+            return ResolvedStream(url: try await streamURL(for: song, source: source, credential: cred))
+        case .googleDrive:
+            // Google:端点即下载地址,播放需带 Bearer 头(走 resource loader)。
+            let token = try await accessToken(for: source, cred: cred, forceRefresh: false)
+            let id = song.filePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(id)?alt=media&acknowledgeAbuse=true") else {
+                throw StreamResolveError.cannotBuildURL
+            }
+            return ResolvedStream(url: url, headers: ["Authorization": "Bearer \(token)"])
+        case .pan115:
+            // 115:downurl 取直链,播放需带固定 UA(走 resource loader)。
+            let token = try await accessToken(for: source, cred: cred, forceRefresh: false)
+            do {
+                let url = try await mint115(pickCode: song.filePath, token: token)
+                return ResolvedStream(url: url, headers: ["User-Agent": Self.pan115UA])
+            } catch StreamResolveError.authFailed {
+                let fresh = try await accessToken(for: source, cred: cred, forceRefresh: true)
+                let url = try await mint115(pickCode: song.filePath, token: fresh)
+                return ResolvedStream(url: url, headers: ["User-Agent": Self.pan115UA])
+            }
+        default:
+            throw StreamResolveError.unsupportedSourceType(source.type)
+        }
+    }
+
+    private func mint115(pickCode: String, token: String) async throws -> URL {
+        var req = URLRequest(url: URL(string: "https://proapi.115.com/open/ufile/downurl")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "pick_code=\(Self.formEncode(pickCode))".data(using: .utf8)
+        let (data, response) = try await session.data(for: req)
+        try Self.checkAuth(response)
+        guard let url = Self.parse115URL(data) else { throw StreamResolveError.cannotBuildURL }
+        return url
+    }
+
     // MARK: - access token(同步包优先;过期则按提供方刷新)
 
     private func accessToken(for source: MusicSource, cred: SourceCredential, forceRefresh: Bool) async throws -> String {
@@ -99,6 +144,16 @@ public actor CloudDriveStreamResolver: StreamResolver {
     }
 
     private func refreshOAuthToken(type: MusicSourceType, cred: SourceCredential) async throws -> String {
+        if type == .pan115 {
+            // 115:passportapi 刷新,只需 refresh_token(无 client_secret)。
+            guard let rt = cred.refreshToken, !rt.isEmpty else { throw StreamResolveError.missingCredential }
+            let req = Self.formRequest(url: URL(string: "https://passportapi.115.com/open/refreshToken")!,
+                                       fields: ["refresh_token": rt])
+            let (data, response) = try await session.data(for: req)
+            try Self.checkAuth(response)
+            guard let token = Self.parse115AccessToken(data) else { throw StreamResolveError.authFailed }
+            return token
+        }
         guard let rt = cred.refreshToken, !rt.isEmpty, let cid = cred.clientID else {
             throw StreamResolveError.missingCredential
         }
@@ -116,6 +171,9 @@ public actor CloudDriveStreamResolver: StreamResolver {
             req = Self.formRequest(url: URL(string: "https://api.dropboxapi.com/oauth2/token")!,
                                    fields: ["grant_type": "refresh_token", "refresh_token": rt,
                                             "client_id": cid, "client_secret": cred.clientSecret ?? ""])
+        case .googleDrive:
+            req = Self.formRequest(url: URL(string: "https://oauth2.googleapis.com/token")!,
+                                   fields: ["grant_type": "refresh_token", "refresh_token": rt, "client_id": cid])
         default:
             throw StreamResolveError.unsupportedSourceType(type)
         }
@@ -184,6 +242,22 @@ public actor CloudDriveStreamResolver: StreamResolver {
     static func parseOAuthAccessToken(_ data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return json["access_token"] as? String
+    }
+
+    static func parse115AccessToken(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let d = json["data"] as? [String: Any], let t = d["access_token"] as? String { return t }
+        return json["access_token"] as? String
+    }
+
+    /// 115 downurl 响应:{"data":{"<file_id>":{"url":{"url":"https://..."}}}}
+    static func parse115URL(_ data: Data) -> URL? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = json["data"] as? [String: Any],
+              let first = payload.values.first as? [String: Any],
+              let urlField = first["url"] as? [String: Any],
+              let s = urlField["url"] as? String else { return nil }
+        return URL(string: s)
     }
 
     private static func stringURL(_ data: Data, key: String) -> URL? {

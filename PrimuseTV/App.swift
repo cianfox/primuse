@@ -19,8 +19,10 @@ struct PrimuseTVApp: App {
                 .task {
                     store.engine.configureAudioSession()
                     #if DEBUG
-                    if ProcessInfo.processInfo.environment["TV_AUDIO_SMOKE"] == "1" {
-                        store.engine.runSmokeTest()
+                    switch ProcessInfo.processInfo.environment["TV_AUDIO_SMOKE"] {
+                    case "1": store.engine.runSmokeTest()
+                    case "hdr": store.engine.runSmokeTest(viaLoader: true)   // 验证 resource loader 代理路径
+                    default: break
                     }
                     #endif
                     let autoSync = UserDefaults.standard.object(forKey: "tvAutoSync") as? Bool ?? true

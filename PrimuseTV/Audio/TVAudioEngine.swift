@@ -23,6 +23,7 @@ final class TVAudioEngine {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var sessionConfigured = false
+    private var resourceLoader: TVStreamResourceLoader?   // 自定义播放头时强引用(delegate 弱持有)
 
     private var npTitle = ""
     private var npArtist = ""
@@ -58,13 +59,29 @@ final class TVAudioEngine {
 
     // MARK: 载入 / 传输
 
-    func load(url: URL, title: String, artist: String, album: String, duration: Double) {
+    func load(url: URL, headers: [String: String] = [:],
+              title: String, artist: String, album: String, duration: Double) {
         configureAudioSession()
         npTitle = title; npArtist = artist; npAlbum = album
         self.duration = duration
         currentTime = 0
         status = .loading
-        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        let item: AVPlayerItem
+        if headers.isEmpty {
+            resourceLoader = nil
+            item = AVPlayerItem(url: url)
+        } else if let masked = TVStreamResourceLoader.maskedURL(from: url) {
+            // 需自定义播放头(UA/Bearer)→ 自定义 scheme + resource loader 代理
+            let loader = TVStreamResourceLoader(realURL: url, headers: headers)
+            let asset = AVURLAsset(url: masked)
+            asset.resourceLoader.setDelegate(loader, queue: DispatchQueue(label: "tv.resourceloader"))
+            resourceLoader = loader
+            item = AVPlayerItem(asset: asset)
+        } else {
+            resourceLoader = nil
+            item = AVPlayerItem(url: url)
+        }
+        player.replaceCurrentItem(with: item)
         updateNowPlayingInfo()
     }
 
@@ -179,9 +196,10 @@ final class TVAudioEngine {
     // MARK: DEBUG 冒烟测试 — 用公开 mp3 证明引擎真出声(模拟器可验,不靠听)
 
     #if DEBUG
-    func runSmokeTest() {
+    func runSmokeTest(viaLoader: Bool = false) {
         guard let url = URL(string: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3") else { return }
-        load(url: url, title: "Smoke Test", artist: "Primuse", album: "", duration: 0)
+        load(url: url, headers: viaLoader ? ["X-Primuse-Test": "1"] : [:],
+             title: "Smoke Test", artist: "Primuse", album: "", duration: 0)
         play()
         Task { @MainActor in
             var passed = false
