@@ -189,6 +189,25 @@ final class MetadataBackfillService {
             UserDefaults.standard.set(true, forKey: streamRewriteFixKey)
         }
 
+        // Fifth one-time migration. FLAC backfill used to rely entirely on
+        // AVFoundation reading a truncated 256KB temp file. Field reports from
+        // OneDrive showed those rows being marked failed because duration stayed
+        // at 0. The reader now parses FLAC STREAMINFO directly from the header,
+        // so clear failed marks for duration-less FLAC rows and let them retry.
+        let flacStreamInfoFixKey = "primuse.backfillFailedReset.v2026_06_flacStreamInfo"
+        if !UserDefaults.standard.bool(forKey: flacStreamInfoFixKey) {
+            let flacIDs = Set(library.songs.lazy.filter {
+                $0.fileFormat == .flac && $0.duration <= 0
+            }.map(\.id))
+            let resetIDs = failedSongIDs.intersection(flacIDs)
+            if !resetIDs.isEmpty {
+                failedSongIDs.subtract(resetIDs)
+                saveFailed()
+                plog("📥 Backfill: clearing \(resetIDs.count) failed FLAC rows for STREAMINFO retry")
+            }
+            UserDefaults.standard.set(true, forKey: flacStreamInfoFixKey)
+        }
+
         // A re-scan that found a path with new bytes wipes the failed
         // mark so backfill re-attempts the song with the fresh file. The
         // song's metadata in the library is already reset to bare by
@@ -619,9 +638,14 @@ final class MetadataBackfillService {
             // (multiple tracks, padding, sidecar metadata) — observed
             // in the field as a 13MB / 198kbps m4a being "corrected"
             // from the real 177s to a bogus 562s.
-            let ext = (song.filePath as NSString).pathExtension.lowercased()
+            let ext = song.fileFormat.rawValue
             if ext == "mp3" {
                 metadata.duration = correctedDuration(parsed: metadata.duration, bitRateKbps: metadata.bitRate, fileSize: song.fileSize, title: song.title)
+            } else if ext == "flac",
+                      (metadata.bitRate ?? 0) <= 0,
+                      metadata.duration > 0,
+                      song.fileSize > 0 {
+                metadata.bitRate = Int((Double(song.fileSize) * 8.0 / metadata.duration / 1000.0).rounded())
             }
             let merged = mergeSong(bare: song, metadata: metadata)
             let totalElapsed = Date().timeIntervalSince(started)
@@ -649,14 +673,14 @@ final class MetadataBackfillService {
         song: Song,
         cacheKey: String
     ) async -> MetadataService.SongMetadata {
-        let ext = (song.filePath as NSString).pathExtension
+        let ext = song.fileFormat.rawValue
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("backfill-\(cacheKey).\(ext)")
         try? data.write(to: tempURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         // tempURL 是 backfill-<hash>.<ext> 形式, 没意义。caller 传 song 原始
         // 文件名当 fallbackTitle, 嵌入 title 缺失时显示得正常。
-        let originalFileBaseName = ((song.filePath as NSString).lastPathComponent as NSString).deletingPathExtension
+        let originalFileBaseName = song.title
         return await metadataService.loadMetadata(
             for: tempURL,
             cacheKey: cacheKey,

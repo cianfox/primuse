@@ -135,6 +135,8 @@ enum FileMetadataReader {
             }
         }
 
+        applyFLACFallback(to: &metadata, url: url)
+
         // 注意: 不在这里用 url filename 兜底 title。
         // 调用方 (MetadataService) 自己决定 fallback 名 (走原始 NAS 文件名),
         // 这里要保持 metadata.title == nil 真实反映「文件里没有 TIT2」。
@@ -142,6 +144,268 @@ enum FileMetadataReader {
         // 污染 scrape 查询和 UI 预览。
 
         return metadata
+    }
+
+    private static let flacMetadataReadLimit = 1024 * 1024
+
+    private static func applyFLACFallback(to metadata: inout Metadata, url: URL) {
+        guard url.pathExtension.lowercased() == "flac",
+              let flac = parseFLACMetadata(from: readPrefix(from: url, byteCount: flacMetadataReadLimit)) else {
+            return
+        }
+
+        if metadata.duration == nil || (metadata.duration ?? 0) <= 0 {
+            metadata.duration = flac.duration
+        }
+        metadata.sampleRate = metadata.sampleRate ?? flac.sampleRate
+        metadata.bitDepth = metadata.bitDepth ?? flac.bitDepth
+        metadata.title = metadata.title ?? flac.title
+        metadata.artist = metadata.artist ?? flac.artist
+        metadata.albumTitle = metadata.albumTitle ?? flac.albumTitle
+        metadata.albumArtist = metadata.albumArtist ?? flac.albumArtist
+        metadata.trackNumber = metadata.trackNumber ?? flac.trackNumber
+        metadata.discNumber = metadata.discNumber ?? flac.discNumber
+        metadata.year = metadata.year ?? flac.year
+        metadata.genre = metadata.genre ?? flac.genre
+        metadata.lyricsText = metadata.lyricsText ?? flac.lyricsText
+        metadata.coverArtData = metadata.coverArtData ?? flac.coverArtData
+        metadata.replayGainTrackGain = metadata.replayGainTrackGain ?? flac.replayGainTrackGain
+        metadata.replayGainTrackPeak = metadata.replayGainTrackPeak ?? flac.replayGainTrackPeak
+        metadata.replayGainAlbumGain = metadata.replayGainAlbumGain ?? flac.replayGainAlbumGain
+        metadata.replayGainAlbumPeak = metadata.replayGainAlbumPeak ?? flac.replayGainAlbumPeak
+    }
+
+    private static func readPrefix(from url: URL, byteCount: Int) -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: byteCount)) ?? Data()
+    }
+
+    private struct FLACNativeMetadata {
+        var title: String?
+        var artist: String?
+        var albumTitle: String?
+        var albumArtist: String?
+        var trackNumber: Int?
+        var discNumber: Int?
+        var year: Int?
+        var genre: String?
+        var duration: TimeInterval?
+        var coverArtData: Data?
+        var sampleRate: Int?
+        var bitDepth: Int?
+        var replayGainTrackGain: Double?
+        var replayGainTrackPeak: Double?
+        var replayGainAlbumGain: Double?
+        var replayGainAlbumPeak: Double?
+        var lyricsText: String?
+    }
+
+    private static func parseFLACMetadata(from data: Data) -> FLACNativeMetadata? {
+        guard let flacOffset = findFLACSignature(in: data) else { return nil }
+
+        var result = FLACNativeMetadata()
+        var cursor = flacOffset + 4
+
+        while cursor + 4 <= data.count {
+            let header = data[cursor]
+            let isLastBlock = (header & 0x80) != 0
+            let blockType = header & 0x7F
+            let length = readUInt24BE(data, at: cursor + 1)
+            let bodyStart = cursor + 4
+            let bodyEnd = bodyStart + length
+            guard length >= 0, bodyEnd >= bodyStart, bodyEnd <= data.count else { break }
+
+            let block = data.subdata(in: bodyStart..<bodyEnd)
+            switch blockType {
+            case 0:
+                applyFLACStreamInfo(block, to: &result)
+            case 4:
+                applyVorbisComments(block, to: &result)
+            case 6:
+                if result.coverArtData == nil {
+                    result.coverArtData = parseFLACPicture(block)
+                }
+            default:
+                break
+            }
+
+            cursor = bodyEnd
+            if isLastBlock { break }
+        }
+
+        return result.duration != nil
+            || result.title != nil
+            || result.artist != nil
+            || result.albumTitle != nil
+            || result.coverArtData != nil
+            ? result
+            : nil
+    }
+
+    private static func findFLACSignature(in data: Data) -> Int? {
+        let signature = Data([0x66, 0x4C, 0x61, 0x43]) // fLaC
+        if data.count >= 4, Data(data[0..<4]) == signature {
+            return 0
+        }
+
+        if data.count >= 10,
+           data[0] == 0x49, data[1] == 0x44, data[2] == 0x33,
+           let id3End = readID3v2Length(data),
+           id3End + 4 <= data.count,
+           Data(data[id3End..<(id3End + 4)]) == signature {
+            return id3End
+        }
+
+        let searchEnd = min(data.count, 64 * 1024)
+        return data.range(of: signature, options: [], in: 0..<searchEnd)?.lowerBound
+    }
+
+    private static func readID3v2Length(_ data: Data) -> Int? {
+        guard data.count >= 10 else { return nil }
+        let size = (Int(data[6] & 0x7F) << 21)
+            | (Int(data[7] & 0x7F) << 14)
+            | (Int(data[8] & 0x7F) << 7)
+            | Int(data[9] & 0x7F)
+        let hasFooter = (data[5] & 0x10) != 0
+        return 10 + size + (hasFooter ? 10 : 0)
+    }
+
+    private static func applyFLACStreamInfo(_ block: Data, to result: inout FLACNativeMetadata) {
+        guard block.count >= 18 else { return }
+
+        let sampleRate = (Int(block[10]) << 12)
+            | (Int(block[11]) << 4)
+            | (Int(block[12]) >> 4)
+        let bitDepth = (((Int(block[12]) & 0x01) << 4) | (Int(block[13]) >> 4)) + 1
+        let totalSamples = (UInt64(block[13] & 0x0F) << 32)
+            | (UInt64(block[14]) << 24)
+            | (UInt64(block[15]) << 16)
+            | (UInt64(block[16]) << 8)
+            | UInt64(block[17])
+
+        if sampleRate > 0 {
+            result.sampleRate = sampleRate
+            if totalSamples > 0 {
+                result.duration = Double(totalSamples) / Double(sampleRate)
+            }
+        }
+        if bitDepth > 0 {
+            result.bitDepth = bitDepth
+        }
+    }
+
+    private static func applyVorbisComments(_ block: Data, to result: inout FLACNativeMetadata) {
+        var cursor = 0
+        guard let vendorLength = readUInt32LE(block, cursor: &cursor),
+              skip(vendorLength, in: block, cursor: &cursor),
+              let commentCount = readUInt32LE(block, cursor: &cursor) else {
+            return
+        }
+
+        var comments: [String: [String]] = [:]
+        for _ in 0..<min(commentCount, 10_000) {
+            guard let length = readUInt32LE(block, cursor: &cursor),
+                  cursor + length <= block.count else {
+                break
+            }
+            let raw = block.subdata(in: cursor..<(cursor + length))
+            cursor += length
+
+            guard let text = String(data: raw, encoding: .utf8),
+                  let separator = text.firstIndex(of: "=") else {
+                continue
+            }
+            let key = String(text[..<separator]).uppercased()
+            let value = String(text[text.index(after: separator)...])
+            comments[key, default: []].append(value)
+        }
+
+        func first(_ keys: String...) -> String? {
+            for key in keys {
+                if let value = comments[key]?.first {
+                    let repaired = repairLegacyChineseMojibake(value.trimmingCharacters(in: .whitespacesAndNewlines))
+                    if let cleaned = repaired.nilIfEmpty { return cleaned }
+                }
+            }
+            return nil
+        }
+
+        result.title = result.title ?? first("TITLE")
+        result.artist = result.artist ?? first("ARTIST", "ALBUMARTIST", "ALBUM ARTIST")
+        result.albumTitle = result.albumTitle ?? first("ALBUM")
+        result.albumArtist = result.albumArtist ?? first("ALBUMARTIST", "ALBUM ARTIST")
+        result.trackNumber = result.trackNumber ?? leadingInt(first("TRACKNUMBER", "TRACK"))
+        result.discNumber = result.discNumber ?? leadingInt(first("DISCNUMBER", "DISC"))
+        result.year = result.year ?? parseYear(first("DATE", "YEAR"))
+        result.genre = result.genre ?? first("GENRE")
+        result.lyricsText = result.lyricsText ?? first("LYRICS", "UNSYNCEDLYRICS")
+        result.replayGainTrackGain = result.replayGainTrackGain ?? parseReplayGainDB(first("REPLAYGAIN_TRACK_GAIN"))
+        result.replayGainTrackPeak = result.replayGainTrackPeak ?? Double(first("REPLAYGAIN_TRACK_PEAK") ?? "")
+        result.replayGainAlbumGain = result.replayGainAlbumGain ?? parseReplayGainDB(first("REPLAYGAIN_ALBUM_GAIN"))
+        result.replayGainAlbumPeak = result.replayGainAlbumPeak ?? Double(first("REPLAYGAIN_ALBUM_PEAK") ?? "")
+    }
+
+    private static func parseFLACPicture(_ block: Data) -> Data? {
+        var cursor = 0
+        guard readUInt32BE(block, cursor: &cursor) != nil,
+              let mimeLength = readUInt32BE(block, cursor: &cursor),
+              skip(mimeLength, in: block, cursor: &cursor),
+              let descriptionLength = readUInt32BE(block, cursor: &cursor),
+              skip(descriptionLength, in: block, cursor: &cursor),
+              skip(16, in: block, cursor: &cursor),
+              let imageLength = readUInt32BE(block, cursor: &cursor),
+              imageLength > 0,
+              cursor + imageLength <= block.count else {
+            return nil
+        }
+        return block.subdata(in: cursor..<(cursor + imageLength))
+    }
+
+    private static func readUInt24BE(_ data: Data, at offset: Int) -> Int {
+        guard offset + 3 <= data.count else { return 0 }
+        return (Int(data[offset]) << 16)
+            | (Int(data[offset + 1]) << 8)
+            | Int(data[offset + 2])
+    }
+
+    private static func readUInt32LE(_ data: Data, cursor: inout Int) -> Int? {
+        guard cursor + 4 <= data.count else { return nil }
+        let value = Int(data[cursor])
+            | (Int(data[cursor + 1]) << 8)
+            | (Int(data[cursor + 2]) << 16)
+            | (Int(data[cursor + 3]) << 24)
+        cursor += 4
+        return value
+    }
+
+    private static func readUInt32BE(_ data: Data, cursor: inout Int) -> Int? {
+        guard cursor + 4 <= data.count else { return nil }
+        let value = (Int(data[cursor]) << 24)
+            | (Int(data[cursor + 1]) << 16)
+            | (Int(data[cursor + 2]) << 8)
+            | Int(data[cursor + 3])
+        cursor += 4
+        return value
+    }
+
+    private static func skip(_ byteCount: Int, in data: Data, cursor: inout Int) -> Bool {
+        guard byteCount >= 0, cursor + byteCount <= data.count else { return false }
+        cursor += byteCount
+        return true
+    }
+
+    private static func leadingInt(_ value: String?) -> Int? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digits = trimmed.prefix { $0.isNumber }
+        return digits.isEmpty ? nil : Int(String(digits))
+    }
+
+    private static func parseYear(_ value: String?) -> Int? {
+        guard let value else { return nil }
+        let digits = value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4)
+        return digits.count == 4 ? Int(String(digits)) : nil
     }
 
     /// Parse ReplayGain dB string like "-7.43 dB" or "+3.21 dB" to Double
