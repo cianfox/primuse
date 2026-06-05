@@ -14,12 +14,17 @@ public actor StreamResolverRegistry {
         let subsonic = SubsonicStreamResolver()
         let synology = SynologyStreamResolver()
         let s3 = S3StreamResolver()
+        let cloud = CloudDriveStreamResolver()
         var map: [MusicSourceType: StreamResolver] = [:]
         for type in [MusicSourceType.subsonic, .navidrome, .airsonic, .gonic] {
             map[type] = subsonic
         }
         map[.synology] = synology
         map[.s3] = s3
+        // 直链无需额外播放头的云盘(百度/115/Google 需播放头,待引擎支持后再接)
+        for type in [MusicSourceType.aliyunDrive, .oneDrive, .dropbox, .pan123] {
+            map[type] = cloud
+        }
         resolvers = map
     }
 

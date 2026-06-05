@@ -64,6 +64,7 @@
 		184E4A32C4D50AC805AB9DDC /* ScraperTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D668FE9811EE6FEF380039 /* ScraperTypes.swift */; };
 		1866EF3460DA7C421215CBC2 /* UserNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CA1E9D7FDCD0F25BE8D43A /* UserNotificationService.swift */; };
 		18D9115DD587058F8DADE067 /* PrimuseWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0079EF685D04AD5701F7F80F /* PrimuseWatchApp.swift */; };
+		18EF7BC5C1B706CD5A3E761F /* CloudDriveStreamResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE02EE3CFE1DFDF66C66B7B /* CloudDriveStreamResolver.swift */; };
 		193463D65D5D8855FB50984D /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 449E8C72C7990DCAAE0C289F /* Localizable.strings */; };
 		195625F2567DFD42CB036420 /* AppleMusicNowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCADF5909EF82CB7F02FB896 /* AppleMusicNowPlayingView.swift */; };
 		19741E9B55DE0BA9BE5F2FDB /* CloudSyncChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD05C51C265711C2B7239F9B /* CloudSyncChannel.swift */; };
@@ -797,6 +798,7 @@
 		28EE6B136CE82FFC872F9E86 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		29D19414C60A995E2BAE6B3F /* MacContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacContentView.swift; sourceTree = "<group>"; };
 		2A0B5BE8B577AB5EBCBCFB9A /* FTPSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPSource.swift; sourceTree = "<group>"; };
+		2CE02EE3CFE1DFDF66C66B7B /* CloudDriveStreamResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriveStreamResolver.swift; sourceTree = "<group>"; };
 		2D37C22CEB6AB4DC03BCF5FA /* PlaybackActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackActivityAttributes.swift; sourceTree = "<group>"; };
 		2DF35A49EBE68F0FDA253D9A /* LocalFileSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalFileSource.swift; sourceTree = "<group>"; };
 		2E29830359FF1F6CBD6D8D05 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
@@ -1934,6 +1936,7 @@
 		F49A5BE606706F898B5DEAC8 /* Streaming */ = {
 			isa = PBXGroup;
 			children = (
+				2CE02EE3CFE1DFDF66C66B7B /* CloudDriveStreamResolver.swift */,
 				2536FC64E50FD6E0FAE8B75B /* CredentialBundle.swift */,
 				C603E86C2F865CDFD1D1C8EB /* S3StreamResolver.swift */,
 				4430B0204E343AF011F490F1 /* StreamResolver.swift */,
@@ -2329,6 +2332,7 @@
 				5978B69CCBB88DF15F5AAA4D /* BrandTintStore.swift in Sources */,
 				67D45D818469B9D73A8AB157 /* BundleToken.swift in Sources */,
 				DE0561DB9A15B686C84CEE8C /* CloudAccount.swift in Sources */,
+				18EF7BC5C1B706CD5A3E761F /* CloudDriveStreamResolver.swift in Sources */,
 				EA28DFE79AF807B40A5B91B4 /* CredentialBundle.swift in Sources */,
 				6FE53DDA9986F85A3897E582 /* EQPreset.swift in Sources */,
 				FDE9341F377DC2DBA47DC9D9 /* LyricLine.swift in Sources */,

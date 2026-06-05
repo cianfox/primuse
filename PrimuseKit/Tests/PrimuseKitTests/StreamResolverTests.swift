@@ -73,9 +73,44 @@ import Testing
 
 @Test func registryCoversNasAndS3() async {
     let supported = await StreamResolverRegistry().supportedTypes
-    #expect(supported.isSuperset(of: [.subsonic, .navidrome, .airsonic, .gonic, .synology, .s3]))
-    #expect(!supported.contains(.smb))      // 原生库源仍不支持
+    #expect(supported.isSuperset(of: [.subsonic, .navidrome, .airsonic, .gonic, .synology, .s3,
+                                      .aliyunDrive, .oneDrive, .dropbox, .pan123]))
+    #expect(!supported.contains(.smb))          // 原生库源仍不支持
     #expect(!supported.contains(.appleMusic))
+    #expect(!supported.contains(.baiduPan))     // 需播放头/UA,待引擎支持后再接
+}
+
+// MARK: - 云盘:响应解析 + 请求构造
+
+@Test func cloudResponseParsing() {
+    #expect(CloudDriveStreamResolver.parseAliyunURL(Data(#"{"url":"https://ali.example/x"}"#.utf8))?.absoluteString
+            == "https://ali.example/x")
+    #expect(CloudDriveStreamResolver.parseOneDriveURL(Data(#"{"@microsoft.graph.downloadUrl":"https://od.example/y"}"#.utf8))?.absoluteString
+            == "https://od.example/y")
+    #expect(CloudDriveStreamResolver.parseDropboxURL(Data(#"{"link":"https://db.example/z"}"#.utf8))?.absoluteString
+            == "https://db.example/z")
+    // 123:code 必须为 0
+    #expect(CloudDriveStreamResolver.parse123URL(Data(#"{"code":0,"data":{"downloadUrl":"https://p123/a"}}"#.utf8))?.absoluteString
+            == "https://p123/a")
+    #expect(CloudDriveStreamResolver.parse123URL(Data(#"{"code":1,"data":{"downloadUrl":"https://p123/a"}}"#.utf8)) == nil)
+    #expect(CloudDriveStreamResolver.parse123Token(Data(#"{"code":0,"data":{"accessToken":"TK"}}"#.utf8)) == "TK")
+    #expect(CloudDriveStreamResolver.parseOAuthAccessToken(Data(#"{"access_token":"AT","expires_in":3600}"#.utf8)) == "AT")
+}
+
+@Test func cloudRequestBuilders() {
+    let json = CloudDriveStreamResolver.jsonRequest(
+        url: URL(string: "https://api.dropboxapi.com/2/files/get_temporary_link")!,
+        token: "TK", body: ["path": "/Music/a.flac"])
+    #expect(json.httpMethod == "POST")
+    #expect(json.value(forHTTPHeaderField: "Authorization") == "Bearer TK")
+    #expect(json.value(forHTTPHeaderField: "Content-Type") == "application/json")
+
+    let form = CloudDriveStreamResolver.formRequest(
+        url: URL(string: "https://oauth2.googleapis.com/token")!,
+        fields: ["grant_type": "refresh_token", "refresh_token": "r t/+"])
+    let bodyStr = String(data: form.httpBody ?? Data(), encoding: .utf8) ?? ""
+    #expect(form.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded")
+    #expect(bodyStr.contains("refresh_token=r%20t%2F%2B"))   // 特殊字符已编码
 }
 
 // MARK: - 凭据包(CloudKit 加密同步的载荷)
