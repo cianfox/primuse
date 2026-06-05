@@ -39,15 +39,23 @@ struct TVSourcesView: View {
     }
 }
 
-/// tvOS 不直接添加源 —— 说明在 iPhone / Mac 上添加,经 iCloud 同步。
+/// 扫码添加:Apple TV 展示二维码,iPhone 相机扫码打开 app 的「添加音乐源」,经 iCloud 同步回来。
 private struct TVSourcesInfoCard: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: "iphone.and.arrow.forward").font(.system(size: 52))
-                .foregroundStyle(TVColor.brand)
-            Text("在 iPhone / Mac 上添加").font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
-            Text("tvOS 端暂不支持直接添加 NAS / 云盘音乐源。在 iPhone 或 Mac 上添加并扫描后,音乐源与曲库会经 iCloud 自动同步到这里。")
-                .font(.system(size: 18)).foregroundStyle(.white.opacity(0.65)).lineSpacing(5)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: "qrcode").font(.system(size: 28)).foregroundStyle(TVColor.brand)
+                Text("扫码在手机上添加").font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
+            }
+            HStack(alignment: .top, spacing: 22) {
+                TVQRCode(content: "primuse://add-source", size: 190)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("用 iPhone 相机扫这个码,会打开 Primuse 到「添加音乐源」,可挨个添加 NAS / 云盘 / Subsonic 等。")
+                        .font(.system(size: 18)).foregroundStyle(.white.opacity(0.72)).lineSpacing(5)
+                    Text("添加后经 iCloud 自动同步到 Apple TV;也可直接在 iPhone / Mac 上添加。")
+                        .font(.system(size: 15)).foregroundStyle(TVColor.textGhost).lineSpacing(4)
+                }
+            }
         }
         .padding(28).frame(maxWidth: .infinity, alignment: .leading)
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 20, style: .continuous))

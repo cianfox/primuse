@@ -375,6 +375,8 @@ struct PrimuseApp: App {
     @State private var authAlertSource: MusicSource?
     @State private var authAlertMessage: String = ""
     @State private var reauthSource: MusicSource?
+    /// Apple TV 上的二维码扫码后(primuse://add-source)触发的"添加音乐源" sheet。
+    @State private var deepLinkAddSource = false
 
     init() {
         let services = AppServices.shared
@@ -586,18 +588,22 @@ struct PrimuseApp: App {
                         songID: updated.id
                     )
                 }
-                #if os(macOS)
-                // macOS OAuth 走系统浏览器,callback 通过 primuse:// URL Scheme
-                // 回到 app。把 URL 转给 OAuthService 的 bridge 唤醒等待中的请求。
                 .onOpenURL { url in
                     plog("🔗 onOpenURL: \(url.absoluteString)")
+                    // Apple TV 二维码:primuse://add-source → 手机扫码后打开"添加音乐源"。
+                    if url.scheme == "primuse", url.host == "add-source" {
+                        deepLinkAddSource = true
+                        return
+                    }
+                    #if os(macOS)
+                    // macOS OAuth 走系统浏览器,callback 通过 primuse:// 回到 app。
                     if MacOAuthBridge.shared.handle(url) {
                         plog("🔗 onOpenURL handled by MacOAuthBridge")
                         return
                     }
                     plog("⚠️ Unhandled openURL: \(url.absoluteString)")
+                    #endif
                 }
-                #endif
                 .onChange(of: scenePhase) { _, newPhase in
                     switch newPhase {
                     case .background, .inactive:
@@ -680,6 +686,9 @@ struct PrimuseApp: App {
                         Task { await sourceManager.refreshConnector(for: updated.id) }
                         SourceAuthAlert.clear(sourceID: updated.id)
                     }
+                }
+                .sheet(isPresented: $deepLinkAddSource) {
+                    SourceTypeSelectionView { source in sourcesStore.add(source) }
                 }
         }
         #if os(macOS)
