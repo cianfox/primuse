@@ -1700,6 +1700,20 @@ final class SourceManager {
         )
     }
 
+    /// 对支持预授权直链的云盘(目前 OneDrive),返回可整文件下载的 HTTPS 直链。
+    /// 大文件用它走「整文件渐进下载」绕开逐 chunk Range —— OneDrive 服务端对大文件
+    /// 的分段 Range 会挂死,但整文件直接下载很快。
+    func resolveDirectDownloadURL(for song: Song) async -> URL? {
+        let sources = (try? await sourcesProvider()) ?? []
+        guard let source = sources.first(where: { $0.id == song.sourceID }) else { return nil }
+        let conn = connector(for: source)
+        if let oneDrive = conn as? OneDriveSource {
+            try? await oneDrive.connect()
+            return try? await oneDrive.publicDownloadURL(path: song.filePath)
+        }
+        return nil
+    }
+
     private func shouldUseRangeStreamingForPlayback(source: MusicSource, song: Song) -> Bool {
         guard source.supportsRangeStreaming, song.fileSize > 0 else { return false }
         // 服务端转码源: 需要服务端转码的格式(WMA)走渐进流(streamingURL 返回
