@@ -110,7 +110,8 @@ struct CloudDriveHelper: Sendable {
         length: Int64,
         accessToken: String? = nil,
         userAgent: String? = nil,
-        referer: String? = nil
+        referer: String? = nil,
+        timeoutSeconds: TimeInterval = 60
     ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -134,7 +135,7 @@ struct CloudDriveHelper: Sendable {
         if let referer {
             request.setValue(referer, forHTTPHeaderField: "Referer")
         }
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeoutSeconds
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw CloudDriveError.invalidResponse }
         switch http.statusCode {

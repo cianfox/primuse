@@ -111,12 +111,18 @@ actor OneDriveSource: MusicSourceConnector, OAuthCloudSource {
         // Cache it for ~50min (Microsoft documents 1h validity, leave margin).
         let fileURL = try await getDownloadURL(for: path)
         do {
-            return try await helper.rangeRequest(url: fileURL, offset: offset, length: length)
-        } catch CloudDriveError.apiError(let code, _) where code == 401 || code == 403 || code == 410 {
-            // URL expired between cache and use — invalidate and retry once.
+            // 短超时:OneDrive 的预签名 dlink 偶发对 Range 续传请求挂起不返回
+            // (连接已建立、服务端却不发数据)。12s 内拿不到就当失败,刷新 dlink 换连接重试,
+            // 远比干等到上层 30s 硬超时、再把整首歌标记失败要好。
+            return try await helper.rangeRequest(url: fileURL, offset: offset, length: length, timeoutSeconds: 12)
+        } catch {
+            // 任何失败(超时挂起 / 连接中断 / 401·403·410 dlink 过期)都刷新 dlink 重试一次。
+            // 重新 GET item 拿到的是全新预签名 URL(通常落在另一 CDN 节点),URLSession
+            // 会对它另起连接,绕开上一条挂死的连接。两次合计 28s < 上层 30s 硬超时。
+            plog("☁️ OneDrive fetchRange retry after \(error.localizedDescription) offset=\(offset) len=\(length)")
             invalidateDownloadURL(for: path)
             let fresh = try await getDownloadURL(for: path)
-            return try await helper.rangeRequest(url: fresh, offset: offset, length: length)
+            return try await helper.rangeRequest(url: fresh, offset: offset, length: length, timeoutSeconds: 16)
         }
     }
 
