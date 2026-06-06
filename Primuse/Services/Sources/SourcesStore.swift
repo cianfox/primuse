@@ -34,7 +34,12 @@ final class SourcesStore {
     private let decoder = JSONDecoder()
 
     init(fileManager: FileManager = .default) {
+        // tvOS 只允许写 Caches / tmp;须与 LibrarySnapshotSync / MusicLibrary 同目录。
+        #if os(tvOS)
+        let appSupport = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        #else
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        #endif
         let directory = appSupport.appendingPathComponent("Primuse", isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 

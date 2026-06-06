@@ -26,7 +26,13 @@ final class LibrarySnapshotSync: Sendable {
     private var credRecordID: CKRecord.ID { CKRecord.ID(recordName: credRecordName) }
 
     private var directory: URL {
+        // tvOS 只允许写 Caches / tmp,Application Support 不可创建/写入,会导致
+        // 快照写盘失败("No such file or directory")。tvOS 改用 Caches。
+        #if os(tvOS)
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        #else
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        #endif
         return base.appendingPathComponent("Primuse", isDirectory: true)
     }
     private var libraryCacheURL: URL { directory.appendingPathComponent("library-cache.json") }
