@@ -84,6 +84,17 @@ schemes:
     archive:
       config: Release
 
+  PrimuseTV:
+    build:
+      targets:
+        PrimuseTV: all
+        PrimuseKit: all
+        PrimuseTopShelf: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
   Primuse:
     type: application
