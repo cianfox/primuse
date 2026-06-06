@@ -477,6 +477,16 @@ targets:
           # 仅供独立预览 target(tvpreview.yml)使用、被 git 忽略的生成文件,
           # 不应进入正式 tvOS app 的资源/源
           - "Info-preview.plist"
+      # 复用 iOS app 的「干净」曲库数据核心(与 tvpreview.yml 一致,直接编进 tvOS app)
+      - path: Primuse/Services/Library/MusicLibrary.swift
+      - path: Primuse/Services/Library/LibraryDatabase.swift
+      - path: Primuse/Services/Library/PlayHistoryStore.swift
+      - path: Primuse/Services/Sources/SourcesStore.swift
+      - path: Primuse/Services/Metadata/MetadataAssetStore.swift
+      - path: Primuse/Services/Metadata/FileMetadataReader.swift
+      - path: Primuse/Services/Cloud/LibrarySnapshotSync.swift
+      - path: Primuse/Utilities/FileLogger.swift
+      - path: Primuse/Utilities/Extensions/TimeInterval+Format.swift
     resources:
       - path: PrimuseTV/Resources
     dependencies:
