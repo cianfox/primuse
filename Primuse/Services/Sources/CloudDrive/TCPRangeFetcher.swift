@@ -122,11 +122,23 @@ enum TCPRangeFetcher {
                 })
             }
 
-            // 3) 读到 EOF。
+            // 3) 收响应。优先按 Content-Length 收满即停(不依赖服务端是否真的 close —
+            //    若 CDN 无视 Connection: close 走 keep-alive 就没有 EOF, 死等 EOF 会拖到超时);
+            //    无 Content-Length(如 chunked)再回退到读 EOF。
+            let sep = Data([0x0D, 0x0A, 0x0D, 0x0A])
             var raw = Data()
+            var headerEnd: Int? = nil
+            var contentLength: Int? = nil
             while true {
                 let (chunk, isComplete) = try await receiveOnce(conn)
                 if let chunk, !chunk.isEmpty { raw.append(chunk) }
+                if headerEnd == nil, let r = raw.range(of: sep) {
+                    headerEnd = r.upperBound
+                    contentLength = Self.contentLength(inHeaders: raw.subdata(in: raw.startIndex..<r.lowerBound))
+                }
+                if let he = headerEnd, let cl = contentLength, raw.count - he >= cl {
+                    break
+                }
                 if isComplete { break }
             }
 
@@ -183,6 +195,19 @@ enum TCPRangeFetcher {
         default:
             throw FetchError.http(status)
         }
+    }
+
+    /// 从已收到的 header 区解析 Content-Length(无则返回 nil，交给 EOF/chunked 路径)。
+    private static func contentLength(inHeaders headerData: Data) -> Int? {
+        guard let s = String(data: headerData, encoding: .isoLatin1) else { return nil }
+        for line in s.components(separatedBy: "\r\n") {
+            if line.lowercased().hasPrefix("content-length:") {
+                let v = line.drop(while: { $0 != ":" }).dropFirst()
+                    .trimmingCharacters(in: .whitespaces)
+                return Int(v)
+            }
+        }
+        return nil
     }
 
     /// 解 HTTP/1.1 chunked transfer-encoding。
