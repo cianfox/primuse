@@ -138,6 +138,10 @@ struct CloudDriveConnectionView: View {
             VStack(spacing: 24) {
                 Spacer().frame(height: 30)
 
+                if source.type == .pan115 || source.type == .pan123 {
+                    pendingApprovalBanner
+                }
+
                 Image(systemName: "key.fill")
                     .font(.system(size: 44))
                     .foregroundStyle(.orange.gradient)
@@ -163,6 +167,29 @@ struct CloudDriveConnectionView: View {
                 Spacer().frame(height: 40)
             }
         }
+    }
+
+    /// 115 / 123 暂未对普通用户开放的说明横幅:告知正在申请官方接入资质。
+    private var pendingApprovalBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "clock.badge.exclamationmark")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(source.type.displayName) 暂未开放")
+                    .font(.subheadline).fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                Text("猿音正在向 \(source.type.displayName) 开放平台申请官方接入资质,审核通过后即可直接登录使用,敬请期待。若你已自有该平台的开发者应用,也可按下方步骤填入凭证先行试用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.12), in: .rect(cornerRadius: 12))
+        .padding(.horizontal, 24)
     }
 
     private var platformGuideText: String {

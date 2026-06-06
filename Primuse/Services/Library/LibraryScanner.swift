@@ -62,9 +62,11 @@ actor LibraryScanner {
 
                         let localURL = try await connector.localURL(for: file.path)
                         let songID = generateID(sourceID: source.id, path: file.path)
-                        // localURL 是 cache 内的 sanitized 名 (路径里的 / 换成 _),
-                        // fallback title 用原始 file.path 的 basename 才正常。
-                        let originalBaseName = ((file.path as NSString).lastPathComponent as NSString).deletingPathExtension
+                        // fallback title 用 file.name(真实文件名)的 basename。
+                        // 不能用 file.path:NAS/本地的 path 是可读路径没问题,但 OneDrive
+                        // 等云盘的 path 是 item ID(如 EA8F…!s…),拿它当标题会让歌词/封面
+                        // 刮削用一串乱码去搜、匹配到无关内容。file.name 各源都是真实文件名。
+                        let originalBaseName = ((file.name as NSString).lastPathComponent as NSString).deletingPathExtension
                         let metadata = await metadataService.loadMetadata(
                             for: localURL,
                             cacheKey: songID,
