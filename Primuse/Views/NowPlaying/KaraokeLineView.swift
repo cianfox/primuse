@@ -11,8 +11,8 @@ import PrimuseKit
 ///   整字一起亮。
 /// - **字级 bounce**: 当前唱的字 scale 1.0 → 1.04 → 1.0 走 sin 曲线, 像被
 ///   节奏「点」起来一下。anchor=.bottom 让字向上抬, 不影响行高。
-/// - **lookahead 提前唤醒 100ms**: 字真正唱出来那一刻, 扫光已基本到位 +
-///   bounce 在最高点, 跟人耳节奏感对齐。
+/// - **lookahead 提前唤醒 100ms**: 字真正唱出来那一刻, 扫光已基本到位。
+///   bounce 不提前, 避免切行前先弹一下旧句子。
 /// - **easeOut 曲线**: 前快后慢, 跟唱字的能量曲线吻合。
 struct KaraokeLineView: View {
     let line: LyricLine
@@ -24,6 +24,9 @@ struct KaraokeLineView: View {
     let timeAt: (Date) -> TimeInterval
     /// 外层已经有 TimelineView 时传入固定时间，避免嵌套 60Hz 刷新。
     let fixedTime: TimeInterval?
+    /// 超过该时间后，这一行已经让位给下一行；即使外层 active index 还没刷新，
+    /// 也不要继续在旧行上扫光或弹动。
+    let deactivationTime: TimeInterval?
 
     init(
         line: LyricLine,
@@ -32,7 +35,8 @@ struct KaraokeLineView: View {
         activeColor: Color,
         inactiveColor: Color,
         timeAt: @escaping (Date) -> TimeInterval,
-        fixedTime: TimeInterval? = nil
+        fixedTime: TimeInterval? = nil,
+        deactivationTime: TimeInterval? = nil
     ) {
         self.line = line
         self.fontSize = fontSize
@@ -41,9 +45,10 @@ struct KaraokeLineView: View {
         self.inactiveColor = inactiveColor
         self.timeAt = timeAt
         self.fixedTime = fixedTime
+        self.deactivationTime = deactivationTime
     }
 
-    /// 提前进入过渡的时间 — 让字真正唱出来的时刻已经亮了 80-90%。
+    /// 扫光提前进入过渡的时间 — 让字真正唱出来的时刻已经亮了 80-90%。
     private static let lookaheadSec: TimeInterval = 0.10
 
     /// 字内过渡跨度的下限 — 短字 (e.g. "啊" 30ms) 会瞬切, 强行至少 180ms。
@@ -58,11 +63,20 @@ struct KaraokeLineView: View {
 
     var body: some View {
         if let fixedTime {
-            renderLine(at: fixedTime)
+            renderLineRespectingDeactivation(at: fixedTime)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { ctx in
-                renderLine(at: timeAt(ctx.date))
+                renderLineRespectingDeactivation(at: timeAt(ctx.date))
             }
+        }
+    }
+
+    @ViewBuilder
+    private func renderLineRespectingDeactivation(at now: TimeInterval) -> some View {
+        if let deactivationTime, now >= deactivationTime {
+            renderInactiveLine()
+        } else {
+            renderLine(at: now)
         }
     }
 
@@ -83,11 +97,32 @@ struct KaraokeLineView: View {
         }
     }
 
+    @ViewBuilder
+    private func renderInactiveLine() -> some View {
+        if let syllables = line.syllables, !syllables.isEmpty {
+            LyricsFlowLayout(measurementKey: fontSize) {
+                ForEach(syllables.indices, id: \.self) { i in
+                    Text(syllables[i].text)
+                        .font(.system(size: fontSize, weight: weight))
+                        .foregroundStyle(inactiveColor)
+                        .fixedSize()
+                }
+            }
+        } else {
+            Text(line.text)
+                .font(.system(size: fontSize, weight: weight))
+                .foregroundStyle(inactiveColor)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     /// 单个 syllable: 双层 Text + 扫光 mask + scale bounce。
     @ViewBuilder
     private func syllableView(_ syl: LyricSyllable, at now: TimeInterval) -> some View {
-        let progress = computeProgress(syl: syl, now: now)
-        let scale = 1.0 + Self.bumpAmount * bellCurve(progress)
+        let sweepProgress = computeSweepProgress(syl: syl, now: now)
+        let bumpProgress = computeBumpProgress(syl: syl, now: now)
+        let scale = 1.0 + Self.bumpAmount * bellCurve(bumpProgress)
         ZStack {
             // 底层: inactive 色, 总是显示
             Text(syl.text)
@@ -95,7 +130,7 @@ struct KaraokeLineView: View {
             // 顶层: active 色, 用 mask 露出 progress 部分
             Text(syl.text)
                 .foregroundStyle(activeColor)
-                .mask(sweepMask(progress: progress))
+                .mask(sweepMask(progress: sweepProgress))
         }
         .font(.system(size: fontSize, weight: weight))
         .scaleEffect(scale, anchor: .bottom)
@@ -122,8 +157,8 @@ struct KaraokeLineView: View {
         )
     }
 
-    /// 字级 progress 0..1: 时间 / 过渡跨度, easeOut。
-    private func computeProgress(syl: LyricSyllable, now: TimeInterval) -> Double {
+    /// 扫光 progress 0..1: 可以提前预热, 让唱到该字时亮度已经跟上。
+    private func computeSweepProgress(syl: LyricSyllable, now: TimeInterval) -> Double {
         let transitionStart = syl.start - Self.lookaheadSec
         let dur = max(syl.end - syl.start, Self.minTransitionSec)
         let transitionEnd = syl.start + dur
@@ -131,6 +166,16 @@ struct KaraokeLineView: View {
         if now >= transitionEnd { return 1 }
         let raw = (now - transitionStart) / (transitionEnd - transitionStart)
         return easeOut(raw)
+    }
+
+    /// bounce progress 不提前。切行时先切到新句, 再在新句的第一个字上弹动。
+    private func computeBumpProgress(syl: LyricSyllable, now: TimeInterval) -> Double {
+        let transitionStart = syl.start
+        let dur = max(syl.end - syl.start, Self.minTransitionSec)
+        let transitionEnd = syl.start + dur
+        if now <= transitionStart { return 0 }
+        if now >= transitionEnd { return 1 }
+        return (now - transitionStart) / (transitionEnd - transitionStart)
     }
 
     private func easeOut(_ t: Double) -> Double {
