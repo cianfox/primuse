@@ -7,6 +7,7 @@ xcuserdata/
 
 # Build outputs
 build/
+build_device/
 DerivedData/
 
 # Swift Package Manager
