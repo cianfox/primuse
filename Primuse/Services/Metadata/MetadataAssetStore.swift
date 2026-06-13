@@ -494,9 +494,18 @@ actor MetadataAssetStore {
 
     /// 删掉 content/ 下没人引用的 jpeg。在 dedup 跑完后调一次, 用户清缓存
     /// 也会调到。开销 O(redirects + content), 都是 32 字节读, 很轻。
+    ///
+    /// 竞态保护: 收集 referencedShas 与扫 content/ 之间存在窗口, 期间并发的
+    /// writeContentAddressed 可能先写 content/<sha>.jpg、后写 redirect ref ——
+    /// 若新 content 文件在收集 referencedShas 之后落盘, 它不会出现在引用集合
+    /// 里, 会被误判成孤儿删掉, 随后写下的 redirect 就指向已删内容。所以只删
+    /// mtime 早于本次 GC 启动前 5 分钟的孤儿, 给"内容已写、ref 待写"的在途
+    /// 写入留足缓冲, 永不碰新近写入的 content 文件。
     nonisolated private static func collectOrphanedContent(targetDirs: [URL], contentDir: URL) {
         let fm = FileManager.default
         let prefix = MetadataAssetStore.redirectPrefixData
+        // 早于这个时刻写入的 content 文件才允许被当孤儿删除。
+        let cutoff = Date().addingTimeInterval(-5 * 60)
 
         // 收集所有正在被引用的 SHA
         var referencedShas = Set<String>()
@@ -512,14 +521,18 @@ actor MetadataAssetStore {
             }
         }
 
-        // 扫 content/, 没在 referenced 集合里的就是孤儿
-        guard let contents = try? fm.contentsOfDirectory(at: contentDir, includingPropertiesForKeys: nil) else { return }
+        // 扫 content/, 没在 referenced 集合里、且写入时间早于 cutoff 的才是孤儿
+        guard let contents = try? fm.contentsOfDirectory(
+            at: contentDir,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
         var removed = 0
         for file in contents where file.pathExtension == "jpg" {
             let sha = file.deletingPathExtension().lastPathComponent
-            if !referencedShas.contains(sha) {
-                if (try? fm.removeItem(at: file)) != nil { removed += 1 }
-            }
+            guard !referencedShas.contains(sha) else { continue }
+            let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            guard mtime < cutoff else { continue }  // 新近写入的, 可能 ref 还在途, 留着
+            if (try? fm.removeItem(at: file)) != nil { removed += 1 }
         }
         if removed > 0 {
             plog("🧹 MetadataAssetStore content GC: removed \(removed) orphan(s)")

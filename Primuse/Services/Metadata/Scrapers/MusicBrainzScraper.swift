@@ -113,7 +113,15 @@ actor MusicBrainzScraper: MusicScraper {
             }
         }
         lastRequestTime = .now
-        let (data, _) = try await session.data(from: url)
+        let (data, response) = try await session.data(from: url)
+        // MusicBrainz 超限返回 503(也可能 429),读取 Retry-After 抛 rateLimited,
+        // 让 ScraperManager 退避该源、本轮跳过,不再继续撞限流。
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 503 || http.statusCode == 429 {
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+                .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            throw ScraperError.rateLimited(retryAfter: retryAfter)
+        }
         return data
     }
 

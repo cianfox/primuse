@@ -89,7 +89,11 @@ enum PlaylistImporter {
         }
         guard !file.tracks.isEmpty else { throw ImportError.empty }
 
-        let songsByID = Dictionary(uniqueKeysWithValues: library.songs.map { ($0.id, $0) })
+        // 匹配池用 visibleSongs(排除停用源), 与手动匹配 / 歌单展示口径一致:
+        // 命中停用源的歌只会出现在全量 library.songs 里, 写进歌单后通过
+        // songs(forPlaylist:) 也看不到, 会造成"导入成功却凭空少歌"。
+        let visibleSongs = library.visibleSongs
+        let songsByID = Dictionary(uniqueKeysWithValues: visibleSongs.map { ($0.id, $0) })
         let entries = file.tracks.map { track -> ImportEntry in
             // 1. song.id 完全匹配
             if let s = songsByID[track.songID] {
@@ -101,7 +105,7 @@ enum PlaylistImporter {
                 )
             }
             // 2. basename 匹配
-            if let s = matchByBasename(track.filePath, in: library.songs) {
+            if let s = matchByBasename(track.filePath, in: visibleSongs) {
                 return ImportEntry(
                     displayTitle: track.title,
                     displayArtist: track.artistName,
@@ -110,7 +114,7 @@ enum PlaylistImporter {
                 )
             }
             // 3. 模糊匹配 title+artist
-            if let s = matchByTitleArtist(title: track.title, artist: track.artistName, in: library.songs) {
+            if let s = matchByTitleArtist(title: track.title, artist: track.artistName, in: visibleSongs) {
                 return ImportEntry(
                     displayTitle: track.title,
                     displayArtist: track.artistName,
@@ -165,10 +169,12 @@ enum PlaylistImporter {
         }
         guard !rawEntries.isEmpty else { throw ImportError.empty }
 
+        // 匹配池用 visibleSongs(排除停用源), 与手动匹配 / 歌单展示口径一致。
+        let visibleSongs = library.visibleSongs
         let entries = rawEntries.map { raw -> ImportEntry in
             let (displayTitle, displayArtist) = parseExtInf(raw.extInf, fallbackPath: raw.path)
             // 1. basename 匹配
-            if let s = matchByBasename(raw.path, in: library.songs) {
+            if let s = matchByBasename(raw.path, in: visibleSongs) {
                 return ImportEntry(
                     displayTitle: displayTitle,
                     displayArtist: displayArtist,
@@ -177,7 +183,7 @@ enum PlaylistImporter {
                 )
             }
             // 2. 模糊匹配
-            if let s = matchByTitleArtist(title: displayTitle, artist: displayArtist, in: library.songs) {
+            if let s = matchByTitleArtist(title: displayTitle, artist: displayArtist, in: visibleSongs) {
                 return ImportEntry(
                     displayTitle: displayTitle,
                     displayArtist: displayArtist,

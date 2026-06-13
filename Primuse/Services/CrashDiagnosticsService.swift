@@ -14,7 +14,7 @@ private let crashLog = Logger(subsystem: "com.welape.yuanyin", category: "Crash"
 /// - app 启动 24h 内: `didReceive(_ payloads: [MXDiagnosticPayload])` 会被
 ///   异步回调,把上次启动里发生的 crash / hang / disk write 异常等打包给我
 /// - app 一天上线最多一次,我把每份 payload 直接 dump JSON 到 disk,文件名
-///   形如 `crash-<unix-ts>.json`
+///   形如 `crash-<unix-ts>-<uuid8>.json`(uuid8 保证同一秒内多份 payload 不互相覆盖)
 /// - 文件容量上限 50 份, 超过按时间最老的删 (LRU)
 @MainActor
 final class CrashDiagnosticsService: NSObject {
@@ -70,7 +70,8 @@ final class CrashDiagnosticsService: NSObject {
         Task { @MainActor in
             guard let dir = Self.reportsDirectory() else { return }
             let stamp = Int(Date().timeIntervalSince1970)
-            let filename = "crash-\(stamp).json"
+            let unique = UUID().uuidString.prefix(8)
+            let filename = "crash-\(stamp)-\(unique).json"
             let url = dir.appendingPathComponent(filename)
             do {
                 try data.write(to: url, options: .atomic)

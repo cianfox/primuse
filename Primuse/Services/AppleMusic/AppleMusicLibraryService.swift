@@ -72,6 +72,13 @@ final class AppleMusicLibraryService {
     private let appleMusic: AppleMusicService
     private var syncTask: Task<Void, Never>?
     private var syncGeneration = UUID()
+    /// 进度看门狗用的时间戳 ── 每收到一页 user library / 处理完一个歌单就续期。
+    /// 看门狗只在「连续 stallTimeout 秒没有任何进度」时才判超时, 而不是给整个 sync
+    /// 一个固定总时限。大库 (几千首 + 几十个歌单, 多次网络往返) 只要还在持续推进就
+    /// 不会被误杀; 真正卡死 (网络挂起) 才会触发, 避免大库用户陷入永久"同步超时"循环。
+    private var lastSyncProgressAt: Date = .distantPast
+    /// 单步无进度的容忍窗口。一页 / 一个歌单的网络往返远小于这个值, 只有真卡住才会超。
+    private static let syncStallTimeout: TimeInterval = 30
     /// in-memory cache: PrimuseKit.Song.filePath (= MusicItemID.rawValue)
     /// → MusicKit.Song. sync 时填, play 时查 — 让 player.play(primuseSong)
     /// 不用每次再发 catalog lookup。冷启动后 cache 空, miss 时回退到
@@ -279,18 +286,49 @@ final class AppleMusicLibraryService {
         return s
     }
 
+    /// 标记同步又往前走了一步 (拉到一页 / 处理完一个歌单) ── 给看门狗续期。
+    /// 必须在 @MainActor 上调用 (本类整体 @MainActor 隔离, runSync 也是), 直接写。
+    private func markSyncProgress() {
+        lastSyncProgressAt = Date()
+    }
+
+    /// 进度看门狗: 不给整个 sync 一个固定总时限 (大库会被误杀), 而是每隔一小段轮询,
+    /// 只要 `lastSyncProgressAt` 还在持续刷新就一直等; 连续 `syncStallTimeout` 秒没有
+    /// 任何进度才判定卡死, cancel 并置 .failed。这样几千首 + 几十个歌单的大库只要还在
+    /// 推进就不会超时, 真正网络挂起才会触发。
     private func scheduleSyncTimeout(generation: UUID) {
+        // 开始计时基准 ── 让首页请求也有完整的 stall 窗口。
+        markSyncProgress()
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 12_000_000_000)
-            await MainActor.run { [weak self] in
-                guard let self,
-                      self.syncGeneration == generation,
-                      self.syncTask != nil else { return }
-                self.syncTask?.cancel()
-                self.syncTask = nil
-                self.syncGeneration = UUID()
-                self.state = .failed("Apple Music 同步超时, 请检查 Music 权限或稍后重试")
-                plog("⚠️Apple Music library sync timeout")
+            // 轮询粒度: 1s 检查一次。看门狗在以下三种情况退出: sync 已结束 (generation
+            // 变了 / syncTask 清空)、或连续 stall 满 syncStallTimeout 判超时。
+            while true {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                let timedOut: Bool = await MainActor.run { [weak self] in
+                    guard let self,
+                          self.syncGeneration == generation,
+                          self.syncTask != nil else {
+                        // sync 已经收尾, 看门狗用完即弃。
+                        return false
+                    }
+                    guard Date().timeIntervalSince(self.lastSyncProgressAt) >= Self.syncStallTimeout else {
+                        return false
+                    }
+                    self.syncTask?.cancel()
+                    self.syncTask = nil
+                    self.syncGeneration = UUID()
+                    self.state = .failed("Apple Music 同步超时, 请检查 Music 权限或稍后重试")
+                    plog("⚠️Apple Music library sync timeout (stalled \(Int(Self.syncStallTimeout))s)")
+                    return true
+                }
+                if timedOut { return }
+                // sync 已结束 (generation 变更 / syncTask 清空) 时退出, 不再空转。
+                let stillRunning = await MainActor.run { [weak self] in
+                    guard let self else { return false }
+                    return self.syncGeneration == generation && self.syncTask != nil
+                }
+                if !stillRunning { return }
             }
         }
     }
@@ -307,6 +345,7 @@ final class AppleMusicLibraryService {
             var request = MusicLibraryRequest<MusicKit.Song>()
             request.limit = 100
             let response = try await request.response()
+            markSyncProgress()
             var allMusicKitSongs: [MusicKit.Song] = []
             allMusicKitSongs.append(contentsOf: response.items)
 
@@ -318,6 +357,7 @@ final class AppleMusicLibraryService {
                 guard let next = try await currentBatch.nextBatch() else { break }
                 allMusicKitSongs.append(contentsOf: next)
                 currentBatch = next
+                markSyncProgress()   // 每拉到一页就给看门狗续期, 大库不会被误判超时
             }
 
             if Task.isCancelled { return }
@@ -386,6 +426,7 @@ final class AppleMusicLibraryService {
             var request = MusicLibraryRequest<MusicKit.Playlist>()
             request.limit = 100
             let response = try await request.response()
+            markSyncProgress()
             var allPlaylists: [MusicKit.Playlist] = []
             allPlaylists.append(contentsOf: response.items)
             var currentBatch = response.items
@@ -394,6 +435,7 @@ final class AppleMusicLibraryService {
                 guard let next = try await currentBatch.nextBatch() else { break }
                 allPlaylists.append(contentsOf: next)
                 currentBatch = next
+                markSyncProgress()
             }
             plog("🎵 Apple Music user playlists: \(allPlaylists.count)")
 
@@ -401,7 +443,9 @@ final class AppleMusicLibraryService {
             var failedIDs = Set<String>()
             for amPlaylist in allPlaylists {
                 if Task.isCancelled { return 0 }
-                switch await fetchUserPlaylistMirror(amPlaylist) {
+                let result = await fetchUserPlaylistMirror(amPlaylist)
+                markSyncProgress()   // 每处理完一个歌单 (含 .with([.tracks]) 往返) 续期
+                switch result {
                 case .mirror(let mirror):
                     fetchedMirrors.append(mirror)
                 case .empty(let id, let name):

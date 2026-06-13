@@ -17,6 +17,11 @@ actor ArtworkFetchService {
     private var inFlightAlbum: [String: Task<Data?, Never>] = [:]
     private var inFlightArtist: [String: Task<Data?, Never>] = [:]
 
+    /// Cached scraper instances keyed by source config id, so per-source rate
+    /// limiting (lastRequestTime/minInterval lives on the scraper instance) is
+    /// shared across requests instead of being reset on every fetch.
+    private var scraperCache: [String: any MusicScraper] = [:]
+
     // MARK: - Album Cover
 
     /// Fetch album cover: check cache → search online → store
@@ -79,7 +84,7 @@ actor ArtworkFetchService {
 
         for config in settings.enabledSources where config.type.supportsCover {
             do {
-                let scraper = MusicScraperFactory.create(for: config)
+                let scraper = scraper(for: config)
                 let searchResult = try await scraper.search(query: query, artist: artistName, album: albumTitle, limit: 5)
                 if let best = searchResult.items.first,
                    let coverUrl = try await resolveCoverURL(for: best, with: scraper) {
@@ -88,6 +93,7 @@ actor ArtworkFetchService {
                     }
                 }
             } catch {
+                plog("⚠️ ArtworkFetch: album cover search failed for '\(query)' via \(config.type.displayName): \(error.localizedDescription)")
                 continue
             }
         }
@@ -99,7 +105,7 @@ actor ArtworkFetchService {
         let settings = ScraperSettings.load()
         for config in settings.enabledSources where config.type.supportsCover {
             do {
-                let scraper = MusicScraperFactory.create(for: config)
+                let scraper = scraper(for: config)
                 let searchResult = try await scraper.search(query: artistName, artist: artistName, album: nil, limit: 3)
                 if let best = searchResult.items.first,
                    let coverUrl = try await resolveCoverURL(for: best, with: scraper) {
@@ -108,6 +114,7 @@ actor ArtworkFetchService {
                     }
                 }
             } catch {
+                plog("⚠️ ArtworkFetch: artist image search failed for '\(artistName)' via \(config.type.displayName): \(error.localizedDescription)")
                 continue
             }
         }
@@ -116,6 +123,18 @@ actor ArtworkFetchService {
 
 
     // MARK: - Helpers
+
+    /// Return a cached scraper for the source, creating it on first use. Caching
+    /// keeps each scraper's rate limiter alive across the many album/artist
+    /// requests that Phase 2 enrichment issues back-to-back.
+    private func scraper(for config: ScraperSourceConfig) -> any MusicScraper {
+        if let cached = scraperCache[config.id] {
+            return cached
+        }
+        let scraper = MusicScraperFactory.create(for: config)
+        scraperCache[config.id] = scraper
+        return scraper
+    }
 
     private func downloadImage(url: String, sourceConfig: ScraperSourceConfig) async throws -> Data? {
         try await ConfigurableScraper.downloadResource(from: url, sourceConfig: sourceConfig)

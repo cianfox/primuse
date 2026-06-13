@@ -106,13 +106,29 @@ enum PlayHistoryArchiver {
     // MARK: - Internals
 
     private static func archive(year: Int, entries: [PlayHistoryStore.Entry]) {
-        let archive = ArchivedYear(year: year, entries: entries, archivedAt: Date())
+        // 跟已有归档合并: live store 是 5000 条 FIFO, 跨年重度听歌会淘汰当年
+        // 早期 entries, 直接覆盖会丢掉 12/28 预归档时存下的更完整数据。按
+        // (songID, playedAt) == Entry.id 去重, 旧归档优先保留。
+        let mergedEntries: [PlayHistoryStore.Entry]
+        if let existing = loadArchive(year: year) {
+            var seen = Set<String>()
+            var merged: [PlayHistoryStore.Entry] = []
+            merged.reserveCapacity(existing.entries.count + entries.count)
+            for entry in existing.entries + entries where seen.insert(entry.id).inserted {
+                merged.append(entry)
+            }
+            mergedEntries = merged
+        } else {
+            mergedEntries = entries
+        }
+
+        let archive = ArchivedYear(year: year, entries: mergedEntries, archivedAt: Date())
         let url = archiveURL(for: year)
         do {
             try ensureDirectory()
             let data = try makeEncoder().encode(archive)
             try data.write(to: url, options: .atomic)
-            plog("📦 PlayHistoryArchiver: archived year=\(year), entries=\(entries.count)")
+            plog("📦 PlayHistoryArchiver: archived year=\(year), entries=\(mergedEntries.count)")
         } catch {
             plog("⚠️ PlayHistoryArchiver: archive year=\(year) failed: \(error.localizedDescription)")
         }

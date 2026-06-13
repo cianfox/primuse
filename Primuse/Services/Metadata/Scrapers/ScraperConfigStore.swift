@@ -203,8 +203,15 @@ final class ScraperConfigStore: @unchecked Sendable {
         guard let data = try? encoder.encode(config) else { return }
         let fileURL = configDir.appendingPathComponent("\(config.id).json")
         try? data.write(to: fileURL, options: .atomic)
+
+        // CloudKit 拉回的 config 因 encode 剥离必然 secrets == nil，写入 cache 前
+        // 旁路补回 secrets（磁盘文件或内置 fallback），否则加密歌词源在本会话内
+        // 会因 secrets 缺失而静默失效，要等 App 重启才恢复。
+        var resolved = config
+        injectSecrets(into: &resolved, context: "applyRemoteConfig")
+
         lock.lock()
-        cache[config.id] = config
+        cache[config.id] = resolved
         lock.unlock()
     }
 
@@ -250,22 +257,31 @@ final class ScraperConfigStore: @unchecked Sendable {
             }
 
             // 旁路加载 <id>.secrets.json — 不进同步、不进仓库、不参与 Codable
-            let secretsURL = configDir.appendingPathComponent("\(config.id).secrets.json")
-            let secretsExists = FileManager.default.fileExists(atPath: secretsURL.path)
-            if let secretsData = try? Data(contentsOf: secretsURL),
-               let secrets = try? JSONDecoder().decode([String: String].self, from: secretsData) {
-                config.secrets = secrets
-                plog("📦 ScraperConfigStore loadAll: \(config.id) v\(config.version) + secrets file keys=\(Array(secrets.keys))")
-            } else if let bundled = AppSecrets.scraperSecrets[config.id] {
-                // Fallback: 用户没手动放 secrets 文件, 但 AppSecrets 内置了
-                // 一份解密参数, 自动注入让用户开箱即用。
-                config.secrets = bundled
-                plog("📦 ScraperConfigStore loadAll: \(config.id) v\(config.version) + secrets builtin keys=\(Array(bundled.keys))")
-            } else {
-                plog("📦 ScraperConfigStore loadAll: \(config.id) v\(config.version) NO secrets (file exists=\(secretsExists))")
-            }
+            injectSecrets(into: &config, context: "loadAll")
 
             cache[config.id] = config
+        }
+    }
+
+    /// 给一个 config 注入旁路 secrets：优先读磁盘 `<id>.secrets.json`，否则
+    /// 回退到 `AppSecrets.scraperSecrets` 内置参数。`loadAll` 与
+    /// `applyRemoteConfig` 共用——因为 `ScraperConfig.encode(to:)` 故意不输出
+    /// secrets，CloudKit 拉回的 config 必然 `secrets == nil`，必须在写入 cache
+    /// 前补回，否则加密歌词源在本会话内会因 secrets 缺失而静默失效。
+    private func injectSecrets(into config: inout ScraperConfig, context: String) {
+        let secretsURL = configDir.appendingPathComponent("\(config.id).secrets.json")
+        let secretsExists = FileManager.default.fileExists(atPath: secretsURL.path)
+        if let secretsData = try? Data(contentsOf: secretsURL),
+           let secrets = try? JSONDecoder().decode([String: String].self, from: secretsData) {
+            config.secrets = secrets
+            plog("📦 ScraperConfigStore \(context): \(config.id) v\(config.version) + secrets file keys=\(Array(secrets.keys))")
+        } else if let bundled = AppSecrets.scraperSecrets[config.id] {
+            // Fallback: 用户没手动放 secrets 文件, 但 AppSecrets 内置了
+            // 一份解密参数, 自动注入让用户开箱即用。
+            config.secrets = bundled
+            plog("📦 ScraperConfigStore \(context): \(config.id) v\(config.version) + secrets builtin keys=\(Array(bundled.keys))")
+        } else {
+            plog("📦 ScraperConfigStore \(context): \(config.id) v\(config.version) NO secrets (file exists=\(secretsExists))")
         }
     }
 

@@ -112,7 +112,15 @@ actor ITunesScraper: MusicScraper {
             }
         }
         lastRequestTime = .now
-        let (data, _) = try await session.data(from: url)
+        let (data, response) = try await session.data(from: url)
+        // Apple 限流时返回 429(偶发 403/503),读取 Retry-After 抛 rateLimited,
+        // 让 ScraperManager 退避该源、本轮跳过,不再继续撞限流。
+        if let http = response as? HTTPURLResponse,
+           http.statusCode == 429 || http.statusCode == 403 || http.statusCode == 503 {
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+                .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            throw ScraperError.rateLimited(retryAfter: retryAfter)
+        }
         return data
     }
 

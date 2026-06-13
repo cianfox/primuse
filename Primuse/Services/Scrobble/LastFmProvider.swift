@@ -136,11 +136,16 @@ struct LastFmProvider: ScrobbleProvider {
         } else {
             request = URLRequest(url: baseURL)
             request.httpMethod = "POST"
-            var components = URLComponents()
-            components.queryItems = params
+            // 必须手动做 form-urlencoded 编码: URLComponents 走 RFC 3986,
+            // "+" 是合法 query 字符不会被转义, 但 application/x-www-form-urlencoded
+            // 下服务端会把 "+" 解成空格 -> 客户端按原始 "+" 算的 api_sig 与服务端
+            // 按空格算的不匹配 (error 13 / HTTP 403), 含 "+" 的 title/artist/album
+            // 会签名失败。用 alphanumerics + "-._~" 的 allowed 集合把 "+" 编成 %2B。
+            let body = params
                 .sorted { $0.key < $1.key }
-                .map { URLQueryItem(name: $0.key, value: $0.value) }
-            request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+                .map { "\(Self.formEncode($0.key))=\(Self.formEncode($0.value))" }
+                .joined(separator: "&")
+            request.httpBody = body.data(using: .utf8)
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         }
         request.timeoutInterval = 30
@@ -153,6 +158,19 @@ struct LastFmProvider: ScrobbleProvider {
         }
         guard let http = response as? HTTPURLResponse else { throw ScrobbleError.invalidResponse }
         return (data, http)
+    }
+
+    /// application/x-www-form-urlencoded 转义: 只保留 unreserved 字符
+    /// (alphanumerics + "-._~"), 其余 (含 "+"/空格) 一律 %XX 编码, 确保服务端
+    /// 解出的值与客户端计算 api_sig 时的原始值一致。
+    private static let formAllowed: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "-._~")
+        return set
+    }()
+
+    static func formEncode(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? s
     }
 
     /// Last.fm api_sig 算法: 把 params (除 format/callback) 按 key 字母序拼接

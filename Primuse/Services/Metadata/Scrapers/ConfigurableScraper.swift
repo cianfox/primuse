@@ -286,6 +286,7 @@ actor ConfigurableScraper: MusicScraper {
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
+            request.timeoutInterval = 15
 
             // Merge endpoint-specific headers
             for (k, v) in endpoint.headers ?? [:] {
@@ -311,8 +312,7 @@ actor ConfigurableScraper: MusicScraper {
                 }
             }
 
-            let (data, _) = try await sessionManager.data(for: request)
-            return data
+            return try await performValidatedRequest(request)
         } else {
             // GET: params as query items
             var components = URLComponents(string: urlString)
@@ -329,13 +329,35 @@ actor ConfigurableScraper: MusicScraper {
             }
 
             var request = URLRequest(url: url)
+            request.timeoutInterval = 15
             for (k, v) in endpoint.headers ?? [:] {
                 request.setValue(v, forHTTPHeaderField: k)
             }
 
-            let (data, _) = try await sessionManager.data(for: request)
+            return try await performValidatedRequest(request)
+        }
+    }
+
+    /// 发请求并校验 HTTP 状态码:
+    /// - 2xx 返回 body
+    /// - 429 / 503 读取 Retry-After 抛 `ScraperError.rateLimited`,让 ScraperManager 退避或本轮跳过
+    /// - 其它非 2xx 抛 `ScraperError.networkError`,避免把错误页/JSON 错误体当成正常响应喂给 JS 脚本(脚本会静默返回空)
+    private func performValidatedRequest(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await sessionManager.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            // 非 HTTP 响应(理论上不会出现),按原行为返回 body
             return data
         }
+        if (200 ..< 300).contains(http.statusCode) {
+            return data
+        }
+        if http.statusCode == 429 || http.statusCode == 503 {
+            let retryAfter = (http.value(forHTTPHeaderField: "Retry-After")).flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            plog("⛔️ \(config.id) HTTP \(http.statusCode) rate limited, retryAfter=\(retryAfter.map(String.init) ?? "?")")
+            throw ScraperError.rateLimited(retryAfter: retryAfter)
+        }
+        plog("⛔️ \(config.id) HTTP \(http.statusCode) for \(request.url?.absoluteString ?? "?")")
+        throw ScraperError.networkError("HTTP \(http.statusCode)")
     }
 
     // MARK: - Template Substitution
@@ -530,6 +552,18 @@ actor ConfigurableScraper: MusicScraper {
         return (config, sourceConfig.cookie ?? config.cookie)
     }
 
+    /// Whether `host` matches a trusted domain at a DNS label boundary.
+    /// `host == domain` 或 `host` 以 `.domain` 结尾才算匹配，避免
+    /// "evil-kugou.com".hasSuffix("kugou.com") 这类后缀混淆绕过信任校验。
+    nonisolated static func host(_ host: String, matchesTrustDomain domain: String) -> Bool {
+        host == domain || host.hasSuffix("." + domain)
+    }
+
+    /// Whether `host` matches any of `trustDomains` at a DNS label boundary.
+    nonisolated static func isTrustedHost(_ host: String, trustDomains: [String]) -> Bool {
+        trustDomains.contains { Self.host(host, matchesTrustDomain: $0) }
+    }
+
     /// Only allow HTTP for trusted domains and local network addresses.
     /// All other HTTP URLs are upgraded to HTTPS.
     nonisolated static func enforceHTTPPolicy(_ urlString: String, trustDomains: [String]) -> String {
@@ -540,7 +574,7 @@ actor ConfigurableScraper: MusicScraper {
         if isLocalNetwork(host) { return urlString }
 
         // Allow HTTP for trusted domains
-        if trustDomains.contains(where: { host.hasSuffix($0) }) { return urlString }
+        if isTrustedHost(host, trustDomains: trustDomains) { return urlString }
 
         // Upgrade to HTTPS
         return "https://" + urlString.dropFirst(7)
@@ -624,6 +658,10 @@ private enum PlainHTTPClient {
         let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
         let queue = DispatchQueue(label: "Primuse.PlainHTTPClient.\(UUID().uuidString)")
 
+        // URLRequest 默认 timeoutInterval 为 60s; 未显式设置(<= 0)时退回 15s,
+        // 与 ScraperSessionManager 的 URLSession timeoutIntervalForRequest 一致。
+        let timeout = request.timeoutInterval > 0 ? request.timeoutInterval : 15
+
         return try await withCheckedThrowingContinuation { continuation in
             let stateBox = StateBox()
 
@@ -631,6 +669,13 @@ private enum PlainHTTPClient {
                 guard stateBox.markResumed() else { return }
                 connection.cancel()
                 continuation.resume(with: result)
+            }
+
+            // 整体超时:连接卡在 .preparing 或服务器接受连接后不回包时,
+            // receiveLoop 永不回调,这里兜底 cancel 连接并 finish,避免 continuation
+            // 永久挂起及 NWConnection 泄漏。finish 幂等,正常完成后此回调是 no-op。
+            queue.asyncAfter(deadline: .now() + timeout) {
+                finish(.failure(ScraperError.networkError("HTTP request timed out after \(Int(timeout))s")))
             }
 
             @Sendable func receiveLoop() {
@@ -875,7 +920,7 @@ final class ScraperSessionManager: NSObject, URLSessionTaskDelegate, @unchecked 
             return nil
         }
 
-        let trustedByConfig = trustDomains.contains(where: { host.hasSuffix($0) })
+        let trustedByConfig = ConfigurableScraper.isTrustedHost(host, trustDomains: trustDomains)
         let trustedByUser = SSLTrustStore.isTrustedSync(domain: host)
         guard trustedByConfig || trustedByUser else { return nil }
 
@@ -899,7 +944,7 @@ final class ScraperSessionManager: NSObject, URLSessionTaskDelegate, @unchecked 
 
         if method == NSURLAuthenticationMethodServerTrust,
            let trust = challenge.protectionSpace.serverTrust {
-            let trustedByConfig = trustDomains.contains(where: { host.hasSuffix($0) })
+            let trustedByConfig = ConfigurableScraper.isTrustedHost(host, trustDomains: trustDomains)
             let trustedByUser = SSLTrustStore.isTrustedSync(domain: host)
             if trustedByConfig || trustedByUser {
                 plog("🔒 SSL: TRUSTING \(host) (trustedByConfig=\(trustedByConfig) trustedByUser=\(trustedByUser))")
@@ -910,8 +955,11 @@ final class ScraperSessionManager: NSObject, URLSessionTaskDelegate, @unchecked 
                 if SecTrustEvaluateWithError(trust, &error) {
                     completionHandler(.useCredential, URLCredential(trust: trust))
                 } else {
-                    plog("🔒 SSL: trust evaluation failed for \(host): \(error?.localizedDescription ?? "?")")
-                    completionHandler(.useCredential, URLCredential(trust: trust))
+                    // Skipping hostname validation is intentional for trusted CDNs, but
+                    // a chain that still fails basic X.509 evaluation should not be blindly
+                    // accepted — fall back to the system default handling instead.
+                    plog("🔒 SSL: trust evaluation failed for \(host): \(error?.localizedDescription ?? "?") → default handling")
+                    completionHandler(.performDefaultHandling, nil)
                 }
                 return
             }

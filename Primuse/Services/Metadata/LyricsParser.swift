@@ -143,7 +143,7 @@ enum LyricsParser {
         let m = Double(min) ?? 0
         let s = Double(sec) ?? 0
         let f = Double(frac ?? "0") ?? 0
-        let divisor: Double = (frac?.count ?? 0) == 3 ? 1000 : 100
+        let divisor = pow(10, Double(frac?.count ?? 2))
         return m * 60 + s + f / divisor
     }
 

@@ -74,6 +74,9 @@ final class ScrobbleService {
         ) { [weak self] _ in
             Task { @MainActor in self?.scheduleRetry(reason: "settings changed") }
         }
+        // 上次会话遗留的待补报条目 —— 启动即调度, 否则要等下一次 settings 变化 /
+        // 新失败 / 用户手动 retry 才会动 (离线听歌后重启 app 的典型场景)。
+        if !queue.isEmpty { scheduleRetry(reason: "launch") }
     }
 
     // MARK: - Public API (AudioPlayerService 调用)
@@ -228,15 +231,30 @@ final class ScrobbleService {
     private func scheduleRetry(reason: String) {
         guard retryTask == nil || retryTask?.isCancelled == true else { return }
         guard !queue.isEmpty else { return }
+        // 总开关关闭时不调度 —— retryLoop 会立刻退出, 否则 "drain after loop
+        // exit" 会无限重启空转。用户重新打开会发 scrobbleSettingsChanged 触发。
+        guard ScrobbleSettingsStore.shared.isEnabled else { return }
         retryTask = Task { [weak self] in
             await self?.retryLoop()
-            await MainActor.run { self?.retryTask = nil }
+            await MainActor.run {
+                self?.retryTask = nil
+                // retryLoop 退出与置 nil 之间有挂起点, 此窗口内 enqueue 调
+                // scheduleRetry 会被 `retryTask == nil` 守卫跳过 —— 置 nil 后
+                // 再检查一次, 队列非空就补调度, 消除该竞态。
+                if let self, !self.queue.isEmpty {
+                    self.scheduleRetry(reason: "drain after loop exit")
+                }
+            }
         }
         plog("🎵 scrobble retry scheduled: \(reason), queue=\(queue.count)")
     }
 
     private func retryLoop() async {
         while !queue.isEmpty {
+            // 总开关临时关闭 —— 直接退出循环、保留整个队列, 等用户重新打开
+            // (会再发 scrobbleSettingsChanged → scheduleRetry)。绝不能借此把
+            // pendingProviders 清空, 否则「暂时关掉 scrobble 再打开」会丢光待补报。
+            guard ScrobbleSettingsStore.shared.isEnabled else { return }
             let now = Date().timeIntervalSince1970
             let dueIndices = queue.indices.filter { queue[$0].nextRetryAt <= now }
             if dueIndices.isEmpty {
@@ -248,14 +266,37 @@ final class ScrobbleService {
                 continue
             }
 
-            for idx in dueIndices {
-                guard idx < queue.count else { continue }
-                var item = queue[idx]
+            // 用条目身份(songID+startedAt)做快照, 不持有跨 await 的数组索引 ——
+            // await 期间 clearQueue() 可能清空队列、enqueue 可能合并新 pending,
+            // 索引会失效。每次写回前用 firstIndex 重新定位。
+            let dueKeys: [(songID: String, startedAt: Int64)] = dueIndices.map {
+                (queue[$0].entry.songID, queue[$0].entry.startedAt)
+            }
+            for key in dueKeys {
+                guard let idx = queue.firstIndex(where: {
+                    $0.entry.songID == key.songID && $0.entry.startedAt == key.startedAt
+                }) else { continue }  // 条目在 await 期间被清空/出队
+                let item = queue[idx]
                 let providers = activeProviders().filter { item.pendingProviders.contains($0.id) }
                 guard !providers.isEmpty else {
-                    // 用户禁用了相关 provider, 把这些 pending 清掉
-                    item.pendingProviders = []
-                    queue[idx] = item
+                    // 走到这里 isEnabled 必为 true (总开关已在循环顶部拦掉)。空集只
+                    // 可能因为: pending provider 被显式从 enabledProviders 移除, 或
+                    // 仍启用但暂缺凭据。只清掉「已不在 enabledProviders」的那些 ——
+                    // 仍启用但缺凭据的保留在 pending (用户可能重新填 token 后再补)。
+                    let enabled = ScrobbleSettingsStore.shared.enabledProviders
+                    let removed = item.pendingProviders.subtracting(enabled)
+                    if let writeIdx = queue.firstIndex(where: {
+                        $0.entry.songID == key.songID && $0.entry.startedAt == key.startedAt
+                    }) {
+                        queue[writeIdx].pendingProviders.subtract(removed)
+                        // 仍有 pending (启用但缺凭据) —— 推进退避, 否则该条目永远
+                        // "到期" 会让 retryLoop 空转打满 CPU。
+                        if !queue[writeIdx].pendingProviders.isEmpty {
+                            queue[writeIdx].attempts += 1
+                            let backoff = min(60.0 * 60, 60.0 * pow(2.0, Double(queue[writeIdx].attempts - 1)))
+                            queue[writeIdx].nextRetryAt = Date().timeIntervalSince1970 + backoff
+                        }
+                    }
                     continue
                 }
 
@@ -271,12 +312,21 @@ final class ScrobbleService {
                         stillFailed.insert(provider.id)
                     }
                 }
-                item.pendingProviders = stillFailed
-                item.attempts += 1
+                // await 后重新定位 —— 队列可能已被 clearQueue() 清空(找不到则丢弃
+                // 本次结果)或被 enqueue 合并了新 pendingProviders(并集保留)。
+                guard let writeIdx = queue.firstIndex(where: {
+                    $0.entry.songID == key.songID && $0.entry.startedAt == key.startedAt
+                }) else { continue }
+                var current = queue[writeIdx]
+                // 仅对「本轮已处理的 provider」做结论: 失败的留在 pending, 成功/
+                // 丢弃的移除; 其余(如 await 期间被 enqueue 新加入的)原样保留。
+                current.pendingProviders.subtract(providers.map(\.id))
+                current.pendingProviders.formUnion(stillFailed)
+                current.attempts += 1
                 // 指数退避: 1, 2, 5, 15, 30, 60 分钟封顶
-                let backoff = min(60.0 * 60, 60.0 * pow(2.0, Double(item.attempts - 1)))
-                item.nextRetryAt = Date().timeIntervalSince1970 + backoff
-                queue[idx] = item
+                let backoff = min(60.0 * 60, 60.0 * pow(2.0, Double(current.attempts - 1)))
+                current.nextRetryAt = Date().timeIntervalSince1970 + backoff
+                queue[writeIdx] = current
             }
             // 清掉 pendingProviders 为空的条目
             queue.removeAll(where: { $0.pendingProviders.isEmpty })

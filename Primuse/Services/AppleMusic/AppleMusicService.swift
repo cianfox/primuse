@@ -87,6 +87,9 @@ final class AppleMusicService {
 
     private var searchTask: Task<Void, Never>?
     private var playbackStatusObservation: Task<Void, Never>?
+    /// 上个 tick 的 queue 轻量指纹 (entry id 列表) ── 只有指纹变化才重做
+    /// 全量 SHA256 + Song 结构体投影, 避免每 0.5s 对几千首 queue 烧主线程。
+    private var lastQueueSignature: [String] = []
 
     init() {
         self.authState = Self.mapStatus(MusicAuthorization.currentStatus)
@@ -186,7 +189,30 @@ final class AppleMusicService {
     ///    的 queue 设置 + play() 在某些 iOS 版本会触发底层 assert。这里先
     ///    用 `MusicSubscription.current` 探一下能力, 不能播就直接给 UI 报
     ///    错而不是冒险调 player。
-    /// 把整段 queue 推给 ApplicationMusicPlayer ── 让用户点资料库里某首歌时
+    /// 播放前置 ── 清掉上次失败残留的 lastPlaybackError, 再用
+     /// `MusicSubscription.current` 探一下能不能播 catalog 内容。单曲 play(_:)
+     /// 和多曲 play(songs:) 共用这一步: 用户没订阅 / 区域不支持时, 直接给 UI
+     /// 报本地化错误并返回 false, 避免冒险设置 queue + play() 触发底层 assert。
+     /// 返回 true 表示可以继续走 player 开播。
+     private func ensurePlayablePreflight() async -> Bool {
+         lastPlaybackError = nil
+         do {
+             let subscription = try await MusicSubscription.current
+             guard subscription.canPlayCatalogContent else {
+                 lastPlaybackError = subscription.canBecomeSubscriber
+                     ? String(localized: "apple_music_needs_subscription")
+                     : String(localized: "apple_music_unavailable")
+                 return false
+             }
+             return true
+         } catch {
+             plog("⚠️Apple Music subscription check failed: \(error.localizedDescription)")
+             lastPlaybackError = error.localizedDescription
+             return false
+         }
+     }
+
+     /// 把整段 queue 推给 ApplicationMusicPlayer ── 让用户点资料库里某首歌时
      /// 自动把后续歌曲串成播放上下文, 支持 mini player / 大播放器的下一首/上一首
      /// 按钮; 否则单首 queue 下 skipToNext 实际等同 stop, 体验是"控件没反应"。
      /// startAt 越界自动 clamp 到 0。
@@ -194,6 +220,10 @@ final class AppleMusicService {
          guard !songs.isEmpty else { return }
          let safeIndex = max(0, min(index, songs.count - 1))
          let starting = songs[safeIndex]
+         // 订阅探测 + 清上次错误 ── 跟单曲 play(_:) 共用同一前置, 否则订阅过期
+         // 但 user library 仍在库的用户点歌会绕过预检, 命中被规避的底层 assert,
+         // 也拿不到本地化的"需要订阅"提示。
+         guard await ensurePlayablePreflight() else { return }
          // caller (AudioPlayerService.playAppleMusicSong) 已经把猿音自己的
          // engine 停掉了, 这里直接接管 audio session。
          let player = ApplicationMusicPlayer.shared
@@ -240,27 +270,15 @@ final class AppleMusicService {
      }
 
      func play(_ song: MusicKit.Song) async {
-        lastPlaybackError = nil
         // 让猿音自家播放器先停掉, audio session 让给 ApplicationMusicPlayer。
         // 否则: 本地正在播 → 用户点 Apple Music row → ApplicationMusicPlayer 接管
         // audio session, 但 AudioPlayerService.currentSong 还在, mini player
         // 一直显示本地歌, 看不出切换了 (Apple Music 才是当前的实际播放)。
         NotificationCenter.default.post(name: .primuseAppleMusicWillPlay, object: nil)
 
-        // 订阅探测 — 没订阅 / 不支持时直接 bail, 避免触发 player 的边界 case。
-        do {
-            let subscription = try await MusicSubscription.current
-            guard subscription.canPlayCatalogContent else {
-                lastPlaybackError = subscription.canBecomeSubscriber
-                    ? String(localized: "apple_music_needs_subscription")
-                    : String(localized: "apple_music_unavailable")
-                return
-            }
-        } catch {
-            plog("⚠️Apple Music subscription check failed: \(error.localizedDescription)")
-            lastPlaybackError = error.localizedDescription
-            return
-        }
+        // 订阅探测 + 清上次错误 ── 没订阅 / 不支持时直接 bail, 避免触发 player
+        // 的边界 case。
+        guard await ensurePlayablePreflight() else { return }
 
         let player = ApplicationMusicPlayer.shared
         // 乐观先把 nowPlayingSong 设上 — MusicKit 的 play() 在 iOS 26 上经常误抛
@@ -310,9 +328,17 @@ final class AppleMusicService {
     /// 下一首 — 当前实现一首一首播 (queue 只塞一首歌), 所以 skip 实际等同 stop。
     /// 后续可以扩展成顺播多首。
     func stopAppleMusic() {
+        // 先取消 polling, 否则 stop() 不清空 queue, 下个 tick 会从残留的
+        // queue.currentEntry 把 nowPlayingSong 复活, mini player 关不掉。
+        playbackStatusObservation?.cancel()
+        playbackStatusObservation = nil
         ApplicationMusicPlayer.shared.stop()
         nowPlayingSong = nil
         isAppleMusicPlaying = false
+        currentPlaybackTime = 0
+        currentDuration = 0
+        queueSongs = []
+        lastQueueSignature = []
     }
 
     /// 监听 ApplicationMusicPlayer.state, 把 playbackStatus / playbackTime / queue
@@ -336,9 +362,16 @@ final class AppleMusicService {
 
      private func tickAppleMusicState() async {
          let player = ApplicationMusicPlayer.shared
-         let nowPlaying = player.state.playbackStatus == .playing
+         let status = player.state.playbackStatus
+         let nowPlaying = status == .playing
          if isAppleMusicPlaying != nowPlaying {
              isAppleMusicPlaying = nowPlaying
+         }
+         // player 已 stop (用户点停止 / queue 自然播完) 时, 不再从残留 queue 回填
+         // nowPlayingSong ── 否则 stopAppleMusic() 清掉的值会被复活, mini player
+         // 关不掉。stopped 直接收摊本 tick。
+         if status == .stopped {
+             return
          }
          // queue.currentEntry 反映用户在 queue 里走到哪 — 不限于初次 play, 也包括
          // 自动跳下一首 / skipToNextEntry。entry.item 在 user library / catalog 都
@@ -365,14 +398,20 @@ final class AppleMusicService {
              currentPlaybackTime = pt
          }
          // queueSongs: 把 entry list 投影成 PrimuseKit.Song, 给 NowPlayingView 的
-         // 队列视图直接渲染。entry.id 不稳定时 fallback 不更新。
-         let snapshot = player.queue.entries.compactMap { entry -> MusicKit.Song? in
-             if case .song(let s) = entry.item { return s }
-             return nil
-         }
-         let projected = snapshot.map { AppleMusicLibraryService.toPrimuseSong($0) }
-         if projected.map(\.id) != queueSongs.map(\.id) {
-             queueSongs = projected
+         // 队列视图直接渲染。先用轻量指纹 (entry.id 列表) 判断 queue 有没有变,
+         // 没变就跳过 ── 否则每 0.5s 对几千首 queue 做 SHA256 + 结构体构造, 持续
+         // 烧主线程。指纹变化时才做一次全量投影。
+         let signature = player.queue.entries.map(\.id)
+         if signature != lastQueueSignature {
+             lastQueueSignature = signature
+             let snapshot = player.queue.entries.compactMap { entry -> MusicKit.Song? in
+                 if case .song(let s) = entry.item { return s }
+                 return nil
+             }
+             let projected = snapshot.map { AppleMusicLibraryService.toPrimuseSong($0) }
+             if projected.map(\.id) != queueSongs.map(\.id) {
+                 queueSongs = projected
+             }
          }
          // repeat / shuffle 镜像
          let r = Self.mapRepeat(player.state.repeatMode)

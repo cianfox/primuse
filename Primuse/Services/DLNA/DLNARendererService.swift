@@ -133,6 +133,11 @@ final class DLNARendererService {
     private var ssdpSocket: Int32 = -1
     private var ssdpReadSource: DispatchSourceRead?
     private var httpListener: NWListener?
+    /// 半开连接防护: 凑齐请求头前的 idle 超时 + 并发连接上限, 防 LAN 端
+    /// slow-loris 式只 connect 不发完整请求头拖死 fd。
+    private static let httpHeaderTimeout: TimeInterval = 12
+    private static let maxHTTPConnections = 16
+    private var activeHTTPConnections = 0
     /// NOTIFY alive 周期任务。`ssdp:byebye` 在 stop() 里同步发掉。
     private var notifyTask: Task<Void, Never>?
 
@@ -759,6 +764,10 @@ final class DLNARendererService {
                     self?.logEvent(.event, "HTTP control server ready on TCP \(self?.httpPort.rawValue ?? 0)")
                 case .failed(let error):
                     self?.logEvent(.error, "HTTP control server failed: \(error.localizedDescription)")
+                    // NWListener 在网络切换后进 .failed 不会自愈; SSDP 仍在广播
+                    // 指向这个死 server 的 LOCATION, 必须重启 HTTP 监听 (固定端口
+                    // 49152, LOCATION 不变), 否则控制点拉 device.xml 必失败。
+                    self?.restartHTTPAfterFailure(error: error)
                 default:
                     break
                 }
@@ -771,12 +780,53 @@ final class DLNARendererService {
         httpListener = listener
     }
 
-    private func handleHTTPConnection(_ connection: NWConnection) {
-        connection.start(queue: .main)
-        receiveHTTPRequest(on: connection, buffer: Data())
+    /// HTTP control listener 失效后的自愈: cancel 旧 listener, 在同端口重建。
+    /// 重建失败则把服务标记为出错状态, 让 UI 能反映 "投不出去" 而非静默假活。
+    private func restartHTTPAfterFailure(error: NWError) {
+        guard isRunning else { return }
+        httpListener?.cancel(); httpListener = nil
+        do {
+            try startHTTP()
+            logEvent(.event, "HTTP control server restarted after failure")
+        } catch {
+            isRunning = false
+            statusText = String(format: String(localized: "dlna_status_error_format"), error.localizedDescription)
+            logEvent(.error, "HTTP control server restart failed: \(error.localizedDescription)")
+        }
     }
 
-    private func receiveHTTPRequest(on connection: NWConnection, buffer: Data) {
+    private func handleHTTPConnection(_ connection: NWConnection) {
+        // 并发连接上限: 超过直接 cancel, 防 LAN 端无限累积 fd。
+        guard activeHTTPConnections < Self.maxHTTPConnections else {
+            connection.cancel(); return
+        }
+        activeHTTPConnections += 1
+        // 半开连接 idle 超时: 凑齐请求头之前若超时未推进就 cancel; header 收齐后
+        // 在 receiveHTTPRequest 里停掉 (SOAP body / GENA 处理可能稍长)。
+        let headerTimer = DispatchSource.makeTimerSource(queue: .main)
+        headerTimer.schedule(deadline: .now() + Self.httpHeaderTimeout)
+        headerTimer.setEventHandler { [weak connection] in
+            dlnaLog.debug("HTTP connection header timeout, closing")
+            connection?.cancel()
+        }
+        headerTimer.resume()
+        // 连接终态统一扣并发计数 + 停 timer, 只走这一处避免漏算。
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed:
+                headerTimer.cancel()
+                Task { @MainActor in
+                    if let self, self.activeHTTPConnections > 0 { self.activeHTTPConnections -= 1 }
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: .main)
+        receiveHTTPRequest(on: connection, buffer: Data(), headerTimer: headerTimer)
+    }
+
+    private func receiveHTTPRequest(on connection: NWConnection, buffer: Data, headerTimer: DispatchSourceTimer) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64_000) { [weak self] data, _, isComplete, error in
             guard let self else { connection.cancel(); return }
             if let error {
@@ -794,11 +844,13 @@ final class DLNARendererService {
                 return
             }
             if let text = self.completedHTTPRequestText(from: nextBuffer) {
+                // 请求头/体已收齐, idle timer 使命结束。
+                headerTimer.cancel()
                 Task { @MainActor in await self.routeHTTP(text, connection: connection) }
             } else if isComplete {
                 connection.cancel()
             } else {
-                Task { @MainActor in self.receiveHTTPRequest(on: connection, buffer: nextBuffer) }
+                Task { @MainActor in self.receiveHTTPRequest(on: connection, buffer: nextBuffer, headerTimer: headerTimer) }
             }
         }
     }
@@ -1444,7 +1496,14 @@ final class DLNARendererService {
         config.timeoutIntervalForRequest = 5
         config.timeoutIntervalForResource = 8
         config.httpMaximumConnectionsPerHost = 2
+        // A delegate-backed URLSession strongly retains its delegate and never
+        // deallocates until explicitly invalidated, so a per-cast session would
+        // leak both the session and its SmartSSLDelegate. invalidateAndCancel()
+        // also tears down any task still in flight — notably the probeRange 200
+        // branch, where the server ignored Range and we abandoned the AsyncBytes
+        // stream (the underlying connection would otherwise hang until timeout).
         let session = URLSession(configuration: config, delegate: SmartSSLDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
 
         if let range = await probeRange(url: url, session: session) {
             return range
@@ -2185,6 +2244,13 @@ final class RemoteRendererController {
         self.session = URLSession(configuration: config)
     }
 
+    deinit {
+        // Let any in-flight SOAP request complete, then release the session so
+        // it doesn't outlive this controller. finishTasksAndInvalidate() is
+        // thread-safe and safe to call from deinit (no async hop required).
+        session.finishTasksAndInvalidate()
+    }
+
     // MARK: AVTransport
 
     func setAVTransportURI(uri: String, title: String, artist: String?) async throws {
@@ -2442,6 +2508,14 @@ final class DLNAMediaServer {
     private var listener: NWListener?
     private var boundPort: UInt16 = 0
     private static let preferredPort: UInt16 = 49160
+    /// listener/connection 与文件读取都跑在这个独立串行 queue, 不占 main。
+    /// 只有要回写 entries / 状态时才 hop 回 @MainActor。
+    nonisolated private static let networkQueue = DispatchQueue(label: "com.welape.yuanyin.dlna.mediaserver")
+    /// 半开连接防护: 凑齐请求头前的 idle 超时 + 并发连接上限, 防 LAN 端
+    /// slow-loris 式拖死 fd。
+    private static let headerTimeout: TimeInterval = 12
+    private static let maxConnections = 16
+    private var activeConnections = 0
 
     /// token → 本地文件 + 过期时间。10 分钟过期, renderer 拉完音频文件不会
     /// 再用同一 URL, 短过期避免历史 token 滥用 + 重启清空。
@@ -2464,15 +2538,19 @@ final class DLNAMediaServer {
             guard let port = NWEndpoint.Port(rawValue: portRaw) else { continue }
             do {
                 let l = try NWListener(using: params, on: port)
-                l.stateUpdateHandler = { state in
+                l.stateUpdateHandler = { [weak self] state in
                     if case .failed(let e) = state {
                         plog("[DLNA] MediaServer listener failed: \(e.localizedDescription)")
+                        // 网络切换后 NWListener 进 failed 不会自愈, 必须把
+                        // listener 置 nil 让下次 registerFile→ensureStarted 重建,
+                        // 否则 registerFile 仍发出指向死 server 的 URL, 投放静默失效。
+                        Task { @MainActor in self?.invalidateListener() }
                     }
                 }
                 l.newConnectionHandler = { [weak self] conn in
                     Task { @MainActor in self?.handleConnection(conn) }
                 }
-                l.start(queue: .main)
+                l.start(queue: Self.networkQueue)
                 listener = l
                 boundPort = portRaw
                 plog("[DLNA] MediaServer bound TCP/\(portRaw)")
@@ -2490,6 +2568,13 @@ final class DLNAMediaServer {
         listener?.cancel(); listener = nil
         boundPort = 0
         entries.removeAll()
+    }
+
+    /// listener 进入 .failed 后调用: cancel 并清空, 让下次 ensureStarted 重建。
+    /// entries 保留 (token 仍可能被即将的重建 server 复用拉流)。
+    private func invalidateListener() {
+        listener?.cancel(); listener = nil
+        boundPort = 0
     }
 
     /// 注册一个本地文件给远端 renderer 拉。返回的 URL 仅 10 分钟内有效,
@@ -2526,11 +2611,38 @@ final class DLNAMediaServer {
     // MARK: Connection handling
 
     private func handleConnection(_ conn: NWConnection) {
-        conn.start(queue: .main)
-        receiveRequest(on: conn, buffer: Data())
+        // 并发连接上限: 超过直接 cancel, 防 LAN 端无限累积 fd。
+        guard activeConnections < Self.maxConnections else {
+            conn.cancel(); return
+        }
+        activeConnections += 1
+        // 半开连接 idle 超时: 凑齐请求头之前若超时未推进就 cancel; header 收齐后
+        // 在 receiveRequest 里 cancel 掉 (后续 body/stream 可能很长不能限时)。
+        let headerTimer = DispatchSource.makeTimerSource(queue: Self.networkQueue)
+        headerTimer.schedule(deadline: .now() + Self.headerTimeout)
+        headerTimer.setEventHandler { [weak conn] in
+            plog("[DLNA] MediaServer connection header timeout, closing")
+            conn?.cancel()
+        }
+        headerTimer.resume()
+        // 连接终态统一在这里扣并发计数 + 停 timer, 无论是正常收尾、超时还是出错,
+        // 都只走这一处, 避免在 routeRequest 的多个出口逐一处理漏算。
+        conn.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed:
+                headerTimer.cancel()
+                Task { @MainActor in
+                    if let self, self.activeConnections > 0 { self.activeConnections -= 1 }
+                }
+            default:
+                break
+            }
+        }
+        conn.start(queue: Self.networkQueue)
+        receiveRequest(on: conn, buffer: Data(), headerTimer: headerTimer)
     }
 
-    private func receiveRequest(on conn: NWConnection, buffer: Data) {
+    private func receiveRequest(on conn: NWConnection, buffer: Data, headerTimer: DispatchSourceTimer) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, isComplete, error in
             guard let self else { conn.cancel(); return }
             if let error {
@@ -2545,13 +2657,15 @@ final class DLNAMediaServer {
             next.append(data)
             let marker = Data("\r\n\r\n".utf8)
             if let headerEnd = next.range(of: marker)?.upperBound {
+                // header 收齐, idle timer 使命结束 (后续 body/stream 可能很长)。
+                headerTimer.cancel()
                 let header = next[..<headerEnd]
                 let text = String(data: header, encoding: .utf8) ?? ""
                 Task { @MainActor in self.routeRequest(text, on: conn) }
             } else if next.count > 64_000 {
                 Task { @MainActor in self.respondStatus(400, on: conn) }
             } else {
-                Task { @MainActor in self.receiveRequest(on: conn, buffer: next) }
+                Task { @MainActor in self.receiveRequest(on: conn, buffer: next, headerTimer: headerTimer) }
             }
         }
     }
@@ -2623,17 +2737,20 @@ final class DLNAMediaServer {
             return
         }
 
-        // GET: 先发 header, 再 chunked 推数据
+        // GET: 先发 header, 再 chunked 推数据 (streamFile 是 nonisolated, 文件
+        // IO 不回 main)。
+        let fileURL = entry.localURL
         conn.send(content: headerBlock, completion: .contentProcessed { [weak self] error in
             guard let self, error == nil else { conn.cancel(); return }
-            Task { @MainActor in
-                await self.streamFile(localURL: entry.localURL, start: start, end: end, on: conn)
-            }
+            Task { await self.streamFile(localURL: fileURL, start: start, end: end, on: conn) }
         })
     }
 
     /// 64KB 分块流, 不要一次性 load 整个文件 (FLAC 单首动辄 50MB 内存爆)。
-    private func streamFile(localURL: URL, start: Int, end: Int, on conn: NWConnection) async {
+    /// nonisolated: FileHandle 的 seek/read 是同步磁盘 IO, 一首 50MB FLAC 要
+    /// 约 800 次 64KB 读取, 慢速存储 (iCloud 回迁) 单次读也可能阻塞数十毫秒,
+    /// 绝不能跑在 MainActor 上拖卡 UI。读取放到 networkQueue, 读出 chunk 再 send。
+    nonisolated private func streamFile(localURL: URL, start: Int, end: Int, on conn: NWConnection) async {
         do {
             let handle = try FileHandle(forReadingFrom: localURL)
             defer { try? handle.close() }
@@ -2642,7 +2759,13 @@ final class DLNAMediaServer {
             let chunkSize = 65_536
             while remaining > 0 {
                 let toRead = min(chunkSize, remaining)
-                guard let data = try? handle.read(upToCount: toRead), !data.isEmpty else { break }
+                // 在 networkQueue 上做阻塞读, 不占 main。
+                let data: Data? = await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+                    Self.networkQueue.async {
+                        cont.resume(returning: try? handle.read(upToCount: toRead))
+                    }
+                }
+                guard let data, !data.isEmpty else { break }
                 remaining -= data.count
                 let isLast = remaining == 0
                 await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in

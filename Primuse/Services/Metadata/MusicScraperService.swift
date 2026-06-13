@@ -89,7 +89,12 @@ final class MusicScraperService {
             )
         }
 
-        if !dryRun && updatedSong != song {
+        // 重新刮削已有 hash ref 的歌曲时, mergedSong 生成的占位 ref 与现存 ref 完全
+        // 相同 (cover/lyrics 文件名是 song.id 的确定性 hash), 且 fillMissingOnline 只补
+        // nil 不覆盖 ——  于是 updatedSong == song。但 result 里可能带着刚下载的新封面/
+        // 歌词。只要刮到了新资产就必须走缓存/sidecar 写回, 否则用户点「重新刮削」实为无操作。
+        let hasNewAssets = result.coverData != nil || (result.lyricsLines?.isEmpty == false)
+        if !dryRun && (updatedSong != song || hasNewAssets) {
             // 拿到 lyrics 立即写 hash JSON cache + 把 song.lyricsFileName 改成
             // hash filename (不是 NAS .lrc path) —— 否则 NowPlayingView.loadLyrics
             // 立即跑时, Tier1a cache miss + Tier1b 看 lyricsFileName 含 "/" 走
@@ -310,23 +315,31 @@ final class MusicScraperService {
                     processedCount += 1
                     var updatedSong = result.song
 
-                    if updatedSong != song {
-                        // Determine which assets should be committed based on fill/overwrite mode.
-                        let shouldWriteCover: Bool
-                        let shouldWriteLyrics: Bool
-                        if onlyFillMissing {
-                            // Only write if the song was missing cover/lyrics before
-                            shouldWriteCover = song.coverArtFileName == nil && result.coverData != nil
-                            shouldWriteLyrics = song.lyricsFileName == nil && result.lyricsLines != nil
-                        } else {
-                            // Overwrite mode: write if we got new data
-                            shouldWriteCover = result.coverData != nil
-                            shouldWriteLyrics = result.lyricsLines != nil
-                        }
+                    // Determine which assets should be committed based on fill/overwrite mode.
+                    let shouldWriteCover: Bool
+                    let shouldWriteLyrics: Bool
+                    if onlyFillMissing {
+                        // Only write if the song was missing cover/lyrics before
+                        shouldWriteCover = song.coverArtFileName == nil && result.coverData != nil
+                        shouldWriteLyrics = song.lyricsFileName == nil && result.lyricsLines != nil
+                    } else {
+                        // Overwrite mode: write if we got new data
+                        shouldWriteCover = result.coverData != nil
+                        shouldWriteLyrics = (result.lyricsLines?.isEmpty == false)
+                    }
 
+                    // 重新刮削时占位 hash ref 与现存 ref 相同 → updatedSong == song, 但
+                    // 仍可能刮到了新封面/歌词。只要本次模式会落盘新资产, 就进入写回分支,
+                    // 否则用户「重新刮削整库」对已有 ref 的歌曲实为无操作。
+                    if updatedSong != song || shouldWriteCover || shouldWriteLyrics {
                         let sidecarSettings = Self.sidecarSettings()
-                        let coverData = shouldWriteCover && sidecarSettings.coverEnabled ? result.coverData : nil
-                        let lyricsLines = shouldWriteLyrics && sidecarSettings.lyricsEnabled ? result.lyricsLines : nil
+                        // 本地 hash cache 写入只看 fill/overwrite 模式, 与 sidecar 写回
+                        // 开关解耦 —— 关掉「写 sidecar 封面/歌词」不该让刮到的数据连本地
+                        // 缓存都丢失。sidecar 镜像写回另用 *Enabled 开关过滤(对齐 scrapeSingle)。
+                        let coverData = shouldWriteCover ? result.coverData : nil
+                        let lyricsLines = shouldWriteLyrics ? result.lyricsLines : nil
+                        let sidecarCoverData = sidecarSettings.coverEnabled ? coverData : nil
+                        let sidecarLyricsLines = sidecarSettings.lyricsEnabled ? lyricsLines : nil
 
                         if let coverData {
                             await MetadataAssetStore.shared.cacheCover(coverData, forSongID: updatedSong.id)
@@ -341,7 +354,7 @@ final class MusicScraperService {
                         library.replaceSong(updatedSong)
                         updatedCount += 1
 
-                        if coverData != nil || lyricsLines != nil {
+                        if sidecarCoverData != nil || sidecarLyricsLines != nil {
                             let songForWrite = updatedSong
                             let sourceManager = self.sourceManager
                             let songID = updatedSong.id
@@ -359,7 +372,7 @@ final class MusicScraperService {
                                         seconds: sidecarSettings.timeout,
                                         sourceManager: sourceManager,
                                         for: songForWrite,
-                                        coverData: coverData, lyricsLines: lyricsLines
+                                        coverData: sidecarCoverData, lyricsLines: sidecarLyricsLines
                                     )
 
                                     var needsUpdate = false
@@ -587,7 +600,32 @@ final class MusicScraperService {
                 }
 
                 if result.song != song {
-                    library.replaceSong(result.song)
+                    // processedSongWithAssets 用 trustedSource:false, merged song 里的
+                    // coverArtFileName/lyricsFileName 只是占位 hash ref, 文件还没落盘。
+                    // 必须在 replaceSong 前把 coverData/lyricsLines 真正写进 hash cache,
+                    // 否则库里的 ref 会指向不存在的文件, 且数据被丢弃。
+                    var enrichedSong = result.song
+                    if let coverData = result.coverData {
+                        await MetadataAssetStore.shared.cacheCover(coverData, forSongID: enrichedSong.id)
+                        enrichedSong.coverArtFileName = MetadataAssetStore.shared.expectedCoverFileName(for: enrichedSong.id)
+                        CachedArtworkView.invalidateCache(for: enrichedSong.id)
+                    } else {
+                        // 没拿到新封面 —— 别把占位 ref 持久化, 退回原始 ref。
+                        enrichedSong.coverArtFileName = song.coverArtFileName
+                    }
+                    var lyricsCached = false
+                    if let lyricsLines = result.lyricsLines, !lyricsLines.isEmpty {
+                        lyricsCached = await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: enrichedSong.id, force: false)
+                    }
+                    if lyricsCached {
+                        enrichedSong.lyricsFileName = MetadataAssetStore.shared.expectedLyricsFileName(for: enrichedSong.id)
+                    } else {
+                        enrichedSong.lyricsFileName = song.lyricsFileName
+                    }
+
+                    if enrichedSong != song {
+                        library.replaceSong(enrichedSong)
+                    }
                 }
             } catch {
                 plog("⚠️ Background enrichment skipped for '\(song.title)': \(error.localizedDescription)")
