@@ -19,6 +19,12 @@ private final class InputSourceBox: @unchecked Sendable {
 final class NativeAudioDecoder: PrimuseAudioDecoder {
     private let bufferFrameCount: AVAudioFrameCount = 8192
 
+    /// 解码循环里碰到「0 帧且无进度」时的退避节奏与放弃阈值。退避避免截断文件
+    /// 100% CPU 空转; 阈值给 HTTP 流式源足够的缓冲等待时间(网络抖动), 只有持续
+    /// 无进度才判死流退出。
+    fileprivate static let decodeStallBackoffNanos: UInt64 = 15_000_000   // 15ms
+    fileprivate static let maxDecodeStallNanos: UInt64 = 8_000_000_000    // 8s 无进度→放弃
+
     func canDecode(url: URL) -> Bool {
         // SFBAudioEngine supports a huge range of formats
         let ext = url.pathExtension.lowercased()
@@ -131,6 +137,7 @@ final class NativeAudioDecoder: PrimuseAudioDecoder {
 
         if sourceFormat == outputFormat {
             plog("🎵 SFBDecoder: direct read (formats match)")
+            var stallNanos: UInt64 = 0
             while !Task.isCancelled, decoder.position < totalFrames {
                 let remainingFrames = AVAudioFrameCount(totalFrames - decoder.position)
                 let framesToRead = min(bufferFrameCount, remainingFrames)
@@ -138,10 +145,21 @@ final class NativeAudioDecoder: PrimuseAudioDecoder {
                     continuation.finish(throwing: AudioDecoderError.bufferAllocationFailed)
                     return
                 }
+                let positionBefore = decoder.position
                 try decoder.decode(into: buffer, length: framesToRead)
-                guard buffer.frameLength > 0 else { break }
-                nonisolated(unsafe) let sendBuf = buffer
-                continuation.yield(sendBuf)
+                if buffer.frameLength > 0 {
+                    stallNanos = 0
+                    nonisolated(unsafe) let sendBuf = buffer
+                    continuation.yield(sendBuf)
+                } else if decoder.position <= positionBefore {
+                    // 0 帧且 position 没前进: 要么是 HTTP 流式源在等下一段 Range
+                    // 数据(瞬时, 数据到了就恢复), 要么是截断/损坏文件卡死(永不前进)。
+                    // 退避 sleep 既消除原来的 100% CPU 空转, 又不会把还在缓冲的流过早
+                    // 掐断; 长时间(Self.maxDecodeStallNanos)无任何进度才判定为死流并退出。
+                    stallNanos += Self.decodeStallBackoffNanos
+                    if stallNanos >= Self.maxDecodeStallNanos { break }
+                    try await Task.sleep(nanoseconds: Self.decodeStallBackoffNanos)
+                }
             }
         } else {
             guard let converter = AVAudioConverter(from: sourceFormat, to: outputFormat) else {

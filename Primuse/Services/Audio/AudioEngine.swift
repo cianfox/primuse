@@ -126,9 +126,11 @@ final class AudioEngine {
         self.isSetUp = true
         applySpatialAudioConfiguration()
         restoreVolume()
-        #if os(macOS)
-        restoreOutputRouting()
-        #endif
+        // 注意: 不要在这里把 output unit 钉到任何设备。新建的 AVAudioEngine
+        // 默认就跟随系统默认输出设备(并随系统切换而切换), 这正是「跟随系统」
+        // 想要的行为。之前在此调用 restoreOutputRouting() 把 CurrentDevice 设成
+        // kAudioObjectUnknown(0), 反而让 AUHAL 失去有效设备, engine 启动直接报
+        // -10875, 所有播放(本地/NAS/云盘)全部失败。
     }
 
     // MARK: - Engine Control
@@ -179,17 +181,31 @@ final class AudioEngine {
         UserDefaults.standard.set(false, forKey: Self.followsSystemKey)
     }
 
-    /// 让 Primuse 回到「跟随系统默认输出」。把 AUHAL output unit 的
-    /// kAudioOutputUnitProperty_CurrentDevice 重置为 kAudioObjectUnknown(0),
-    /// 之后 AUHAL 会自动跟随系统默认输出设备的变化(插耳机、连 HomePod 等),
-    /// 不会再停在之前被钉死的那台设备上。
+    /// 让 Primuse 回到「跟随系统默认输出」—— 用户之前用 picker 钉死过某台设备
+    /// (applyDevice 把 CurrentDevice 设成了具体 id)后, 点「跟随系统」把 output
+    /// unit 重新指向**当前系统默认输出设备的真实 id**。
+    ///
+    /// ⚠️ 不能把 CurrentDevice 设成 kAudioObjectUnknown(0): 那不是「跟随默认」,
+    /// 而是让 AUHAL 失去有效设备, engine 启动直接报 -10875、所有播放失败。
     func followSystemOutput() throws {
         try setUp()
-        guard let engine else { return }
-        let outputUnit = engine.outputNode.audioUnit
-        guard let outputUnit else { return }
+        UserDefaults.standard.set(true, forKey: Self.followsSystemKey)
+        guard let engine, let outputUnit = engine.outputNode.audioUnit else { return }
 
-        var id = AudioDeviceID(kAudioObjectUnknown)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var defaultID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let getStatus = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &defaultID
+        )
+        // 取不到真实默认设备就别动 output unit, 维持 AUHAL 既有(默认)路由。
+        guard getStatus == noErr, defaultID != AudioDeviceID(kAudioObjectUnknown) else { return }
+
+        var id = defaultID
         let status = AudioUnitSetProperty(
             outputUnit,
             kAudioOutputUnitProperty_CurrentDevice,
@@ -203,7 +219,6 @@ final class AudioEngine {
                 NSLocalizedDescriptionKey: "Failed to follow system output (status=\(status))"
             ])
         }
-        UserDefaults.standard.set(true, forKey: Self.followsSystemKey)
     }
 
     /// 用户上次是否选了「跟随系统」。默认 true(从未显式钉过设备就是跟随)。
@@ -212,13 +227,6 @@ final class AudioEngine {
     }
 
     private static let followsSystemKey = "primuse_output_follows_system"
-
-    /// 启动恢复: 上次若处于跟随系统状态, 把 output unit 重置回跟随默认。
-    /// 上次钉死了具体设备就不动 —— AUHAL 会在该设备拔出后自然回退默认。
-    private func restoreOutputRouting() {
-        guard followsSystemOutput else { return }
-        try? followSystemOutput()
-    }
 
     /// 取当前 audio unit 在用的设备 ID,用于在 picker 里高亮当前选中项。
     var currentOutputDeviceID: AudioDeviceID? {
