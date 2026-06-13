@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 根布局 — 顶部自定义 tab bar(Apple TV / Apple Music for tvOS 风) + 全屏内容
 /// + 底部常驻「正在播放」条。正在播放 / 队列 / 选项 / 设置都以全屏覆盖呈现。
@@ -102,9 +103,9 @@ struct TVTabBar: View {
     var onSettings: () -> Void
 
     private let tabs: [(TVRoot.Tab, String)] = [
-        (.home, TVL("首页", "Home")), (.library, TVL("资料库", "Library")),
-        (.playlists, TVL("歌单", "Playlists")),
-        (.sources, TVL("音乐源", "Sources")), (.search, TVL("搜索", "Search")),
+        (.home, PMString("ext.tv.nav.home")), (.library, PMString("ext.tv.nav.library")),
+        (.playlists, PMString("ext.tv.nav.playlists")),
+        (.sources, PMString("ext.tv.nav.sources")), (.search, PMString("ext.tv.nav.search")),
     ]
 
     private var debugFocusTab: TVRoot.Tab? {

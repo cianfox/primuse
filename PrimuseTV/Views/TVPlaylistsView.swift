@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 歌单 — 4 列磁贴网格(对应 tvos.jsx 的 TVPlaylistsArtboard)。
 struct TVPlaylistsView: View {
@@ -18,8 +19,8 @@ struct TVPlaylistsView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 30) {
                         VStack(alignment: .leading, spacing: 6) {
-                            TVEyebrow(text: TVL("歌单", "Playlists"))
-                            Text(TVL("你的歌单 · \(store.playlists.count)", "Your Playlists · \(store.playlists.count)"))
+                            TVEyebrow(text: PMString("ext.tv.playlists.eyebrow"))
+                            Text(PMString("ext.tv.playlists.title", store.playlists.count))
                                 .font(TVFont.pageTitle).foregroundStyle(.white)
                         }
                         LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: gap, alignment: .top), count: cols),
@@ -47,7 +48,7 @@ struct TVPlaylistCard: View {
         let cover = store.album(playlist.coverAlbumID)
         let h = width * 0.8
         TVFocusButton(radius: TVRadius.card, scale: 1.08, lift: 12,
-                      action: { if let a = store.album(playlist.coverAlbumID) { store.play(album: a) }; action() }) { _ in
+                      action: { playTapped() }) { _ in
             VStack(alignment: .leading, spacing: 0) {
                 ZStack {
                     TVArtworkView(coverKey: cover?.id ?? "", artist: cover?.artist ?? "",
@@ -60,7 +61,7 @@ struct TVPlaylistCard: View {
                                 Spacer()
                                 HStack(spacing: 5) {
                                     Image(systemName: "sparkles").font(.system(size: 13))
-                                    Text(TVL("智能", "Smart")).font(.system(size: 14, weight: .medium))
+                                    Text(PMString("ext.tv.playlists.smart")).font(.system(size: 14, weight: .medium))
                                 }
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 10).padding(.vertical, 4)
@@ -81,7 +82,7 @@ struct TVPlaylistCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(playlist.name).font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.white).lineLimit(1)
-                    Text(TVL("\(playlist.count) 首", "\(playlist.count) songs")).font(.system(size: 16))
+                    Text(PMString("ext.tv.songsCount", playlist.count)).font(.system(size: 16))
                         .foregroundStyle(TVColor.textFaint)
                 }
                 .padding(.top, 12).padding(.horizontal, 2)
@@ -89,6 +90,15 @@ struct TVPlaylistCard: View {
             }
             .frame(width: width, alignment: .leading)
         }
+    }
+
+    /// 点击歌单卡片:播放歌单**自身**的曲目(我喜欢的 / 普通歌单),而不是封面取材的那张专辑。
+    /// 智能歌单在 tvOS 上尚未求值(无真实歌曲),点击不做任何事,避免静默打开空播放页。
+    private func playTapped() {
+        // 智能歌单 / 空歌单:无可播放内容,play(playlist:) 返回 false,忽略点击
+        //(不退化为播专辑、不打开空播放页),续播队列即该歌单全部曲目。
+        guard store.play(playlist: playlist) else { return }
+        action()
     }
 }
 #endif

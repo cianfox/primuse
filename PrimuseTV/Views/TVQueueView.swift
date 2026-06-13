@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 播放队列覆层 — 左侧大封面,右侧「接下来」列表(对应 TVQueueArtboard)。
 struct TVQueueView: View {
@@ -16,7 +17,7 @@ struct TVQueueView: View {
 
             HStack(alignment: .center, spacing: 80) {
                 VStack(alignment: .leading, spacing: 0) {
-                    TVEyebrow(text: TVL("正在播放", "Now Playing")).padding(.bottom, 20)
+                    TVEyebrow(text: PMString("ext.tv.queue.nowPlaying")).padding(.bottom, 20)
                     TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
                                   tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 340, radius: 18)
                         .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
@@ -27,7 +28,7 @@ struct TVQueueView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 0) {
-                    TVEyebrow(text: TVL("接下来 · \(upNext.count) 首", "Up Next · \(upNext.count) songs")).padding(.bottom, 20)
+                    TVEyebrow(text: PMString("ext.tv.queue.upNext", upNext.count)).padding(.bottom, 20)
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 10) {
                             ForEach(Array(upNext.enumerated()), id: \.offset) { idx, song in

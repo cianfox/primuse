@@ -67,6 +67,9 @@ enum TVLang {
 }
 
 /// 双语取串:`TVL("首页", "Home")` —— 英文环境返回第二个参数,否则中文。
+/// Deprecated: 只支持中/英,其余语言退化成中文。界面文案改用 PrimuseKit 的
+/// 7 语言 `PMString("key")`;本函数仅保留兼容,不应再新增调用点。
+@available(*, deprecated, message: "Use PMString(\"key\") from PrimuseKit instead — TVL only covers zh/en.")
 func TVL(_ zh: String, _ en: String) -> String { TVLang.isEnglish ? en : zh }
 
 // MARK: - Hex 颜色

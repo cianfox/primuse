@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 设置 — 左列常用清单,右列 Siri Remote 图示(对应 TVSettingsArtboard)。
 /// 刻意精简:无 EQ 推子 / 刮削源 / SSL 信任,这些留在 macOS / iOS。
@@ -18,12 +19,12 @@ struct TVSettingsView: View {
         return "\(v.majorVersion).\(v.minorVersion)"
     }
     private var libraryStat: String {
-        store.albums.isEmpty ? TVL("尚未同步", "Not synced yet") :
-            TVL("\(TVFmt.count(store.songs.count)) 首 · \(store.albums.count) 张专辑 · \(store.artists.count) 位艺术家", "\(TVFmt.count(store.songs.count)) songs · \(store.albums.count) albums · \(store.artists.count) artists")
+        store.albums.isEmpty ? PMString("ext.tv.settings.notSynced") :
+            PMString("ext.tv.settings.libraryStat", TVFmt.count(store.songs.count), store.albums.count, store.artists.count)
     }
     private var syncValue: String {
-        if isSyncing { return TVL("正在从 iCloud 同步…", "Syncing from iCloud…") }
-        return syncMsg ?? TVL("点按拉取最新曲库", "Tap to pull latest library")
+        if isSyncing { return PMString("ext.tv.settings.syncing") }
+        return syncMsg ?? PMString("ext.tv.settings.tapToPull")
     }
 
     var body: some View {
@@ -31,27 +32,27 @@ struct TVSettingsView: View {
             TVColor.bg.ignoresSafeArea()
             HStack(alignment: .top, spacing: 80) {
                 VStack(alignment: .leading, spacing: 0) {
-                    TVEyebrow(text: TVL("设置", "Settings")).padding(.bottom, 6)
-                    Text(TVL("常用", "General")).font(TVFont.pageTitle).foregroundStyle(.white).padding(.bottom, 24)
+                    TVEyebrow(text: PMString("ext.tv.settings.eyebrow")).padding(.bottom, 6)
+                    Text(PMString("ext.tv.settings.general")).font(TVFont.pageTitle).foregroundStyle(.white).padding(.bottom, 24)
                     VStack(spacing: 12) {
-                        navRow("icloud.fill", TVL("iCloud 同步", "iCloud Sync"), syncValue, trailing: "arrow.clockwise", action: sync)
-                        toggleRow("arrow.triangle.2.circlepath", TVL("启动时自动同步", "Auto sync on launch"), isOn: $autoSync)
-                        navRow("music.note", TVL("曲库", "Library"), libraryStat) { go(.library) }
-                        navRow("music.note.list", TVL("歌单", "Playlists"), TVL("\(store.playlists.count) 个", "\(store.playlists.count)")) { go(.playlists) }
-                        navRow("server.rack", TVL("音乐源", "Sources"), TVL("\(store.sources.count) 个", "\(store.sources.count)")) { go(.sources) }
-                        infoRow("info.circle", TVL("关于 Primuse", "About Primuse"), "\(version) (\(build)) · tvOS \(osVersion)")
+                        navRow("icloud.fill", PMString("ext.tv.settings.icloudSync"), syncValue, trailing: "arrow.clockwise", action: sync)
+                        toggleRow("arrow.triangle.2.circlepath", PMString("ext.tv.settings.autoSync"), isOn: $autoSync)
+                        navRow("music.note", PMString("ext.tv.settings.library"), libraryStat) { go(.library) }
+                        navRow("music.note.list", PMString("ext.tv.settings.playlists"), PMString("ext.tv.countOnly", store.playlists.count)) { go(.playlists) }
+                        navRow("server.rack", PMString("ext.tv.settings.sources"), PMString("ext.tv.countOnly", store.sources.count)) { go(.sources) }
+                        infoRow("info.circle", PMString("ext.tv.settings.about"), "\(version) (\(build)) · tvOS \(osVersion)")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 0) {
-                    TVEyebrow(text: TVL("遥控提示", "Remote Tips")).padding(.bottom, 24)
+                    TVEyebrow(text: PMString("ext.tv.settings.remoteTips")).padding(.bottom, 24)
                     HStack { Spacer(); TVSiriRemote(); Spacer() }
                     VStack(alignment: .leading, spacing: 14) {
-                        TVRemoteHint(TVL("圆形触控板", "Touch surface"), TVL("上 / 下 / 左 / 右移动焦点 · 按下选择", "Swipe up / down / left / right · press to select"))
-                        TVRemoteHint(TVL("Menu / 返回", "Menu / Back"), TVL("返回上一层", "Go back one level"))
-                        TVRemoteHint(TVL("TV 按钮", "TV button"), TVL("回 Apple TV 主屏", "Return to Apple TV Home"))
-                        TVRemoteHint(TVL("搜索框", "Search field"), TVL("唤出系统键盘 · 支持语音听写", "Brings up the keyboard · voice dictation supported"))
+                        TVRemoteHint(PMString("ext.tv.settings.tip.touch.title"), PMString("ext.tv.settings.tip.touch.body"))
+                        TVRemoteHint(PMString("ext.tv.settings.tip.menu.title"), PMString("ext.tv.settings.tip.menu.body"))
+                        TVRemoteHint(PMString("ext.tv.settings.tip.tv.title"), PMString("ext.tv.settings.tip.tv.body"))
+                        TVRemoteHint(PMString("ext.tv.settings.tip.search.title"), PMString("ext.tv.settings.tip.search.body"))
                     }
                     .padding(.top, 32)
                 }
@@ -69,7 +70,7 @@ struct TVSettingsView: View {
         Task {
             await store.bootstrap()
             isSyncing = false
-            syncMsg = store.albums.isEmpty ? TVL("未找到曲库快照", "No library snapshot found") : TVL("已同步 · \(TVFmt.count(store.songs.count)) 首", "Synced · \(TVFmt.count(store.songs.count)) songs")
+            syncMsg = store.albums.isEmpty ? PMString("ext.tv.settings.noSnapshot") : PMString("ext.tv.settings.synced", TVFmt.count(store.songs.count))
         }
     }
 

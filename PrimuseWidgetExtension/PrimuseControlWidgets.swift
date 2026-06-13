@@ -30,18 +30,18 @@ struct PrimusePlayPauseControl: ControlWidget {
             provider: PlayPauseValueProvider()
         ) { value in
             ControlWidgetToggle(
-                "猿音",
+                "\(PMString("ext.widget.appName"))",
                 isOn: value.isPlaying,
                 action: PrimuseSetPlayingIntent(value: !value.isPlaying)
             ) { isPlaying in
                 Label(
-                    isPlaying ? "暂停" : "播放",
+                    isPlaying ? PMString("ext.control.pause") : PMString("ext.control.play"),
                     systemImage: isPlaying ? "pause.fill" : "play.fill"
                 )
             }
         }
-        .displayName("猿音 播放 / 暂停")
-        .description("一键控制猿音播放")
+        .displayName("\(PMString("ext.control.playPause.displayName"))")
+        .description("\(PMString("ext.control.playPause.description"))")
     }
 }
 
@@ -79,11 +79,11 @@ struct PrimuseShuffleControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: PrimuseShuffleAllIntent()) {
-                Label("随机播放", systemImage: "shuffle")
+                Label(PMString("ext.control.shuffle"), systemImage: "shuffle")
             }
         }
-        .displayName("猿音 随机播放")
-        .description("随机打散整库并开始播放")
+        .displayName("\(PMString("ext.control.shuffle.displayName"))")
+        .description("\(PMString("ext.control.shuffle.description"))")
     }
 }
 
@@ -96,11 +96,11 @@ struct PrimuseNextControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: PrimuseNextIntent()) {
-                Label("下一首", systemImage: "forward.fill")
+                Label(PMString("ext.control.next"), systemImage: "forward.fill")
             }
         }
-        .displayName("猿音 下一首")
-        .description("跳到下一首")
+        .displayName("\(PMString("ext.control.next.displayName"))")
+        .description("\(PMString("ext.control.next.description"))")
     }
 }
 
@@ -111,11 +111,11 @@ struct PrimusePreviousControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: PrimusePreviousIntent()) {
-                Label("上一首", systemImage: "backward.fill")
+                Label(PMString("ext.control.previous"), systemImage: "backward.fill")
             }
         }
-        .displayName("猿音 上一首")
-        .description("回到上一首")
+        .displayName("\(PMString("ext.control.previous.displayName"))")
+        .description("\(PMString("ext.control.previous.description"))")
     }
 }
 

@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 正在播放选项覆层 — 底部动作网格(对应 TVOptionsArtboard)。
 /// Apple TV 无右键,长按 select / 菜单键升起此层。
@@ -22,10 +23,10 @@ struct TVOptionsView: View {
         let sleepOn = store.sleepTimerMinutes > 0
         return [
             .init(icon: liked ? "heart.fill" : "heart",
-                  label: liked ? TVL("已喜欢", "Loved") : TVL("喜欢", "Love"), on: liked,
+                  label: liked ? PMString("ext.tv.options.loved") : PMString("ext.tv.options.love"), on: liked,
                   run: { if let id = store.currentSongID { store.toggleLiked(id) } }),
             .init(icon: "moon.zzz.fill",
-                  label: sleepOn ? TVL("睡眠 \(store.sleepTimerMinutes) 分", "Sleep \(store.sleepTimerMinutes) min") : TVL("睡眠定时", "Sleep Timer"), on: sleepOn,
+                  label: sleepOn ? PMString("ext.tv.options.sleepActive", store.sleepTimerMinutes) : PMString("ext.tv.options.sleepTimer"), on: sleepOn,
                   run: { store.cycleSleepTimer() }),
         ]
     }
@@ -52,7 +53,7 @@ struct TVOptionsView: View {
                 Spacer()
 
                 VStack(alignment: .leading, spacing: 24) {
-                    TVEyebrow(text: TVL("选项", "Options"))
+                    TVEyebrow(text: PMString("ext.tv.options.eyebrow"))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 20) {
                             ForEach(actions) { a in actionTile(a) }

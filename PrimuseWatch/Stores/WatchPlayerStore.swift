@@ -30,6 +30,18 @@ final class WatchPlayerStore: NSObject, WCSessionDelegate {
     var isReachable: Bool = false
     /// 当前播放队列 ── iPhone 端推过来, 跟 iPhone 上"播放列表"一致。
     var queue: [WatchLibrarySong] = []
+    /// iPhone 端队列的真实总长度。超大队列被 WatchSessionBridge 按字节截断后,
+    /// `queue` 只含前若干首, 这里保留完整数目供 UI 提示。未截断时等于 queue.count。
+    var queueTotalCount: Int = 0
+    /// iPhone 端队列是否因超过 payload 上限被截断 (只推了前若干首)。
+    var queueTruncated: Bool = false
+
+    /// 队列被截断时的提示文案 (例如「仅显示前 300 首, 共 412 首」), 未截断返回 nil。
+    /// UI 可直接绑定此属性在列表顶部给出说明, 避免用户误以为队列只有这么多。
+    var queueTruncationNotice: String? {
+        guard queueTruncated else { return nil }
+        return WatchString("ext.watch.queue.truncationNotice", queue.count, queueTotalCount)
+    }
 
     /// 收到 context 时的本地基准时刻, 用来本地外推 currentTime (100ms 一刷)。
     private var sentTimeAnchor: TimeInterval = 0
@@ -42,6 +54,12 @@ final class WatchPlayerStore: NSObject, WCSessionDelegate {
     /// 同理: 用户最近一次主动 seek 的时刻。1 秒内 iPhone 推过来的 currentTime
     /// 如果偏离乐观值 >2s 视为 stale, 忽略。
     private var lastUserSeekAt: Date = .distantPast
+
+    /// 上次写给 Complication 的四元组 ── Complication 只显示
+    /// (songID, title, artist, isPlaying), 跟歌词 / 进度等无关。缓存它,
+    /// 仅当其中任一字段变化时才 write + reload timeline, 避免播放有歌词的歌
+    /// 时每隔几秒的歌词行推送都触发一次 reload, 耗尽 watchOS 每日刷新预算。
+    private var lastComplicationKey: ComplicationKey?
 
     private let session: WCSession?
 
@@ -170,9 +188,15 @@ final class WatchPlayerStore: NSObject, WCSessionDelegate {
         let songs = zip(zip(ids, titles), artists).map { pair, artist in
             WatchLibrarySong(id: pair.0, title: pair.1, artist: artist)
         }
+        // Wave B 的截断退路: 超大队列被按字节截断后, iPhone 端带上完整总数与
+        // truncated 标记。缺省 (旧 payload / 未截断) 时 total 落到收到的条数。
+        let total = message["totalCount"] as? Int ?? songs.count
+        let truncated = message["truncated"] as? Bool ?? false
         Task { @MainActor in
             if kind == "queue" {
                 self.queue = songs
+                self.queueTotalCount = total
+                self.queueTruncated = truncated
             }
         }
     }
@@ -251,13 +275,30 @@ final class WatchPlayerStore: NSObject, WCSessionDelegate {
         }
 
         // 同步给表盘 Complication ── 写共享 UserDefaults + reload timeline。
-        // reloadAllTimelines 在 watchOS 上有节流, 一秒内多次调用会自动合并。
+        // Complication 只显示 (songID, title, artist, isPlaying), 仅当这四个
+        // 字段任一变化时才写 + reload; 歌词 / 进度等无关字段的频繁推送不触发,
+        // 避免耗尽 watchOS 每日刷新预算。reloadTimelines(ofKind:) 只刷本
+        // Complication, 比 reloadAllTimelines 范围更小。
         // 当 App Group 没在 dev portal 配好时, UserDefaults(suiteName:) 会
         // 返回 nil, write 内部静默失败, 不影响 watch app 主体功能。
-        SharedNowPlayingState.write(
+        let complicationKey = ComplicationKey(
             songID: songID, title: title, artist: artist, isPlaying: isPlaying
         )
-        WidgetCenter.shared.reloadAllTimelines()
+        if complicationKey != lastComplicationKey {
+            lastComplicationKey = complicationKey
+            SharedNowPlayingState.write(
+                songID: songID, title: title, artist: artist, isPlaying: isPlaying
+            )
+            WidgetCenter.shared.reloadTimelines(ofKind: SharedNowPlayingState.widgetKind)
+        }
+    }
+
+    /// Complication 关心的四元组 ── 用来去重重复推送, 只有它变了才刷新表盘。
+    private struct ComplicationKey: Equatable {
+        let songID: String
+        let title: String
+        let artist: String
+        let isPlaying: Bool
     }
 }
 

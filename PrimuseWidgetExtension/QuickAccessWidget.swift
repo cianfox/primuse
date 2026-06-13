@@ -48,8 +48,8 @@ struct QuickAccessWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("最近播放")
-        .description("把最近播放的专辑直接放到桌面上")
+        .configurationDisplayName(PMString("ext.widget.recent.displayName"))
+        .description(PMString("ext.widget.recent.description"))
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -89,7 +89,7 @@ private struct SmallQuickAccessView: View {
     var body: some View {
         WidgetCanvas(padding: 14) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("最近播放")
+                Text(PMString("ext.widget.recent.eyebrow"))
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(WidgetDesign.tertiaryText)
                     .tracking(0.4)
@@ -128,10 +128,10 @@ private struct SmallQuickAccessEmptyState: View {
             VStack(alignment: .leading, spacing: 8) {
                 Spacer()
                 WidgetEmptyStateIcon(systemName: "square.stack.fill", size: 42)
-                Text("暂无最近播放")
+                Text(PMString("ext.widget.recent.empty.title"))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(WidgetDesign.strongText)
-                Text("开始播放后出现")
+                Text(PMString("ext.widget.recent.empty.short"))
                     .font(.system(size: 10))
                     .foregroundStyle(WidgetDesign.secondaryText)
             }
@@ -169,7 +169,7 @@ private struct MediumQuickAccessView: View {
                         .frame(width: coverSide, height: coverSide)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("最近播放")
+                        Text(PMString("ext.widget.recent.eyebrow"))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.55))
                             .textCase(.uppercase)
@@ -222,7 +222,7 @@ private struct LargeQuickAccessView: View {
                     .overlay(Color.black.opacity(0.46))
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("最近播放")
+                    Text(PMString("ext.widget.recent.eyebrow"))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.55))
                         .textCase(.uppercase)
@@ -269,10 +269,10 @@ private struct MediumQuickAccessEmptyState: View {
             HStack(spacing: 16) {
                 WidgetEmptyStateIcon(systemName: "square.stack.fill", size: 64)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("暂无最近播放")
+                    Text(PMString("ext.widget.recent.empty.title"))
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(WidgetDesign.strongText)
-                    Text("开始播放后,最近专辑会出现在这里")
+                    Text(PMString("ext.widget.recent.empty.medium"))
                         .font(.system(size: 12))
                         .foregroundStyle(WidgetDesign.secondaryText)
                         .lineLimit(2)
@@ -290,10 +290,10 @@ private struct LargeQuickAccessEmptyState: View {
             VStack(alignment: .leading, spacing: 14) {
                 WidgetEmptyStateIcon(systemName: "square.stack.fill", size: 78)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("暂无最近播放")
+                    Text(PMString("ext.widget.recent.empty.title"))
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(WidgetDesign.strongText)
-                    Text("最近播放过的专辑会自动同步到桌面")
+                    Text(PMString("ext.widget.recent.empty.large"))
                         .font(.system(size: 13))
                         .foregroundStyle(WidgetDesign.secondaryText)
                         .lineLimit(3)

@@ -21,9 +21,62 @@ enum WidgetSharedStore {
         guard let defaults, let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
+
+    /// App Group container URL holding the widget cover JPEGs/PNGs.
+    static var containerURL: URL? {
+        FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: PrimuseConstants.appGroupIdentifier
+        )
+    }
+
+    /// Removes every widget cover file the main app drops in the shared
+    /// container (`widget_cover.png` + `widget_album_*.jpg`). Call this when
+    /// widget sync is turned off or the shared data scope is narrowed below
+    /// `cover`, so the WidgetKit extension can't keep rendering album art the
+    /// user no longer wants disclosed. Returns silently if the container is
+    /// unavailable or already empty.
+    static func clearSharedCoverFiles() {
+        guard let containerURL else { return }
+        let fm = FileManager.default
+        let cover = containerURL.appendingPathComponent("widget_cover.png")
+        try? fm.removeItem(at: cover)
+        guard let entries = try? fm.contentsOfDirectory(
+            at: containerURL,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in entries where url.lastPathComponent.hasPrefix("widget_album_") {
+            try? fm.removeItem(at: url)
+        }
+    }
 }
 
 // MARK: - Widget settings (sync gate + refresh cadence)
+
+/// How much of the now-playing payload the user permits Primuse to publish
+/// into the App Group container (and therefore expose to the WidgetKit
+/// extension). Narrowing the scope is a privacy control: `minimal` keeps only
+/// title + artist out of the container, omitting the cover file, playback
+/// progress, and full lyrics.
+///
+/// Raw values must stay byte-identical to the strings the macOS settings UI
+/// writes via `@AppStorage` (`MacSettingsView`), so both ends agree.
+public enum WidgetSharedDataScope: String, Codable, Sendable, CaseIterable {
+    /// Title + Artist + Cover + Progress + Lyrics — the default, full payload.
+    case titleArtistCoverProgressLyrics
+    /// Title + Artist + Cover + Progress — drops full lyrics.
+    case titleArtistCoverProgress
+    /// Title + Artist only — drops cover, progress, and lyrics.
+    case minimal
+
+    /// Whether the album cover file may be written to / read from the container.
+    public var includesCover: Bool { self != .minimal }
+
+    /// Whether playback progress (currentTime / duration) may be published.
+    public var includesProgress: Bool { self != .minimal }
+
+    /// Whether the lyrics snapshot may be published.
+    public var includesLyrics: Bool { self == .titleArtistCoverProgressLyrics }
+}
 
 public enum WidgetRefreshMode: String, Codable, Sendable, CaseIterable {
     case adaptive
@@ -60,9 +113,18 @@ public enum WidgetSettings {
         return defaults.bool(forKey: key)
     }
 
-    public static func sharedDataScope() -> String {
-        WidgetSharedStore.defaults?.string(forKey: PrimuseConstants.widgetSharedDataScopeKey)
-            ?? "titleArtistCoverProgressLyrics"
+    /// The user-selected scope for the now-playing payload. Defaults to the
+    /// full payload when never set, matching the settings UI default.
+    ///
+    /// Consumers must gate what they write into the App Group on this:
+    /// `updatePlaybackState` should skip the cover file / progress when
+    /// `includesCover` / `includesProgress` are false, and the lyrics publisher
+    /// should skip the snapshot when `includesLyrics` is false.
+    public static func sharedDataScope() -> WidgetSharedDataScope {
+        guard let raw = WidgetSharedStore.defaults?.string(forKey: PrimuseConstants.widgetSharedDataScopeKey),
+              let scope = WidgetSharedDataScope(rawValue: raw)
+        else { return .titleArtistCoverProgressLyrics }
+        return scope
     }
 
     public static func clickableInteractionEnabled() -> Bool {

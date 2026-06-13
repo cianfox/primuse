@@ -3,6 +3,7 @@ import AVFoundation
 import Foundation
 import MediaPlayer
 import Observation
+import PrimuseKit
 
 /// tvOS 真实音频播放引擎 —— AVPlayer + AVAudioSession + Now Playing Info / 遥控中心。
 /// 只播纯 https 流(由 PrimuseKit 的 StreamResolver 解析得到的 URL)。
@@ -84,12 +85,17 @@ final class TVAudioEngine {
         }
         plog("📺 TV engine.load host=\(url.host ?? "?") scheme=\(url.scheme ?? "?") headers=\(headers.count) dur=\(duration)")
         itemStatusObs = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            MainActor.assumeIsolated {
-                switch item.status {
+            // KVO 回调在属性变更线程上同步执行,AVFoundation 不保证主线程投递(.failed 尤其常落后台队列),
+            // 故显式跳主线程,不能用 assumeIsolated 假设隔离。
+            let status = item.status
+            let errorMessage = item.error?.localizedDescription
+            let itemDuration = item.duration.seconds
+            Task { @MainActor in
+                switch status {
                 case .readyToPlay:
-                    plog("📺 TV engine: item readyToPlay dur=\(item.duration.seconds)")
+                    plog("📺 TV engine: item readyToPlay dur=\(itemDuration)")
                 case .failed:
-                    let msg = item.error?.localizedDescription ?? "播放失败"
+                    let msg = errorMessage ?? PMString("ext.tv.playback.failed")
                     plog("📺 TV engine: item FAILED — \(msg)")
                     self?.status = .failed(msg)
                     self?.isPlaying = false
@@ -131,7 +137,8 @@ final class TVAudioEngine {
         let target = max(0, seconds)
         currentTime = target
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateNowPlayingInfo() }
+            // seek completion 回调走 AVPlayer 内部串行队列,不保证主线程,显式跳主线程而非 assumeIsolated。
+            Task { @MainActor in self?.updateNowPlayingInfo() }
         }
     }
 
@@ -156,7 +163,7 @@ final class TVAudioEngine {
                     if d.isFinite, d > 0 { self.duration = d }
                 }
                 if let item = self.player.currentItem, item.status == .failed {
-                    self.status = .failed(item.error?.localizedDescription ?? "播放失败")
+                    self.status = .failed(item.error?.localizedDescription ?? PMString("ext.tv.playback.failed"))
                     self.isPlaying = false
                 }
             }

@@ -19,9 +19,28 @@ struct NowPlayingProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NowPlayingEntry>) -> Void) {
-        let entry = NowPlayingEntry(date: Date(), state: PlaybackState.load())
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
-        completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+        let now = Date()
+        let state = PlaybackState.load()
+        let entry = NowPlayingEntry(date: now, state: state)
+
+        // 进度推进交给视图层的 timerInterval(见 PlaybackProgress), 所以这里不再用
+        // 固定 5 分钟周期 reload —— 那会让 entry.date 漂移、把自走进度锚点重置成
+        // 倒退。播放 / 暂停 / 切歌等离散事件已由写入侧 reloadAllTimelines() 驱动重载,
+        // entry.date 此刻才贴近 currentTime 的采样时刻。
+        //
+        // 唯一需要主动安排的 reload 是"歌曲自然播完"那一刻: 届时写入侧若(因 App 在
+        // 后台等原因)没及时回写, 也要让 widget 翻到下一状态而不是停在满条。
+        let policy: TimelineReloadPolicy
+        if let state, state.isPlaying, state.duration > 0, state.currentTime < state.duration {
+            let remaining = state.duration - max(0, state.currentTime)
+            // 留 1s 余量, 避免边界抖动。
+            let songEnd = now.addingTimeInterval(remaining + 1)
+            policy = .after(songEnd)
+        } else {
+            // 暂停 / 无时长: 静态渲染, 等事件驱动重载即可。
+            policy = .never
+        }
+        completion(Timeline(entries: [entry], policy: policy))
     }
 
     /// 画廊预览 / placeholder 用的假数据 —— 让 widget 在用户挑选时就能
@@ -66,8 +85,8 @@ struct NowPlayingWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("正在播放")
-        .description("快速查看当前歌曲和播放进度")
+        .configurationDisplayName(PMString("ext.widget.nowPlaying.displayName"))
+        .description(PMString("ext.widget.nowPlaying.description"))
         .supportedFamilies(families)
     }
 }
@@ -79,16 +98,20 @@ struct NowPlayingWidgetView: View {
 
     var body: some View {
         if let state = entry.state, state.currentSongID != nil {
+            // entry.date 是这条 timeline 生成的时刻, 也就是 state.currentTime 被
+            // 采样的时刻。播放中时用它把进度锚成绝对时间区间, 让系统自己推进, 无需
+            // 频繁 reload。
+            let progress = PlaybackProgress(state: state, referenceDate: entry.date)
             switch family {
-            case .systemSmall: SmallNowPlayingView(state: state)
-            case .systemMedium: MediumNowPlayingView(state: state)
-            case .systemLarge: LargeNowPlayingView(state: state)
+            case .systemSmall: SmallNowPlayingView(state: state, progress: progress)
+            case .systemMedium: MediumNowPlayingView(state: state, progress: progress)
+            case .systemLarge: LargeNowPlayingView(state: state, progress: progress)
             #if os(iOS)
-            case .accessoryCircular: AccessoryCircularNowPlaying(state: state)
+            case .accessoryCircular: AccessoryCircularNowPlaying(state: state, progress: progress)
             case .accessoryRectangular: AccessoryRectangularNowPlaying(state: state)
             case .accessoryInline: AccessoryInlineNowPlaying(state: state)
             #endif
-            default: SmallNowPlayingView(state: state)
+            default: SmallNowPlayingView(state: state, progress: progress)
             }
         } else {
             switch family {
@@ -106,6 +129,44 @@ struct NowPlayingWidgetView: View {
     }
 }
 
+// MARK: - 进度推进模型
+//
+// 写入侧只在离散事件(play/pause/seek/切歌)时把 currentTime 写进 App Group,
+// 连续播放时不会逐秒回写。所以单纯读 state.currentTime 会让进度整首歌冻结在开播
+// 时刻。这里把"采样时刻(referenceDate=entry.date)+ 当时的 currentTime + duration"
+// 还原成一段绝对时间区间, 交给 SwiftUI 的 timerInterval 视图自动推进, 系统会在
+// 锁屏/桌面上平滑走条而无需我们频繁 reload timeline。
+struct PlaybackProgress {
+    /// 播放中且 duration 有效时, 用于驱动 timerInterval 视图的绝对时间区间。
+    let timerRange: ClosedRange<Date>?
+    /// 静态(暂停 / 无时长)渲染用的已播秒数。
+    let elapsed: TimeInterval
+    /// 总时长(<=0 表示未知)。
+    let duration: TimeInterval
+
+    init(state: PlaybackState, referenceDate: Date) {
+        let elapsed = max(0, state.currentTime)
+        let duration = state.duration
+        self.elapsed = elapsed
+        self.duration = duration
+
+        if state.isPlaying, duration > 0, elapsed < duration {
+            // currentTime 是 referenceDate 时刻的播放位置, 反推开播锚点。
+            let start = referenceDate.addingTimeInterval(-elapsed)
+            let end = start.addingTimeInterval(duration)
+            self.timerRange = start <= end ? start...end : nil
+        } else {
+            self.timerRange = nil
+        }
+    }
+
+    /// 静态进度比例(0...1), 暂停 / 无时长时用。
+    var staticFraction: CGFloat {
+        guard duration > 0 else { return 0 }
+        return CGFloat(max(0, min(1, elapsed / duration)))
+    }
+}
+
 // MARK: - Home Screen widgets
 //
 // 设计目标:
@@ -116,6 +177,7 @@ struct NowPlayingWidgetView: View {
 
 private struct SmallNowPlayingView: View {
     let state: PlaybackState
+    let progress: PlaybackProgress
 
     var body: some View {
         ZStack {
@@ -136,15 +198,15 @@ private struct SmallNowPlayingView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Spacer()
-                Text(state.songTitle ?? "未知歌曲")
+                Text(state.songTitle ?? PMString("ext.widget.unknownSong"))
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(2)
-                Text(state.artistName ?? "未知艺术家")
+                Text(state.artistName ?? PMString("ext.widget.unknownArtist"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.78))
                     .lineLimit(1)
-                ProgressLine(value: state.currentTime, total: state.duration)
+                ProgressLine(progress: progress)
                     .padding(.top, 2)
             }
             .padding(14)
@@ -155,6 +217,7 @@ private struct SmallNowPlayingView: View {
 
 private struct MediumNowPlayingView: View {
     let state: PlaybackState
+    let progress: PlaybackProgress
 
     var body: some View {
         GeometryReader { geometry in
@@ -172,16 +235,16 @@ private struct MediumNowPlayingView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         NowPlayingEyebrow(state: state)
 
-                        Text(state.songTitle ?? "未知歌曲")
+                        Text(state.songTitle ?? PMString("ext.widget.unknownSong"))
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(WidgetDesign.strongText)
                             .lineLimit(2)
                             .minimumScaleFactor(0.86)
-                        Text(state.artistName ?? "未知艺术家")
+                        Text(state.artistName ?? PMString("ext.widget.unknownArtist"))
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(WidgetDesign.secondaryText)
                             .lineLimit(1)
-                        Text(state.albumTitle?.isEmpty == false ? state.albumTitle! : "未知专辑")
+                        Text(state.albumTitle?.isEmpty == false ? state.albumTitle! : PMString("ext.widget.unknownAlbum"))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(WidgetDesign.tertiaryText)
                             .lineLimit(1)
@@ -189,9 +252,9 @@ private struct MediumNowPlayingView: View {
                         Spacer(minLength: 0)
 
                         VStack(spacing: 5) {
-                            ProgressLine(value: state.currentTime, total: state.duration)
+                            ProgressLine(progress: progress)
                             HStack {
-                                Text(formatTime(state.currentTime))
+                                ElapsedTimeText(progress: progress)
                                 Spacer()
                                 Text(formatTime(state.duration))
                             }
@@ -215,6 +278,7 @@ private struct MediumNowPlayingView: View {
 
 private struct LargeNowPlayingView: View {
     let state: PlaybackState
+    let progress: PlaybackProgress
 
     var body: some View {
         GeometryReader { geometry in
@@ -232,16 +296,16 @@ private struct LargeNowPlayingView: View {
 
                         VStack(alignment: .leading, spacing: 6) {
                             NowPlayingEyebrow(state: state)
-                            Text(state.songTitle ?? "未知歌曲")
+                            Text(state.songTitle ?? PMString("ext.widget.unknownSong"))
                                 .font(.system(size: 21, weight: .bold))
                                 .foregroundStyle(WidgetDesign.strongText)
                                 .lineLimit(2)
                                 .minimumScaleFactor(0.82)
-                            Text(state.artistName ?? "未知艺术家")
+                            Text(state.artistName ?? PMString("ext.widget.unknownArtist"))
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(WidgetDesign.secondaryText)
                                 .lineLimit(1)
-                            Text(state.albumTitle?.isEmpty == false ? state.albumTitle! : "未知专辑")
+                            Text(state.albumTitle?.isEmpty == false ? state.albumTitle! : PMString("ext.widget.unknownAlbum"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(WidgetDesign.tertiaryText)
                                 .lineLimit(1)
@@ -249,13 +313,20 @@ private struct LargeNowPlayingView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
+                    // 歌词面板的数据源 LyricsSnapshot 仅由 macOS 的
+                    // MacWidgetDataPublisher.publishLyrics 写入 (调用点在
+                    // PrimuseApp 的 #if os(macOS) 守卫内),iOS 从不写入,导致
+                    // Large widget 歌词面板恒占位。先在 iOS 隐藏避免误导,
+                    // 待 iOS 侧接通 LyricsSnapshot 写入后再放开。
+                    #if os(macOS)
                     NowPlayingLyricsPreview(state: state)
                         .frame(maxWidth: .infinity)
+                    #endif
 
                     VStack(spacing: 6) {
-                        ProgressLine(value: state.currentTime, total: state.duration)
+                        ProgressLine(progress: progress)
                         HStack {
-                            Text(formatTime(state.currentTime))
+                            ElapsedTimeText(progress: progress)
                             Spacer()
                             Text(formatTime(state.duration))
                         }
@@ -292,9 +363,9 @@ private struct NowPlayingEyebrow: View {
     private var eyebrowText: String {
         let format = state.fileFormat?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let format, !format.isEmpty {
-            return "正在播放 · \(format.uppercased())"
+            return PMString("ext.widget.nowPlaying.eyebrowFormat", format.uppercased())
         }
-        return state.isPlaying ? "正在播放" : "已暂停"
+        return state.isPlaying ? PMString("ext.widget.nowPlaying.playing") : PMString("ext.widget.nowPlaying.paused")
     }
 }
 
@@ -345,7 +416,9 @@ private struct NowPlayingLyricsPreview: View {
         guard let snapshot = LyricsSnapshot.load(),
               snapshot.songID == state.currentSongID,
               snapshot.lines.isEmpty == false else {
-            return ["暂无歌词预览", "播放含歌词的曲目后", "这里会跟随更新"]
+            return [PMString("ext.widget.lyricsPreview.empty1"),
+                    PMString("ext.widget.lyricsPreview.empty2"),
+                    PMString("ext.widget.lyricsPreview.empty3")]
         }
 
         let start = max(0, snapshot.anchorIndex - 1)
@@ -379,10 +452,10 @@ private struct SmallEmptyStateView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Spacer()
                 WidgetEmptyStateIcon(systemName: "music.note", size: 42)
-                Text("尚未播放")
+                Text(PMString("ext.widget.nowPlaying.empty.title"))
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(WidgetDesign.strongText)
-                Text("打开猿音继续")
+                Text(PMString("ext.widget.nowPlaying.empty.openShort"))
                     .font(.system(size: 11))
                     .foregroundStyle(WidgetDesign.secondaryText)
             }
@@ -397,10 +470,10 @@ private struct MediumEmptyStateView: View {
             HStack(spacing: 16) {
                 WidgetEmptyStateIcon(systemName: "music.note", size: 64)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("尚未播放")
+                    Text(PMString("ext.widget.nowPlaying.empty.title"))
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(WidgetDesign.strongText)
-                    Text("打开猿音继续上次的旋律")
+                    Text(PMString("ext.widget.nowPlaying.empty.openMedium"))
                         .font(.system(size: 12))
                         .foregroundStyle(WidgetDesign.secondaryText)
                         .lineLimit(2)
@@ -418,10 +491,10 @@ private struct LargeEmptyStateView: View {
             VStack(alignment: .leading, spacing: 14) {
                 WidgetEmptyStateIcon(systemName: "music.note", size: 78)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("尚未播放")
+                    Text(PMString("ext.widget.nowPlaying.empty.title"))
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(WidgetDesign.strongText)
-                    Text("连接你的音乐源,这里会显示当前歌曲和播放进度。")
+                    Text(PMString("ext.widget.nowPlaying.empty.openLarge"))
                         .font(.system(size: 13))
                         .foregroundStyle(WidgetDesign.secondaryText)
                         .lineLimit(3)
@@ -445,15 +518,21 @@ private struct LargeEmptyStateView: View {
 
 private struct AccessoryCircularNowPlaying: View {
     let state: PlaybackState
+    let progress: PlaybackProgress
 
     var body: some View {
-        let total = max(state.duration, 0.01)
-        let progress = state.duration > 0
-            ? max(0, min(1, state.currentTime / total))
-            : 0
         ZStack {
-            if state.duration > 0 {
-                Gauge(value: progress) {
+            if let range = progress.timerRange {
+                // 播放中: 用 timerInterval 环让系统自动推进, 中心叠波形图标。
+                ProgressView(timerInterval: range, countsDown: false) {
+                    EmptyView()
+                }
+                .progressViewStyle(.circular)
+                Image(systemName: "waveform")
+                    .font(.system(size: 13, weight: .semibold))
+            } else if progress.duration > 0 {
+                // 暂停但有时长: 静态环停在当前比例。
+                Gauge(value: progress.staticFraction) {
                     Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
                 }
                 .gaugeStyle(.accessoryCircularCapacity)
@@ -476,11 +555,11 @@ private struct AccessoryRectangularNowPlaying: View {
                 Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .widgetAccentable()
-                Text(state.songTitle ?? "未知歌曲")
+                Text(state.songTitle ?? PMString("ext.widget.unknownSong"))
                     .font(.headline)
                     .lineLimit(1)
             }
-            Text(state.artistName ?? "未知艺术家")
+            Text(state.artistName ?? PMString("ext.widget.unknownArtist"))
                 .font(.caption2)
                 .lineLimit(1)
             if let album = state.albumTitle, !album.isEmpty {
@@ -498,7 +577,7 @@ private struct AccessoryInlineNowPlaying: View {
     let state: PlaybackState
 
     var body: some View {
-        let title = state.songTitle ?? "未知歌曲"
+        let title = state.songTitle ?? PMString("ext.widget.unknownSong")
         let artist = state.artistName ?? ""
         let symbol = state.isPlaying ? "play.fill" : "pause.fill"
         Label {
@@ -530,10 +609,10 @@ private struct AccessoryRectangularEmptyState: View {
                 Image(systemName: "music.note")
                     .font(.system(size: 11, weight: .semibold))
                     .widgetAccentable()
-                Text("猿音")
+                Text(PMString("ext.widget.appName"))
                     .font(.headline)
             }
-            Text("点击开始播放")
+            Text(PMString("ext.widget.nowPlaying.empty.tapToPlay"))
                 .font(.caption2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -543,7 +622,7 @@ private struct AccessoryRectangularEmptyState: View {
 
 private struct AccessoryInlineEmptyState: View {
     var body: some View {
-        Label("猿音 — 暂未播放", systemImage: "music.note")
+        Label(PMString("ext.widget.nowPlaying.empty.inline"), systemImage: "music.note")
             .containerBackground(for: .widget) { Color.clear }
     }
 }
@@ -552,26 +631,65 @@ private struct AccessoryInlineEmptyState: View {
 
 // MARK: - 共享原件
 
+/// 已播时长标签 ── 播放中用 `Text(timerInterval:)` 让系统逐秒推进, 暂停 / 无时长时
+/// 落回静态 `formatTime`。字体 / 配色由外层 `.font` / `.foregroundStyle` 决定, 与
+/// 旁边的总时长标签保持一致。
+private struct ElapsedTimeText: View {
+    let progress: PlaybackProgress
+
+    var body: some View {
+        if let range = progress.timerRange {
+            // showsHours=false → m:ss; 从区间起点正向计时, 即已播秒数。
+            Text(timerInterval: range, countsDown: false, showsHours: false)
+                .monospacedDigit()
+        } else {
+            Text(formatTime(progress.elapsed))
+        }
+    }
+}
+
 /// 极细单线进度条 ── 高 2.5pt, 半透明白 track + 实白 fill。比之前的
 /// `WidgetProgressBar` 更克制,贴合 Apple Music widget 的视觉重量。
+///
+/// 播放中走 `ProgressView(timerInterval:)`, 由系统逐帧推进; 暂停 / 无时长时落回
+/// 静态比例渲染。两条路径都套同一个 `HairlineProgressStyle`, 视觉完全一致。
 private struct ProgressLine: View {
-    let value: TimeInterval
-    let total: TimeInterval
+    let progress: PlaybackProgress
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let track = colorScheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.12)
+        let fill = colorScheme == .dark ? Color.white : WidgetDesign.brandTint
+        Group {
+            if let range = progress.timerRange {
+                ProgressView(timerInterval: range, countsDown: false)
+                    .labelsHidden()
+            } else {
+                ProgressView(value: progress.staticFraction)
+            }
+        }
+        .progressViewStyle(HairlineProgressStyle(track: track, fill: fill))
+        .frame(height: 2.5)
+    }
+}
+
+/// 把 `ProgressView`(无论 value 还是 timerInterval 形态)渲染成 2.5pt 细 capsule,
+/// 复用原 `ProgressLine` 的 track/fill 配色。
+private struct HairlineProgressStyle: ProgressViewStyle {
+    let track: Color
+    let fill: Color
+
+    func makeBody(configuration: Configuration) -> some View {
         GeometryReader { geo in
-            let progress: CGFloat = total > 0
-                ? CGFloat(max(0, min(1, value / total)))
-                : 0
-            let track = colorScheme == .dark ? Color.white.opacity(0.22) : Color.black.opacity(0.12)
-            let fill = colorScheme == .dark ? Color.white : WidgetDesign.brandTint
+            // timerInterval 形态下 fractionCompleted 由系统逐帧推进; value 形态下
+            // 取传入的静态比例。两者都收敛到 0...1。
+            let fraction = CGFloat(max(0, min(1, configuration.fractionCompleted ?? 0)))
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(track)
                 Capsule()
                     .fill(fill)
-                    .frame(width: geo.size.width * progress)
+                    .frame(width: geo.size.width * fraction)
             }
         }
         .frame(height: 2.5)

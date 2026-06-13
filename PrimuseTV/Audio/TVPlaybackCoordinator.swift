@@ -11,11 +11,9 @@ enum TVPlaybackIssue: Equatable {
     var message: String {
         switch self {
         case .unsupported(let name):
-            return TVL("「\(name)」类型暂不支持在 Apple TV 直接播放(仅手机 / 电脑)",
-                       "“\(name)” can’t play directly on Apple TV yet (phone / computer only)")
+            return PMString("ext.tv.playback.unsupported", name)
         case .missingCredential(let name):
-            return TVL("缺少「\(name)」的登录凭据 —— 请确认手机已登录且开启 iCloud 钥匙串",
-                       "Missing credentials for “\(name)” — sign in on your phone with iCloud Keychain on")
+            return PMString("ext.tv.playback.missingCredential", name)
         case .failed(let msg): return msg
         }
     }
@@ -38,7 +36,7 @@ final class TVPlaybackCoordinator {
         store.playbackIssue = nil
         guard let song = store.library.song(id: songID) else {
             plog("🎬 TV play: song not found id=\(songID)")
-            store.playbackIssue = .failed(TVL("曲库中找不到这首歌", "Song not found in the library"))
+            store.playbackIssue = .failed(PMString("ext.tv.playback.songNotFound"))
             return
         }
         guard let source = store.sourcesStore.source(id: song.sourceID) else {
@@ -135,12 +133,11 @@ final class TVPlaybackCoordinator {
         switch error {
         case .unsupportedSourceType(let type): return .unsupported(type.displayName)
         case .missingCredential: return .missingCredential(source.name)
-        case .authFailed: return .failed(TVL("鉴权失败,请在手机上重新登录该音乐源", "Authentication failed — re-sign in to this source on your phone"))
-        case .badServerResponse(let code): return .failed(TVL("服务器返回 HTTP \(code)", "Server returned HTTP \(code)"))
-        case .cannotBuildURL: return .failed(TVL("无法构造播放地址", "Couldn’t build a playback URL"))
+        case .authFailed: return .failed(PMString("ext.tv.playback.authFailed"))
+        case .badServerResponse(let code): return .failed(PMString("ext.tv.playback.httpError", code))
+        case .cannotBuildURL: return .failed(PMString("ext.tv.playback.cannotBuildURL"))
         case .relayUnavailable:
-            return .failed(TVL("此来源需经 iPhone 中继播放——请在手机上保持 Primuse 打开、与 Apple TV 同一局域网",
-                               "This source needs iPhone relay — keep Primuse open on your phone, on the same Wi-Fi as the Apple TV"))
+            return .failed(PMString("ext.tv.playback.relayUnavailable"))
         }
     }
 }

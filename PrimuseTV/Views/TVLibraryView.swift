@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 资料库 — 筛选条 + 网格(对应 tvos.jsx 的 TVLibraryArtboard)。
 struct TVLibraryView: View {
@@ -11,11 +12,11 @@ struct TVLibraryView: View {
         var id: String { rawValue }
         var display: String {
             switch self {
-            case .all: return TVL("全部", "All")
-            case .artists: return TVL("艺术家", "Artists")
-            case .songs: return TVL("歌曲", "Songs")
-            case .playlists: return TVL("歌单", "Playlists")
-            case .smart: return TVL("智能歌单", "Smart Playlists")
+            case .all: return PMString("ext.tv.library.filter.all")
+            case .artists: return PMString("ext.tv.library.filter.artists")
+            case .songs: return PMString("ext.tv.library.filter.songs")
+            case .playlists: return PMString("ext.tv.library.filter.playlists")
+            case .smart: return PMString("ext.tv.library.filter.smart")
             }
         }
     }
@@ -43,18 +44,18 @@ struct TVLibraryView: View {
 
     private var title: String {
         switch filter {
-        case .all: return TVL("专辑 · \(store.albums.count)", "Albums · \(store.albums.count)")
-        case .artists: return TVL("艺术家 · \(store.artists.count)", "Artists · \(store.artists.count)")
-        case .songs: return TVL("歌曲 · \(TVFmt.count(store.songs.count))", "Songs · \(TVFmt.count(store.songs.count))")
-        case .playlists: return TVL("歌单 · \(store.playlists.filter { $0.kind != .smart }.count)", "Playlists · \(store.playlists.filter { $0.kind != .smart }.count)")
-        case .smart: return TVL("智能歌单 · \(store.playlists.filter { $0.kind == .smart }.count)", "Smart Playlists · \(store.playlists.filter { $0.kind == .smart }.count)")
+        case .all: return PMString("ext.tv.library.title.albums", store.albums.count)
+        case .artists: return PMString("ext.tv.library.title.artists", store.artists.count)
+        case .songs: return PMString("ext.tv.library.title.songs", TVFmt.count(store.songs.count))
+        case .playlists: return PMString("ext.tv.library.title.playlists", store.playlists.filter { $0.kind != .smart }.count)
+        case .smart: return PMString("ext.tv.library.title.smart", store.playlists.filter { $0.kind == .smart }.count)
         }
     }
 
     private var filterStrip: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 6) {
-                TVEyebrow(text: TVL("资料库", "Library"))
+                TVEyebrow(text: PMString("ext.tv.library.eyebrow"))
                 Text(title).font(TVFont.pageTitle).foregroundStyle(.white)
             }
             Spacer(minLength: 0)

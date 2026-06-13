@@ -134,6 +134,15 @@ final class TVStore {
     private var queueIndex = 0
     private var localLiked = Set<String>()
 
+    // 单条查询索引:song(_:)/album(_:) 命中字典而非全量 map 整库。
+    // 在 refreshVisibility()(reload / 改源后)重建,曲库快照变更即失效。
+    @ObservationIgnored private var songByID: [String: TVSong] = [:]
+    @ObservationIgnored private var albumByID: [String: TVAlbum] = [:]
+
+    // uploadNow 单飞:串行化改源后的快照上传,避免快速连续切源时
+    // 两个 detached 任务交错 delete + save。
+    @ObservationIgnored private var pendingUpload: Task<Void, Never>?
+
     // 播放模式(随机 / 循环)——供正在播放页传输键展示与切换。
     enum RepeatMode { case off, all, one }
     var shuffleEnabled = false
@@ -170,8 +179,8 @@ final class TVStore {
 
     // MARK: 查询
 
-    func album(_ id: String) -> TVAlbum? { albums.first { $0.id == id } }
-    func song(_ id: String) -> TVSong? { songs.first { $0.id == id } }
+    func album(_ id: String) -> TVAlbum? { albumByID[id] }
+    func song(_ id: String) -> TVSong? { songByID[id] }
     func albumOf(_ song: TVSong) -> TVAlbum? { album(song.albumID) }
     func songs(forAlbum id: String) -> [TVSong] {
         library.songs(forAlbum: id).map { self.map($0) }
@@ -200,12 +209,12 @@ final class TVStore {
 
     private func map(_ a: Album) -> TVAlbum {
         let (t1, t2) = Self.tint(a.id.isEmpty ? a.title : a.id)
-        return TVAlbum(id: a.id, title: a.title, artist: a.artistName ?? TVL("未知艺术家", "Unknown Artist"),
+        return TVAlbum(id: a.id, title: a.title, artist: a.artistName ?? PMString("ext.tv.unknownArtist"),
                        year: a.year ?? 0, tint: t1, tint2: t2, glyph: Self.glyph(a.title))
     }
     private func map(_ s: Song) -> TVSong {
         TVSong(id: s.id, albumID: s.albumID ?? "", title: s.title,
-               artist: s.artistName ?? TVL("未知艺术家", "Unknown Artist"), duration: s.duration,
+               artist: s.artistName ?? PMString("ext.tv.unknownArtist"), duration: s.duration,
                format: s.fileFormat.displayName, bitrate: s.bitRate ?? 0,
                sampleRate: Double(s.sampleRate ?? 0) / 1000,
                sourceID: s.sourceID, plays: 0, liked: localLiked.contains(s.id))
@@ -294,33 +303,31 @@ final class TVStore {
 
     /// 「测试连接」:用当前凭据尝试解析该源的一首歌,返回给用户看的结果文案。
     func testConnection(forSourceID id: String) async -> String {
-        guard let source = sourcesStore.source(id: id) else { return TVL("找不到该音乐源", "Source not found") }
+        guard let source = sourcesStore.source(id: id) else { return PMString("ext.tv.test.sourceNotFound") }
         guard let song = library.songs.first(where: { $0.sourceID == id }) else {
-            return TVL("该源在曲库中暂无歌曲,无法测试解析", "This source has no songs in the library to test")
+            return PMString("ext.tv.test.noSongs")
         }
         let cred = TVCredentialStore.credential(for: source, bundle: credentialBundle)
         do {
             let resolved = try await StreamResolverRegistry.shared.resolve(for: song, source: source, credential: cred)
-            return TVL("连接成功 · ", "Connected · ") + (resolved.url.host ?? TVL("已解析", "resolved"))
+            return PMString("ext.tv.test.connectedPrefix") + (resolved.url.host ?? PMString("ext.tv.test.resolved"))
         } catch let e as StreamResolveError {
             switch e {
             case .unsupportedSourceType(let t):
-                return TVL("类型「\(t.displayName)」在 Apple TV 上不支持播放",
-                          "“\(t.displayName)” can’t be played directly on Apple TV")
+                return PMString("ext.tv.test.unsupported", t.displayName)
             case .missingCredential:
-                return TVL("缺少登录凭据 —— 请在此输入账号密码", "Missing credentials — enter your account and password here")
+                return PMString("ext.tv.test.missingCredential")
             case .authFailed:
-                return TVL("鉴权失败 —— 账号或密码不正确", "Authentication failed — wrong account or password")
+                return PMString("ext.tv.test.authFailed")
             case .badServerResponse(let code):
-                return TVL("服务器返回 HTTP \(code)", "Server returned HTTP \(code)")
+                return PMString("ext.tv.playback.httpError", code)
             case .cannotBuildURL:
-                return TVL("无法构造播放地址", "Couldn’t build a playback URL")
+                return PMString("ext.tv.playback.cannotBuildURL")
             case .relayUnavailable:
-                return TVL("需经 iPhone 中继 —— 请在手机上保持 Primuse 打开、与 TV 同一局域网",
-                          "Needs iPhone relay — keep Primuse open on your phone, on the same Wi-Fi as the TV")
+                return PMString("ext.tv.test.relayUnavailable")
             }
         } catch {
-            return TVL("连接失败 · ", "Connection failed · ") + error.localizedDescription
+            return PMString("ext.tv.test.failedPrefix") + error.localizedDescription
         }
     }
 
@@ -461,6 +468,16 @@ final class TVStore {
     private func refreshVisibility() {
         let hidden = Set(sourcesStore.allSources.filter { $0.isDeleted || !$0.isEnabled }.map(\.id))
         library.updateDisabledSourceIDs(hidden)
+        rebuildLookupCaches()
+    }
+
+    /// 重建 song(_:)/album(_:) 的单条查询索引。曲库可见集变化后调用一次,
+    /// 之后单条查询为 O(1),不再每次访问都全量 map 整库。
+    private func rebuildLookupCaches() {
+        songByID = Dictionary(library.visibleSongs.map { ($0.id, self.map($0)) },
+                              uniquingKeysWith: { first, _ in first })
+        albumByID = Dictionary(library.visibleAlbums.map { ($0.id, self.map($0)) },
+                               uniquingKeysWith: { first, _ in first })
     }
 
     /// 在 Apple TV 上删除音乐源:本地软删除 + 隐藏其歌曲 + 尽力把快照上传回 iCloud。
@@ -470,7 +487,7 @@ final class TVStore {
         sourcesStore.remove(id: id)
         refreshVisibility()
         sourcesRevision += 1
-        Task.detached { await LibrarySnapshotSync.shared.uploadNow() }
+        enqueueSnapshotUpload()
     }
 
     /// 在 Apple TV 上启用 / 停用音乐源。停用源的歌曲在资料库里是隐藏的,启用后即可
@@ -482,7 +499,19 @@ final class TVStore {
         let fromThis = library.songs.filter { $0.sourceID == id }.count
         let visibleFromThis = library.visibleSongs.filter { $0.sourceID == id }.count
         plog("🔀 TV setSourceEnabled \(id)→\(enabled); 该源歌曲 全量=\(fromThis) 可见=\(visibleFromThis); 总可见=\(library.visibleSongs.count)")
-        Task.detached { await LibrarySnapshotSync.shared.uploadNow() }
+        enqueueSnapshotUpload()
+    }
+
+    /// 串行化 sources 上传:快速连续改源时,前一个上传跑完再发下一个,
+    /// 避免两个 detached 任务交错改写同一条 CloudKit 记录。
+    /// 只走 `uploadSourcesOnly()` —— 仅覆盖服务器记录的 sources 字段,绝不回传 tvOS 本机
+    /// 那份启动时下载的旧 library 副本(否则会回退手机端新扫描的曲库)。
+    private func enqueueSnapshotUpload() {
+        let previous = pendingUpload
+        pendingUpload = Task {
+            await previous?.value
+            await LibrarySnapshotSync.shared.uploadSourcesOnly()
+        }
     }
 
     // MARK: 歌词
@@ -521,6 +550,19 @@ final class TVStore {
         queue = albumSongs.map(\.id)
         queueIndex = 0
         startPlaying(first)
+    }
+
+    /// 播放歌单**自身**的曲目:用歌单全部歌曲建队列、从首曲开始,续播留在歌单内
+    /// (而非退化为封面所属专辑或整库)。智能歌单在 tvOS 暂未求值,返回 false 表示无可播放内容。
+    @discardableResult
+    func play(playlist: TVPlaylist) -> Bool {
+        guard playlist.kind != .smart else { return false }
+        let ids = library.songs(forPlaylist: playlist.id).map(\.id)
+        guard let first = ids.first, let firstSong = song(first) else { return false }
+        queue = ids
+        queueIndex = 0
+        startPlaying(firstSong)
+        return true
     }
 
     /// 全部播放 / 随机播放整个可见曲库(库多为散曲、没有真正专辑,所以播放范围用整库)。

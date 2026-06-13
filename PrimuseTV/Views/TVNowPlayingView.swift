@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 正在播放 — 左列封面+元数据+进度+传输键,右列巨幅逐字歌词(对应 TVNowPlayingArtboard)。
 /// Menu 键返回;右上角可打开队列 / 选项。
@@ -26,8 +27,8 @@ struct TVNowPlayingView: View {
             VStack(spacing: 18) {
                 Image(systemName: "play.circle").font(.system(size: 96))
                     .foregroundStyle(.white.opacity(0.5))
-                Text(TVL("未在播放", "Not Playing")).font(.system(size: 40, weight: .bold)).foregroundStyle(.white)
-                Text(TVL("在资料库选一首歌开始", "Pick a song from your library to start")).font(.system(size: 22)).foregroundStyle(.white.opacity(0.6))
+                Text(PMString("ext.tv.nowPlaying.notPlaying")).font(.system(size: 40, weight: .bold)).foregroundStyle(.white)
+                Text(PMString("ext.tv.nowPlaying.pickASong")).font(.system(size: 22)).foregroundStyle(.white.opacity(0.6))
             }
         }
     }
@@ -56,7 +57,7 @@ struct TVNowPlayingView: View {
     private var leftColumn: some View {
         let np = store.nowPlaying
         return VStack(alignment: .leading, spacing: 0) {
-            TVEyebrow(text: TVL("正在播放", "Now Playing")).padding(.bottom, 16)
+            TVEyebrow(text: PMString("ext.tv.nowPlaying.eyebrow")).padding(.bottom, 16)
             TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
                           tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 420, radius: 20)
                 .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
@@ -119,7 +120,7 @@ struct TVNowPlayingView: View {
         if store.lyrics.isEmpty {
             VStack(spacing: 12) {
                 Image(systemName: "text.quote").font(.system(size: 48)).foregroundStyle(.white.opacity(0.35))
-                Text(TVL("暂无歌词", "No Lyrics")).font(.system(size: 26)).foregroundStyle(.white.opacity(0.5))
+                Text(PMString("ext.tv.nowPlaying.noLyrics")).font(.system(size: 26)).foregroundStyle(.white.opacity(0.5))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else {

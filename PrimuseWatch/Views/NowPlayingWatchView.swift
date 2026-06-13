@@ -16,6 +16,18 @@ struct NowPlayingWatchView: View {
     /// crown 实际生效时机: 用户停止旋转 0.4s 后才发 seek, 避免连续转动期间
     /// 每一帧都狂发 sendMessage 把链路打满。
     @State private var seekDebounceTask: Task<Void, Never>?
+    /// 程序化改写 crownTime 时置 true ── 让 .onChange(of: crownTime) 跳过这次
+    /// 不发 seek。覆盖三种情况: onAppear / 切歌重置, 以及空闲时跟随 currentTime。
+    /// 只有用户真正转表冠产生的变化才会触发 seek。
+    @State private var programmaticCrownUpdate = false
+
+    /// 把 crownTime 跟某个值"对齐"但不触发 seek ── 程序化写入统一走这里。
+    /// 值无变化时不动: .onChange 不会触发, 标志若提前置位会误吞下一次用户转动。
+    private func syncCrown(to value: Double) {
+        guard value != crownTime else { return }
+        programmaticCrownUpdate = true
+        crownTime = value
+    }
 
     var body: some View {
         ScrollView {
@@ -35,11 +47,11 @@ struct NowPlayingWatchView: View {
             .padding(.horizontal, 8)
             .padding(.top, 4)
         }
-        .navigationTitle("猿音")
+        .navigationTitle(WatchString("ext.watch.appName"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             store.requestCurrentState()
-            crownTime = store.currentTime
+            syncCrown(to: store.currentTime)
         }
         // 数字表冠 ── 转动时直接调 seek 时间, 1 step = 1 秒。
         .focusable(store.hasSong)
@@ -53,18 +65,31 @@ struct NowPlayingWatchView: View {
             isHapticFeedbackEnabled: true
         )
         .onChange(of: crownTime) { _, newValue in
+            // 程序化写入 (重置 / 跟随 currentTime) 不算用户操作, 跳过不发 seek。
+            if programmaticCrownUpdate {
+                programmaticCrownUpdate = false
+                return
+            }
             // 用户停转 0.4s 后才发 seek, 避免连转中每帧都打 sendMessage。
             seekDebounceTask?.cancel()
-            seekDebounceTask = Task { [newValue] in
+            seekDebounceTask = Task { @MainActor [newValue] in
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard !Task.isCancelled else { return }
-                await MainActor.run { store.seek(to: newValue) }
+                store.seek(to: newValue)
+                // 这次 debounce 已完成, 清空 handle 让空闲跟随逻辑恢复。被新一次
+                // 转动取消时不清 (newer task 接管), 以免误开门覆盖用户正在调的值。
+                seekDebounceTask = nil
             }
         }
-        // 当 iPhone 推过来的 currentTime 跟本地 crownTime 偏离很远 (例如换歌
-        // 或 iPhone 端 seek 了), 把 crown 拉回当前位置。差值小不动避免
-        // 抖动 ── 100ms 外推就会让 currentTime 缓慢漂移, 不能盲目跟随。
-        .onChange(of: store.songID) { _, _ in crownTime = store.currentTime }
+        // 切歌 ── 一切重新跟随 iPhone, 把 crown 重置到新歌当前位置 (程序化, 不发 seek)。
+        .onChange(of: store.songID) { _, _ in syncCrown(to: store.currentTime) }
+        // 空闲时让 crown 跟随播放进度 ── 否则放了几分钟后 crownTime 仍停留在
+        // 旧位置, 用户轻转一格就会从陈旧值 +1 把播放拖回几分钟前。仅在无 pending
+        // debounce (用户没在调) 且差值 >1s 时同步, 避免每 100ms 抖动 / 覆盖用户操作。
+        .onChange(of: store.currentTime) { _, newTime in
+            guard seekDebounceTask == nil else { return }
+            if abs(newTime - crownTime) > 1 { syncCrown(to: newTime) }
+        }
     }
 
     private var cover: some View {
@@ -191,9 +216,11 @@ struct NowPlayingWatchView: View {
             Image(systemName: "iphone.gen3")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
-            Text("还没有播放")
+            Text(WatchString("ext.watch.nowPlaying.empty.title"))
                 .font(.headline)
-            Text(store.isReachable ? "在 iPhone 上选一首歌开始播放" : "请确认 iPhone 已解锁并打开猿音")
+            Text(store.isReachable
+                 ? WatchString("ext.watch.nowPlaying.empty.reachable")
+                 : WatchString("ext.watch.nowPlaying.empty.unreachable"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

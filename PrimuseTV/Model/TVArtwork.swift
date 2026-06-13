@@ -80,6 +80,7 @@ struct TVArtworkView: View {
     var radius: CGFloat = 0
 
     @State private var image: UIImage? = nil
+    @State private var loadedKey: String? = nil
 
     var body: some View {
         let h = height ?? size
@@ -93,11 +94,17 @@ struct TVArtworkView: View {
         .frame(width: size, height: h)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .task(id: coverKey) {
-            guard image == nil else { return }
-            if let data = await TVArtworkLoader.shared.cover(key: coverKey, artist: artist, album: album),
+            guard loadedKey != coverKey else { return }
+            // key 变了:先清掉上一张专辑的封面,回到程序化占位再取新图
+            image = nil
+            let key = coverKey
+            if let data = await TVArtworkLoader.shared.cover(key: key, artist: artist, album: album),
                let ui = UIImage(data: data) {
+                // 回填前校验 key 仍是当前值,防止慢加载串图
+                guard key == coverKey else { return }
                 image = ui
             }
+            loadedKey = key
         }
     }
 

@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 // MARK: - 横向区块(Apple Music tvOS shelf 风)
 
@@ -110,7 +111,7 @@ struct TVArtistCard: View {
 struct TVEmptyState: View {
     let icon: String
     let title: String
-    var subtitle: String = TVL("在 iPhone / Mac 上同步曲库后,这里会显示你的音乐", "Sync your library from iPhone or Mac to see your music here")
+    var subtitle: String = PMString("ext.tv.components.emptySubtitle")
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: icon).font(.system(size: 80)).foregroundStyle(.white.opacity(0.4))

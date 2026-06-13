@@ -24,7 +24,7 @@ struct LibraryWatchView: View {
             }
             .padding(.horizontal, 6)
         }
-        .navigationTitle("播放列表")
+        .navigationTitle(WatchString("ext.watch.queue.title"))
     }
 
     private func row(for song: WatchLibrarySong) -> some View {
@@ -71,9 +71,9 @@ struct LibraryWatchView: View {
             Image(systemName: "music.note.list")
                 .font(.system(size: 30))
                 .foregroundStyle(.secondary)
-            Text("队列为空")
+            Text(WatchString("ext.watch.queue.empty.title"))
                 .font(.caption)
-            Text("在 iPhone 上选歌播放后这里会显示队列")
+            Text(WatchString("ext.watch.queue.empty.subtitle"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

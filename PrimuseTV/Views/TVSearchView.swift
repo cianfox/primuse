@@ -1,5 +1,6 @@
 #if os(tvOS)
 import SwiftUI
+import PrimuseKit
 
 /// tvOS 搜索 — 左列查询框 + 屏幕键盘,右列实时结果(对应 TVSearchArtboard)。
 struct TVSearchView: View {
@@ -44,13 +45,13 @@ struct TVSearchView: View {
 
     private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TVEyebrow(text: TVL("搜索", "Search")).padding(.bottom, 16)
+            TVEyebrow(text: PMString("ext.tv.search.eyebrow")).padding(.bottom, 16)
 
             // 真实可聚焦 TextField:tvOS 上选中它会自动唤出全屏系统键盘(含语音听写)。
             HStack(spacing: 18) {
                 Image(systemName: "magnifyingglass").font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(inputActive ? TVColor.brand : .white.opacity(0.55))
-                TextField(TVL("搜索歌曲、专辑、艺术家", "Search songs, albums, artists"), text: $query)
+                TextField(PMString("ext.tv.search.placeholder"), text: $query)
                     .focused($inputActive)
                     .textFieldStyle(.plain)
                     .font(.system(size: 30, weight: .medium))
@@ -71,12 +72,12 @@ struct TVSearchView: View {
             }
             .padding(.bottom, 14)
 
-            Text(TVL("选中搜索框唤出系统键盘,可用语音听写输入", "Select the search field to open the keyboard, or use voice dictation"))
+            Text(PMString("ext.tv.search.hint"))
                 .font(.system(size: 15)).foregroundStyle(TVColor.textGhost)
                 .padding(.bottom, 28)
 
             if query.trimmingCharacters(in: .whitespaces).isEmpty, !suggestions.isEmpty {
-                Text(TVL("建议", "Suggestions")).font(.system(size: 18)).foregroundStyle(TVColor.textMuted)
+                Text(PMString("ext.tv.search.suggestions")).font(.system(size: 18)).foregroundStyle(TVColor.textMuted)
                     .padding(.bottom, 10)
                 VStack(spacing: 4) {
                     ForEach(suggestions, id: \.self) { s in
@@ -102,7 +103,7 @@ struct TVSearchView: View {
 
     private var rightColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TVEyebrow(text: TVL("顶部匹配", "Top Result")).padding(.bottom, 16)
+            TVEyebrow(text: PMString("ext.tv.search.topResult")).padding(.bottom, 16)
             if let artist = topArtist {
                 TVFocusButton(radius: 16, scale: 1.02, lift: 4, action: openPlayer) { focused in
                     HStack(spacing: 20) {
@@ -110,7 +111,7 @@ struct TVSearchView: View {
                                    size: 92, radius: 46)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(artist.name).font(.system(size: 32, weight: .bold)).foregroundStyle(.white)
-                            Text(TVL("艺术家 · \(artist.songCount) 首", "Artist · \(artist.songCount) songs"))
+                            Text(PMString("ext.tv.search.artistMeta", artist.songCount))
                                 .font(.system(size: 18)).foregroundStyle(TVColor.textFaint)
                         }
                         Spacer(minLength: 0)
@@ -119,16 +120,16 @@ struct TVSearchView: View {
                     .background(focused ? Color.white.opacity(0.12) : Color.white.opacity(0.06))
                 }
             } else {
-                Text(TVL("输入以搜索曲库", "Type to search your library")).font(.system(size: 22)).foregroundStyle(TVColor.textFaint)
+                Text(PMString("ext.tv.search.typeToSearch")).font(.system(size: 22)).foregroundStyle(TVColor.textFaint)
             }
 
-            TVEyebrow(text: TVL("歌曲", "Songs")).padding(.top, 28).padding(.bottom, 16)
+            TVEyebrow(text: PMString("ext.tv.search.songs")).padding(.top, 28).padding(.bottom, 16)
             VStack(spacing: 6) {
                 ForEach(matchedSongs.prefix(6)) { song in
                     TVSearchSongRow(song: song, action: openPlayer)
                 }
                 if matchedSongs.isEmpty {
-                    Text(TVL("没有匹配的歌曲", "No matching songs")).font(.system(size: 18)).foregroundStyle(TVColor.textGhost)
+                    Text(PMString("ext.tv.search.noMatch")).font(.system(size: 18)).foregroundStyle(TVColor.textGhost)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }

@@ -19,8 +19,8 @@ struct NowPlayingComplication: Widget {
         ) { entry in
             NowPlayingComplicationView(entry: entry)
         }
-        .configurationDisplayName("猿音")
-        .description("快速看到正在播放的曲目")
+        .configurationDisplayName(WatchString("ext.watch.appName"))
+        .description(WatchString("ext.watch.complication.description"))
         .supportedFamilies([
             .accessoryCircular,
             .accessoryRectangular,
@@ -39,7 +39,7 @@ struct NowPlayingProvider: TimelineProvider {
         NowPlayingEntry(
             date: Date(),
             snapshot: SharedNowPlayingState.Snapshot(
-                songID: "x", title: "曲目名", artist: "艺术家",
+                songID: "x", title: WatchString("ext.watch.demo.track"), artist: WatchString("ext.watch.demo.artist"),
                 isPlaying: true, updatedAt: Date()
             )
         )
@@ -83,7 +83,7 @@ struct NowPlayingComplicationView: View {
             Image(systemName: iconName)
                 .font(.headline)
             VStack(alignment: .leading, spacing: 1) {
-                Text(entry.snapshot.hasSong ? entry.snapshot.title : "暂无播放")
+                Text(entry.snapshot.hasSong ? entry.snapshot.title : WatchString("ext.watch.nowPlaying.none"))
                     .font(.headline)
                     .lineLimit(1)
                 if !entry.snapshot.artist.isEmpty {
@@ -92,7 +92,7 @@ struct NowPlayingComplicationView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 } else if entry.snapshot.hasSong {
-                    Text("猿音").font(.caption2).foregroundStyle(.secondary)
+                    Text(WatchString("ext.watch.appName")).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
@@ -103,7 +103,7 @@ struct NowPlayingComplicationView: View {
         if entry.snapshot.hasSong {
             return Text("\(Image(systemName: iconName)) \(entry.snapshot.title)")
         } else {
-            return Text("\(Image(systemName: "music.note")) 猿音")
+            return Text("\(Image(systemName: "music.note")) \(WatchString("ext.watch.appName"))")
         }
     }
 

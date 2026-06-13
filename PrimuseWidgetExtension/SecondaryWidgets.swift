@@ -17,6 +17,16 @@ private func reloadPolicy() -> TimelineReloadPolicy {
 
 // MARK: - Lyrics
 
+private extension LyricsSnapshot {
+    /// Copy with a recomputed current-line index — lets the widget timeline
+    /// advance the highlight without re-reading the App Group.
+    func with(anchorIndex newIndex: Int) -> LyricsSnapshot {
+        var copy = self
+        copy.anchorIndex = newIndex
+        return copy
+    }
+}
+
 struct LyricsEntry: TimelineEntry {
     let date: Date
     let snapshot: LyricsSnapshot?
@@ -28,17 +38,74 @@ struct LyricsProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (LyricsEntry) -> Void) {
-        let snap = context.isPreview ? Self.demo : (LyricsSnapshot.load() ?? Self.demo)
+        let snap = context.isPreview ? Self.demo : LyricsSnapshot.load()
         completion(LyricsEntry(date: Date(), snapshot: snap))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<LyricsEntry>) -> Void) {
-        let entry = LyricsEntry(date: Date(), snapshot: LyricsSnapshot.load())
-        completion(Timeline(entries: [entry], policy: reloadPolicy()))
+        let now = Date()
+        let loaded = LyricsSnapshot.load()
+        guard let snap = loaded, !snap.lines.isEmpty else {
+            completion(Timeline(entries: [LyricsEntry(date: now, snapshot: loaded)], policy: reloadPolicy()))
+            return
+        }
+
+        // The app only re-writes this snapshot on song change, so `anchorIndex`
+        // is frozen at the line that was current when it was saved. To make the
+        // highlight track playback, project forward from `updatedAt`: the saved
+        // anchor line was current at that instant, so the playback position now
+        // is roughly `lines[anchorIndex].time + (date - updatedAt)`. We emit one
+        // entry per upcoming line so WidgetKit advances the highlight on cue.
+        let entries = Self.timelineEntries(for: snap, from: now)
+        completion(Timeline(entries: entries, policy: reloadPolicy()))
+    }
+
+    /// Builds entries whose `anchorIndex` advances as playback progresses,
+    /// computed purely from the saved line timings + `updatedAt`. Paused
+    /// snapshots yield a single static entry.
+    static func timelineEntries(for snap: LyricsSnapshot, from now: Date) -> [LyricsEntry] {
+        // Playback position (seconds) that the saved anchor corresponds to.
+        let anchorIndex = min(max(snap.anchorIndex, 0), snap.lines.count - 1)
+        let anchorTime = snap.lines[anchorIndex].time
+
+        guard snap.isPlaying else {
+            return [LyricsEntry(date: now, snapshot: snap)]
+        }
+
+        // Position at `now`, then the line index that should be current.
+        let elapsed = max(0, now.timeIntervalSince(snap.updatedAt))
+        let positionNow = anchorTime + elapsed
+        let currentIndex = Self.lineIndex(for: positionNow, in: snap.lines)
+
+        var entries: [LyricsEntry] = [LyricsEntry(date: now, snapshot: snap.with(anchorIndex: currentIndex))]
+
+        // One future entry per remaining line transition, capped to keep the
+        // timeline small. Each fires when that line is due to become current.
+        let maxFutureEntries = 12
+        var added = 0
+        var i = currentIndex + 1
+        while i < snap.lines.count && added < maxFutureEntries {
+            let lineStart = snap.lines[i].time
+            let secondsUntil = lineStart - positionNow
+            if secondsUntil > 0 {
+                let date = now.addingTimeInterval(secondsUntil)
+                entries.append(LyricsEntry(date: date, snapshot: snap.with(anchorIndex: i)))
+                added += 1
+            }
+            i += 1
+        }
+        return entries
+    }
+
+    /// Index of the last line whose start time is <= position (0 if none yet).
+    private static func lineIndex(for position: TimeInterval, in lines: [WidgetLyricLine]) -> Int {
+        var idx = 0
+        for (i, line) in lines.enumerated() where line.time <= position { idx = i }
+        return idx
     }
 
     static let demo = LyricsSnapshot(
-        songID: "demo", title: "水调歌头", artist: "演示曲目", coverImageName: nil,
+        songID: "demo", title: "水调歌头", artist: PMString("ext.widget.demo.track"), coverImageName: nil,
         lines: [
             WidgetLyricLine(time: 0, text: "明月几时有"),
             WidgetLyricLine(time: 3, text: "把酒问青天"),
@@ -58,8 +125,8 @@ struct LyricsWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("歌词")
-        .description("跟随播放进度显示当前歌词")
+        .configurationDisplayName(PMString("ext.widget.lyrics.displayName"))
+        .description(PMString("ext.widget.lyrics.description"))
         .supportedFamilies([.systemMedium])
     }
 }
@@ -75,10 +142,10 @@ struct LyricsWidgetView: View {
                 HStack(spacing: 14) {
                     WidgetEmptyStateIcon(systemName: "quote.bubble", size: 56)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("暂无歌词")
+                        Text(PMString("ext.widget.lyrics.empty.title"))
                             .font(.system(size: 16, weight: .bold))
                             .foregroundStyle(WidgetDesign.strongText)
-                        Text("播放带歌词的歌曲后显示")
+                        Text(PMString("ext.widget.lyrics.empty.subtitle"))
                             .font(.system(size: 12))
                             .foregroundStyle(WidgetDesign.tertiaryText)
                             .lineLimit(2)
@@ -138,7 +205,7 @@ struct StatsProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (StatsEntry) -> Void) {
-        let snap = context.isPreview ? Self.demo : (ListeningStatsSnapshot.load() ?? Self.demo)
+        let snap = context.isPreview ? Self.demo : ListeningStatsSnapshot.load()
         completion(StatsEntry(date: Date(), snapshot: snap))
     }
 
@@ -163,8 +230,8 @@ struct ListeningStatsWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("听歌统计")
-        .description("最近 30 天的播放量与最常听")
+        .configurationDisplayName(PMString("ext.widget.stats.displayName"))
+        .description(PMString("ext.widget.stats.description"))
         .supportedFamilies([.systemMedium])
     }
 }
@@ -180,9 +247,9 @@ struct StatsWidgetView: View {
         return WidgetCanvas(padding: 16) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    WidgetSectionEyebrow(text: "本月听歌")
+                    WidgetSectionEyebrow(text: PMString("ext.widget.stats.eyebrow"))
                     Spacer()
-                    Text("过去 30 天")
+                    Text(PMString("ext.widget.stats.last30Days"))
                         .font(.system(size: 9.5))
                         .foregroundStyle(WidgetDesign.tertiaryText)
                 }
@@ -191,14 +258,14 @@ struct StatsWidgetView: View {
                         Text("\(snap.totalPlays)")
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                             .foregroundStyle(tint)
-                        Text("首播放")
+                        Text(PMString("ext.widget.stats.plays"))
                             .font(.system(size: 10))
                             .foregroundStyle(WidgetDesign.tertiaryText)
                         Text("\(snap.totalHours)h")
                             .font(.system(size: 18, weight: .semibold, design: .rounded))
                             .foregroundStyle(WidgetDesign.strongText)
                             .padding(.top, 8)
-                        Text("总时长")
+                        Text(PMString("ext.widget.stats.totalTime"))
                             .font(.system(size: 10))
                             .foregroundStyle(WidgetDesign.tertiaryText)
                     }
@@ -214,7 +281,7 @@ struct StatsWidgetView: View {
                         }
                         if let title = snap.topSongTitle {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("本月最常听")
+                                Text(PMString("ext.widget.stats.topThisMonth"))
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(WidgetDesign.secondaryText)
                                 Text("\(title)\(snap.topSongArtist.map { " · \($0)" } ?? "")")
@@ -244,7 +311,7 @@ struct SourcesProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SourcesEntry) -> Void) {
-        let snap = context.isPreview ? Self.demo : (SourcesSnapshot.load() ?? Self.demo)
+        let snap = context.isPreview ? Self.demo : SourcesSnapshot.load()
         completion(SourcesEntry(date: Date(), snapshot: snap))
     }
 
@@ -256,7 +323,7 @@ struct SourcesProvider: TimelineProvider {
     static let demo = SourcesSnapshot(
         totalIndexed: 10737,
         sources: [
-            WidgetSourceEntry(id: "1", name: "百度网盘", iconName: "externaldrive.connected.to.line.below", songCount: 4200, status: .online),
+            WidgetSourceEntry(id: "1", name: PMString("src.displayName.baiduPan"), iconName: "externaldrive.connected.to.line.below", songCount: 4200, status: .online),
             WidgetSourceEntry(id: "2", name: "Apple Music", iconName: "music.note", songCount: 1800, status: .online),
             WidgetSourceEntry(id: "3", name: "cqNas", iconName: "server.rack", songCount: 3100, status: .scanning),
             WidgetSourceEntry(id: "4", name: "Synology", iconName: "externaldrive", songCount: 1637, status: .online),
@@ -273,8 +340,8 @@ struct MusicSourcesWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("音乐源")
-        .description("各音乐源的索引状态与已索引数量")
+        .configurationDisplayName(PMString("ext.widget.sources.displayName"))
+        .description(PMString("ext.widget.sources.description"))
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -298,7 +365,7 @@ struct SourcesWidgetView: View {
         return WidgetCanvas(padding: 14) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    WidgetSectionEyebrow(text: "音乐源")
+                    WidgetSectionEyebrow(text: PMString("ext.widget.sources.eyebrow"))
                     Spacer()
                     Text("\(snap.sourceCount)")
                         .font(.system(size: 9.5))
@@ -310,7 +377,7 @@ struct SourcesWidgetView: View {
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                     .padding(.top, 8)
-                Text("首已索引")
+                Text(PMString("ext.widget.sources.indexed"))
                     .font(.system(size: 9.5))
                     .foregroundStyle(WidgetDesign.tertiaryText)
                     .padding(.bottom, 8)
@@ -353,7 +420,7 @@ struct WrappedProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (WrappedEntry) -> Void) {
-        let snap = context.isPreview ? Self.demo : (WrappedSnapshot.load() ?? Self.demo)
+        let snap = context.isPreview ? Self.demo : WrappedSnapshot.load()
         completion(WrappedEntry(date: Date(), snapshot: snap))
     }
 
@@ -374,8 +441,8 @@ struct YearInReviewWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .contentMarginsDisabled()
-        .configurationDisplayName("年度报告")
-        .description("你的年度听歌总结")
+        .configurationDisplayName(PMString("ext.widget.wrapped.displayName"))
+        .description(PMString("ext.widget.wrapped.description"))
         .supportedFamilies([.systemMedium])
     }
 }
@@ -384,7 +451,6 @@ struct WrappedWidgetView: View {
     let entry: WrappedEntry
 
     var body: some View {
-        let snap = entry.snapshot ?? WrappedProvider.demo
         let tint = WidgetDesign.brandTint
         ZStack {
             LinearGradient(
@@ -395,27 +461,48 @@ struct WrappedWidgetView: View {
                 colors: [Color.white.opacity(0.22), .clear],
                 center: .topTrailing, startRadius: 0, endRadius: 220
             )
-            VStack(alignment: .leading, spacing: 0) {
-                Text("PRIMUSE WRAPPED")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(1.2)
-                    .foregroundStyle(.white.opacity(0.72))
-                Text("你的 \(verbatimYear(snap.year))\n已听 \(snap.totalHours) 小时")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.top, 6)
-                Spacer()
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text(snap.topArtist.map { "最常听 · \($0)" } ?? "查看年度报告")
-                        .font(.system(size: 10.5, weight: .medium))
-                        .lineLimit(1)
+            if let snap = entry.snapshot {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("PRIMUSE WRAPPED")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(.white.opacity(0.72))
+                    Text(PMString("ext.widget.wrapped.headline", verbatimYear(snap.year), snap.totalHours))
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.top, 6)
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(snap.topArtist.map { PMString("ext.widget.wrapped.topArtist", $0) } ?? PMString("ext.widget.wrapped.viewReport"))
+                            .font(.system(size: 10.5, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.white.opacity(0.88))
                 }
-                .foregroundStyle(.white.opacity(0.88))
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("PRIMUSE WRAPPED")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(1.2)
+                        .foregroundStyle(.white.opacity(0.72))
+                    Spacer()
+                    Text(PMString("ext.widget.wrapped.empty.title"))
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text(PMString("ext.widget.wrapped.empty.subtitle"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .padding(.top, 4)
+                        .lineLimit(2)
+                    Spacer()
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
     }
 

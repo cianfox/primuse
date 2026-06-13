@@ -27,11 +27,11 @@ enum TopShelfPublisher {
         var sections: [TopShelfSection] = []
         let recentItems = await items(from: recent)
         if !recentItems.isEmpty {
-            sections.append(TopShelfSection(id: "recent", title: "最近播放", items: recentItems))
+            sections.append(TopShelfSection(id: "recent", title: PMString("ext.tv.topShelf.recent"), items: recentItems))
         }
         let albumItems = await items(from: albums)
         if !albumItems.isEmpty {
-            sections.append(TopShelfSection(id: "albums", title: "资料库", items: albumItems))
+            sections.append(TopShelfSection(id: "albums", title: PMString("ext.tv.topShelf.library"), items: albumItems))
         }
         TopShelfStore.save(TopShelfPayload(sections: sections))
         // 通知系统 Top Shelf 内容已变,促其在下次机会重新向扩展取数据(否则停留旧值/空)
