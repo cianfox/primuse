@@ -744,7 +744,8 @@ struct AddSourceView: View {
         let username = self.username.trimmingCharacters(in: .whitespacesAndNewlines)
         let password = self.password.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // S3 special mapping: host=endpoint, basePath=bucket, shareName→basePath, extraConfig={region}
+        // S3 special mapping: host=endpoint, basePath=bucket, shareName→basePath,
+        // extraConfig=JSON{region, dirs} (region + scanned-directory list).
         let finalHost: String?
         let finalBasePath: String?
         let finalShareName: String?
@@ -757,7 +758,9 @@ struct AddSourceView: View {
             finalShareName = nil
             finalUsername = username    // access key
             let region = basePath.isEmpty ? "us-east-1" : basePath
-            extraConfig = "{\"region\":\"\(region)\"}"
+            // Merge into the existing config so the scanned-directory list that
+            // shares this slot survives an edit instead of being overwritten.
+            extraConfig = MusicSource.encodeS3Region(region, into: editingSource?.extraConfig)
         } else if sourceType.isCloudDrive {
             finalHost = nil
             finalBasePath = basePath.isEmpty ? nil : basePath
@@ -783,7 +786,15 @@ struct AddSourceView: View {
             nfsVersion: sourceType == .nfs ? nfsVersion : nil,
             autoConnect: autoConnect, rememberDevice: rememberDevice,
             deviceId: editingSource?.deviceId,
-            extraConfig: extraConfig
+            // 编辑时透传表单未覆盖的字段: 否则整体写回会把扫描计数/启用状态/
+            // 云盘账号绑定/上次扫描时间静默重置成 init 默认值。
+            lastScannedAt: editingSource?.lastScannedAt,
+            isEnabled: editingSource?.isEnabled ?? true,
+            songCount: editingSource?.songCount ?? 0,
+            extraConfig: extraConfig,
+            isDeleted: editingSource?.isDeleted ?? false,
+            deletedAt: editingSource?.deletedAt,
+            cloudAccountID: editingSource?.cloudAccountID
         )
 
         // Save credentials

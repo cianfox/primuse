@@ -58,8 +58,7 @@ struct AudioOutputPickerView: View {
                     isSelected: followsSystem,
                     accent: nil
                 ) {
-                    followsSystem = true
-                    if let sysID = manager.systemDefaultID { applyDevice(sysID) }
+                    followSystem()
                 }
 
                 if !manager.devices.isEmpty {
@@ -100,10 +99,11 @@ struct AudioOutputPickerView: View {
         // 双层框 (用户截图里那一圈外框就是这么来的)。同 CastDevicePickerSheet。
         .onAppear {
             manager.refresh()
-            // 没显式选过的话,初始就跟随系统。
+            // 跟随状态以持久化标志为准(currentOutputDeviceID 在跟随时会解析成
+            // 当下默认设备,单看它分不清「跟随」和「恰好钉到默认设备」)。
+            followsSystem = engine.followsSystemOutput
             if let cur = engine.currentOutputDeviceID {
                 selectedID = cur
-                followsSystem = (cur == manager.systemDefaultID)
             }
         }
     }
@@ -156,6 +156,24 @@ struct AudioOutputPickerView: View {
             try engine.setOutputDevice(deviceID: id)
             selectedID = id
             errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 「跟随系统」分支。注意不能用 `applyDevice(systemDefaultID)` —— 那会把
+    /// output unit 显式钉到当下那个具体设备,系统默认之后变了(插耳机、连
+    /// HomePod)Primuse 还停在旧设备,破坏「跟随」语义。
+    ///
+    /// 正确做法是调 engine.followSystemOutput(),它把 AUHAL 的
+    /// kAudioOutputUnitProperty_CurrentDevice 重置为 kAudioObjectUnknown,
+    /// 让 output unit 真正回到跟随系统默认 —— 之后系统默认再变会自动跟随。
+    private func followSystem() {
+        followsSystem = true
+        errorMessage = nil
+        do {
+            try engine.followSystemOutput()
+            selectedID = manager.systemDefaultID
         } catch {
             errorMessage = error.localizedDescription
         }

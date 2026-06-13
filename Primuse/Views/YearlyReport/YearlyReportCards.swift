@@ -108,7 +108,7 @@ struct HeroCard: View {
                 .font(.system(size: 28, weight: .light, design: .rounded))
                 .foregroundStyle(.white.opacity(0.7))
                 .tracking(8)
-            Text("年度音乐报告")
+            Text(String(localized: "yearly_card_hero_title"))
                 .font(.system(size: 36, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
@@ -135,7 +135,7 @@ struct HeroCard: View {
                 .padding(.top, 32)
             }
             Spacer()
-            Text("向上滑动开启你的回顾")
+            Text(String(localized: "yearly_card_hero_swipe"))
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.6))
                 .padding(.bottom, 100)
@@ -151,16 +151,16 @@ struct OverviewCard: View {
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
-            CardSubtitle(text: "今年, 你与音乐相伴")
+            CardSubtitle(text: String(localized: "yearly_card_overview_subtitle"))
 
-            BigNumber(value: "\(Int(data.totalSec / 3600))", unit: "小时")
+            BigNumber(value: "\(Int(data.totalSec / 3600))", unit: String(localized: "yearly_card_unit_hours"))
 
             HStack(spacing: 32) {
-                statColumn(value: "\(data.uniqueSongCount)", label: "首歌")
+                statColumn(value: "\(data.uniqueSongCount)", label: String(localized: "yearly_card_unit_songs"))
                 divider
-                statColumn(value: "\(data.uniqueArtistCount)", label: "位艺术家")
+                statColumn(value: "\(data.uniqueArtistCount)", label: String(localized: "yearly_card_unit_artists"))
                 divider
-                statColumn(value: "\(data.totalEntries)", label: "次播放")
+                statColumn(value: "\(data.totalEntries)", label: String(localized: "yearly_card_unit_plays"))
             }
             .padding(.top, 16)
 
@@ -201,11 +201,11 @@ struct OverviewCard: View {
     private func growthText(_ growth: Double) -> String {
         let pct = Int(abs(growth * 100))
         if growth > 0.05 {
-            return "比去年多听了 \(pct)%"
+            return String(format: String(localized: "yearly_card_growth_more_format"), pct)
         } else if growth < -0.05 {
-            return "比去年少了 \(pct)%, 来年继续"
+            return String(format: String(localized: "yearly_card_growth_less_format"), pct)
         }
-        return "听音乐的频率跟去年差不多"
+        return String(localized: "yearly_card_growth_same")
     }
 }
 
@@ -223,7 +223,7 @@ struct FirstSongCard: View {
             )
             .frame(width: 180, height: 240)
 
-            CardSubtitle(text: "你的 \(String(data.year)) 是从这首歌开始的")
+            CardSubtitle(text: String(format: String(localized: "yearly_card_first_song_subtitle_format"), String(data.year)))
                 .padding(.top, 24)
 
             if let first = data.firstSong {
@@ -241,7 +241,7 @@ struct FirstSongCard: View {
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.top, 8)
             } else {
-                Text("暂无记录")
+                Text(String(localized: "yearly_no_record"))
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -259,7 +259,7 @@ struct TopArtistHeroCard: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            CardSubtitle(text: "你今年最常听的艺术家")
+            CardSubtitle(text: String(localized: "yearly_card_top_artist_subtitle"))
             if let top = data.topArtists.first {
                 Text(top.title)
                     .font(.system(size: 44, weight: .bold, design: .rounded))
@@ -268,12 +268,12 @@ struct TopArtistHeroCard: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
 
-                Text("听了 \(top.playCount) 次, 累计 \(formatDuration(top.totalSec))")
+                Text(String(format: String(localized: "yearly_card_top_artist_detail_format"), top.playCount, formatDuration(top.totalSec)))
                     .font(.system(.body, design: .rounded))
                     .foregroundStyle(.white.opacity(0.85))
                     .padding(.top, 8)
             } else {
-                Text("暂无记录")
+                Text(String(localized: "yearly_no_record"))
                     .foregroundStyle(.white.opacity(0.6))
             }
             Spacer()
@@ -306,7 +306,7 @@ struct TopArtistsListCard: View {
             )
             .frame(width: 200, height: 120)
 
-            CardSubtitle(text: "另外几位常驻")
+            CardSubtitle(text: String(localized: "yearly_card_artists_subtitle"))
                 .padding(.top, 4)
 
             VStack(spacing: 12) {
@@ -321,7 +321,7 @@ struct TopArtistsListCard: View {
                                 .font(.system(.title3, design: .rounded).weight(.semibold))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
-                            Text("\(artist.playCount) 次")
+                            Text(String(format: String(localized: "yearly_card_plays_count_format"), artist.playCount))
                                 .font(.caption)
                                 .foregroundStyle(.white.opacity(0.6))
                         }
@@ -356,7 +356,7 @@ struct TopSongsCard: View {
     var body: some View {
         VStack(spacing: 14) {
             Spacer()
-            CardSubtitle(text: "今年的循环榜")
+            CardSubtitle(text: String(localized: "yearly_card_top_songs_subtitle"))
 
             // Top 3 ── 第一名最大, 第二三名稍小, 形成"领奖台"层次感。
             VStack(spacing: 8) {
@@ -412,7 +412,7 @@ struct TopSongsCard: View {
                     .font(.system(size: rank == 1 ? 26 : 22, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .monospacedDigit()
-                Text("次")
+                Text(String(localized: "yearly_card_plays_unit"))
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -433,7 +433,7 @@ struct TopSongsCard: View {
                 .foregroundStyle(.white.opacity(0.85))
                 .lineLimit(1)
             Spacer()
-            Text("\(song.playCount) 次")
+            Text(String(format: String(localized: "yearly_card_plays_count_format"), song.playCount))
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.55))
                 .monospacedDigit()
@@ -469,30 +469,30 @@ struct MomentsCard: View {
             )
             .frame(width: 160, height: 160)
 
-            CardSubtitle(text: "属于你的高光时刻")
+            CardSubtitle(text: String(localized: "yearly_card_moments_subtitle"))
                 .padding(.top, 16)
 
             VStack(spacing: 16) {
                 if let mostPlayed = data.mostPlayedSong {
                     momentRow(
                         icon: "repeat",
-                        label: "今年的循环单曲",
+                        label: String(localized: "yearly_card_moment_repeat_label"),
                         title: mostPlayed.title,
-                        detail: "陪你听了 \(mostPlayed.playCount) 次"
+                        detail: String(format: String(localized: "yearly_card_moment_repeat_detail_format"), mostPlayed.playCount)
                     )
                 }
                 if let session = data.longestSession {
                     momentRow(
                         icon: "headphones",
-                        label: "最沉浸的一次聆听",
+                        label: String(localized: "yearly_card_moment_session_label"),
                         title: formatDuration(session.totalSec),
-                        detail: "一口气听了 \(session.songCount) 首歌"
+                        detail: String(format: String(localized: "yearly_card_moment_session_detail_format"), session.songCount)
                     )
                 }
                 if let latest = data.latestEntry {
                     momentRow(
                         icon: "moon.stars.fill",
-                        label: "陪你最晚的那首歌",
+                        label: String(localized: "yearly_card_moment_latest_label"),
                         title: latest.songTitle,
                         detail: latest.playedAt.formatted(.dateTime.month().day().hour().minute())
                     )
@@ -544,7 +544,7 @@ struct TimeOfDayCard: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
 
-            CardSubtitle(text: "你的音乐时段")
+            CardSubtitle(text: String(localized: "yearly_card_time_subtitle"))
                 .padding(.top, 16)
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -552,11 +552,11 @@ struct TimeOfDayCard: View {
                     .font(.system(size: 80, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .monospacedDigit()
-                Text("时")
+                Text(String(localized: "yearly_card_time_unit_hour"))
                     .font(.system(.title3, design: .rounded).weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
             }
-            Text("\(data.timeOfDayLabel) 是你听音乐最久的时段")
+            Text(String(format: String(localized: "yearly_card_time_detail_format"), data.timeOfDayLabel))
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.white.opacity(0.85))
                 .multilineTextAlignment(.center)
@@ -608,14 +608,14 @@ struct GenreCard: View {
             )
             .frame(width: 190, height: 150)
 
-            CardSubtitle(text: "今年听过的流派")
+            CardSubtitle(text: String(localized: "yearly_card_genres_subtitle"))
                 .padding(.top, 10)
 
-            BigNumber(value: "\(data.genreCount)", unit: "种")
+            BigNumber(value: "\(data.genreCount)", unit: String(localized: "yearly_card_genres_unit"))
 
             VStack(spacing: 9) {
                 if genres.isEmpty {
-                    Text("补齐歌曲 genre 后, 这里会出现你的流派地图")
+                    Text(String(localized: "yearly_card_genres_empty"))
                         .font(.system(.callout, design: .rounded))
                         .foregroundStyle(.white.opacity(0.75))
                         .multilineTextAlignment(.center)
@@ -643,7 +643,7 @@ struct GenreCard: View {
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text("\(genre.playCount) 次播放")
+                Text(String(format: String(localized: "yearly_card_genres_plays_format"), genre.playCount))
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.62))
             }
@@ -681,12 +681,14 @@ struct ExplorationCard: View {
             )
             .frame(width: 200, height: 130)
 
-            CardSubtitle(text: "你的探索度")
+            CardSubtitle(text: String(localized: "yearly_card_exploration_subtitle"))
                 .padding(.top, 12)
 
             BigNumber(value: "\(explorationPercent)", unit: "%")
 
-            Text(data.personality?.exploration == .explorer ? "今年你把耳朵交给了更多新名字" : "今年你更愿意把喜欢的声音听深")
+            Text(data.personality?.exploration == .explorer
+                 ? String(localized: "yearly_card_exploration_explorer")
+                 : String(localized: "yearly_card_exploration_deep"))
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.white.opacity(0.85))
                 .multilineTextAlignment(.center)
@@ -694,7 +696,7 @@ struct ExplorationCard: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Top 5 艺术家占比")
+                    Text(String(localized: "yearly_card_exploration_top5_label"))
                     Spacer()
                     Text("\(focusPercent)%")
                         .monospacedDigit()
@@ -727,7 +729,7 @@ struct PersonalityCard: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            CardSubtitle(text: "今年, 你的音乐人格是")
+            CardSubtitle(text: String(localized: "yearly_card_personality_subtitle"))
 
             if let p = data.personality {
                 YearlyArtView(
@@ -755,7 +757,7 @@ struct PersonalityCard: View {
                     .padding(.horizontal, 32)
                     .padding(.top, 16)
             } else {
-                Text("数据不足以判定人格")
+                Text(String(localized: "yearly_card_personality_insufficient"))
                     .foregroundStyle(.white.opacity(0.6))
             }
             Spacer()
@@ -782,7 +784,7 @@ struct SourcesCard: View {
             )
             .frame(width: 220, height: 110)
 
-            CardSubtitle(text: "你的音乐都从哪儿来")
+            CardSubtitle(text: String(localized: "yearly_card_sources_subtitle"))
                 .padding(.top, 4)
 
             VStack(spacing: 12) {
@@ -812,7 +814,7 @@ struct SourcesCard: View {
                 Text(item.displayName)
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
-                Text("\(item.playCount) 次播放")
+                Text(String(format: String(localized: "yearly_card_genres_plays_format"), item.playCount))
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.6))
             }
@@ -838,25 +840,25 @@ struct PeakMonthCard: View {
             YearlyArtView(
                 assetName: String(format: "month_%02d", data.peakMonth),
                 fallbackSymbol: "calendar",
-                fallbackText: "\(data.peakMonth) 月"
+                fallbackText: String(format: String(localized: "yearly_month_n_format"), data.peakMonth)
             )
             .frame(height: 200)
             .frame(maxWidth: .infinity)
 
-            CardSubtitle(text: "\(monthName(data.peakMonth)) 是你今年的音乐月")
+            CardSubtitle(text: String(format: String(localized: "yearly_card_peak_month_subtitle_format"), monthName(data.peakMonth)))
                 .padding(.top, 16)
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("\(data.peakMonth)")
                     .font(.system(size: 100, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                Text("月")
+                Text(String(localized: "yearly_card_peak_month_unit"))
                     .font(.system(.title2, design: .rounded).weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
             }
 
             if let song = data.peakMonthTopSong {
-                Text("那个月你最常听: \(song)")
+                Text(String(format: String(localized: "yearly_card_peak_month_top_format"), song))
                     .font(.system(.callout, design: .rounded))
                     .foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center)
@@ -868,9 +870,10 @@ struct PeakMonthCard: View {
     }
 
     private func monthName(_ m: Int) -> String {
-        let names = ["一月","二月","三月","四月","五月","六月","七月","八月","九月","十月","十一月","十二月"]
-        guard m >= 1, m <= 12 else { return "\(m) 月" }
-        return names[m - 1]
+        guard m >= 1, m <= 12 else {
+            return String(format: String(localized: "yearly_month_n_format"), m)
+        }
+        return String(localized: LocalizedStringResource(stringLiteral: "yearly_month_\(m)"))
     }
 }
 
@@ -881,16 +884,16 @@ struct ClosingCard: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            CardSubtitle(text: "今年与音乐相伴")
-            BigNumber(value: "\(Int(data.totalSec / 3600))", unit: "小时")
+            CardSubtitle(text: String(localized: "yearly_card_closing_subtitle"))
+            BigNumber(value: "\(Int(data.totalSec / 3600))", unit: String(localized: "yearly_card_unit_hours"))
 
-            Text("感谢你与猿音的每一次相遇")
+            Text(String(localized: "yearly_card_closing_thanks"))
                 .font(.system(.title3, design: .rounded).weight(.medium))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .padding(.top, 24)
 
-            Text("\(String(data.year + 1)), 继续吧")
+            Text(String(format: String(localized: "yearly_card_closing_next_format"), String(data.year + 1)))
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(.white.opacity(0.7))
                 .padding(.top, 8)
@@ -913,8 +916,8 @@ struct ClosingCard: View {
 private func formatDuration(_ seconds: TimeInterval) -> String {
     let h = Int(seconds / 3600)
     let m = Int(seconds.truncatingRemainder(dividingBy: 3600) / 60)
-    if h > 0 { return "\(h) 小时 \(m) 分" }
-    return "\(m) 分钟"
+    if h > 0 { return String(format: String(localized: "yearly_duration_hm_format"), h, m) }
+    return String(format: String(localized: "yearly_duration_minutes_format"), m)
 }
 
 /// SwiftUI body 是 nonisolated 的, 直接调 @MainActor 静态方法会编译报错。

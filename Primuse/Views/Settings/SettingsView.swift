@@ -1254,7 +1254,7 @@ struct StorageManagementView: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
 
-        let audio = Int64(sourceManager.audioCacheSize())
+        let audio = await sourceManager.audioCacheSizeAsync()
         audioCacheSize = formatter.string(fromByteCount: audio)
         audioBreakdown = await sourceManager.audioCacheBreakdown()
 

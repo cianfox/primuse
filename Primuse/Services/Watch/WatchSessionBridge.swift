@@ -41,6 +41,11 @@ final class WatchSessionBridge: NSObject {
     private var lastPushedLyric: String = ""
     /// 最近一次成功推送的封面 songID。换歌后 cover 推送一次就够。
     private var lastSentCoverSongID: String?
+    /// 最近一次编码好的封面 JPEG + 其 songID。watch 不可达走 applicationContext
+    /// (latest-only) 时, 用它给每条快照都补上封面 ── 否则后续不带 cover 的歌词
+    /// 推送会把含 cover 的快照覆盖掉, watch 下次唤醒只剩占位渐变。
+    private var lastCoverJPEG: Data?
+    private var lastCoverJPEGSongID: String?
     /// 最近播放列表 hash, 不变就不重发。
     private var lastLibraryHash: Int = 0
     /// 当前歌曲的歌词缓存 (换歌时异步刷新, tick 从这里 sync 查找)。
@@ -115,18 +120,82 @@ final class WatchSessionBridge: NSObject {
         lastPushedIsLoading = isLoading
         lastPushedLyric = lyric
 
+        // 封面带不带取决于 watch 是否已经拿到这首的封面 ── 用
+        // lastSentCoverSongID 而不是 songChanged 判断: watch 冷启动 / 重连后发
+        // requestState 时 song 并没换 (songChanged=false), 但 watch 端是全新
+        // 实例 (coverImage=nil), 此时必须补发封面。songChanged 只是其中一种
+        // "需要封面" 的情形。注意 song?.id 是可选: 有歌时只有 id 跟上次成功
+        // 投递的 cover songID 不同才补发, 无歌时 (nil) 不重复推空封面。
+        let needCover = song != nil && song?.id != lastSentCoverSongID
         push(song: song, isPlaying: isPlaying, isLoading: isLoading,
-             lyric: lyric, includeCover: songChanged)
+             lyric: lyric, includeCover: needCover)
     }
 
     private func push(song: Song?, isPlaying: Bool, isLoading: Bool,
                       lyric: String, includeCover: Bool) {
         guard let player else { return }
-        let (r, g, b) = currentAccentRGB()
 
+        // 先发不带封面的状态: 文字 / 播放状态 / 歌词立刻到 watch, 不被封面
+        // 磁盘读取 + 解码 + 缩放 + JPEG 编码 (可能数百毫秒) 阻塞。
+        let payload = stateScalars(song: song, isPlaying: isPlaying,
+                                   isLoading: isLoading, lyric: lyric)
+        plog("⌚️ deliver payload reachable=\(session?.isReachable ?? false) (cover pending=\(includeCover))")
+        deliver(payload)
+
+        guard includeCover else { return }
+        guard let song else {
+            // 无歌 ── 直接补一条空封面状态让 watch 清掉旧封面。
+            var clear = stateScalars(song: nil, isPlaying: isPlaying,
+                                     isLoading: isLoading, lyric: lyric)
+            clear["coverJPEG"] = Data()
+            lastSentCoverSongID = nil
+            lastCoverJPEG = nil
+            lastCoverJPEGSongID = nil
+            deliver(clear)
+            return
+        }
+
+        // 封面整条链路 (磁盘 IO / UIImage 解码 / UIGraphicsImageRenderer 重绘 /
+        // JPEG 编码) 放到 detached utility 队列, 别卡 main actor。完成后回 main
+        // actor 用当时的 player 状态重新组装一条完整状态 (含封面) 再投递 ──
+        // 复用现成 applyContext 路径, watch 不需要单独处理 "只含封面" 的消息。
+        let songID = song.id
+        let songTitle = song.title
+        let coverRef = song.coverArtFileName
+        Task.detached(priority: .utility) {
+            let cover = Self.coverJPEG(for: song)
+            await MainActor.run {
+                let bridge = Self.shared
+                // 期间用户切歌就丢弃这张封面, 避免把旧封面盖到新歌上。
+                guard bridge.player?.currentSong?.id == songID else { return }
+                guard let cover else {
+                    plog("⌚️ no cover available for \(songTitle) (ref=\(coverRef ?? "nil"))")
+                    return
+                }
+                var withCover = bridge.stateScalars(
+                    song: bridge.player?.currentSong,
+                    isPlaying: bridge.player?.isPlaying ?? false,
+                    isLoading: bridge.player?.isLoading ?? false,
+                    lyric: bridge.lastPushedLyric)
+                withCover["coverJPEG"] = cover
+                bridge.lastSentCoverSongID = songID
+                bridge.lastCoverJPEG = cover
+                bridge.lastCoverJPEGSongID = songID
+                plog("⌚️ pushing cover \(cover.count)B for \(songTitle)")
+                bridge.deliver(withCover)
+            }
+        }
+    }
+
+    /// 组装一条状态 payload 的标量字段 (不含封面)。push 的首发和封面就绪后的
+    /// 补发都用它, 保证两条消息字段一致, watch 端 applyContext 不会因缺字段
+    /// 回落默认值。
+    private func stateScalars(song: Song?, isPlaying: Bool, isLoading: Bool,
+                              lyric: String) -> [String: Any] {
+        let (r, g, b) = currentAccentRGB()
         // currentTimeAnchor 用 Date() (推送时刻), 不用 player 内部 anchor ──
         // player anchor 可能是几秒前的, 让 watch 外推得到未来时间, 跳变就来了。
-        var payload: [String: Any] = [
+        return [
             "type": "state",
             "songID": song?.id ?? "",
             "title": song?.title ?? "",
@@ -134,32 +203,13 @@ final class WatchSessionBridge: NSObject {
             "album": song?.albumTitle ?? "",
             "isPlaying": isPlaying,
             "isLoading": isLoading,
-            "duration": player.duration,
-            "currentTime": player.currentTime,
+            "duration": player?.duration ?? 0,
+            "currentTime": player?.currentTime ?? 0,
             "currentTimeAnchor": Date().timeIntervalSince1970,
-            "queueCount": player.queue.count,
+            "queueCount": player?.queue.count ?? 0,
             "currentLyric": lyric,
             "accentR": r, "accentG": g, "accentB": b,
         ]
-
-        if includeCover {
-            if let song {
-                if let cover = Self.coverJPEG(for: song) {
-                    payload["coverJPEG"] = cover
-                    lastSentCoverSongID = song.id
-                    plog("⌚️ pushing state w/ cover \(cover.count)B for \(song.title)")
-                } else {
-                    plog("⌚️ no cover available for \(song.title) (ref=\(song.coverArtFileName ?? "nil"))")
-                }
-            } else {
-                payload["coverJPEG"] = Data()
-                lastSentCoverSongID = nil
-            }
-        }
-
-        let totalSize = payload.values.compactMap { ($0 as? Data)?.count }.reduce(0, +)
-        plog("⌚️ deliver payload reachable=\(session?.isReachable ?? false) dataBytes=\(totalSize)")
-        deliver(payload)
     }
 
     /// 优先 sendMessage 即时投递; watch 不可达时退到 applicationContext。
@@ -174,8 +224,19 @@ final class WatchSessionBridge: NSObject {
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil, errorHandler: Self.deliverErrorHandler)
         } else {
+            // applicationContext 是 latest-only 覆盖式存储 ── 给每条快照都补上
+            // 当前歌曲的封面, 否则后续不带 cover 的歌词推送会覆盖含 cover 的
+            // 快照, watch 下次唤醒只剩占位渐变。仅当 payload 自己没带 cover、
+            // 且 songID 跟缓存的封面匹配时补。
+            var ctx = payload
+            if ctx["coverJPEG"] == nil,
+               let cover = lastCoverJPEG,
+               let coverSongID = lastCoverJPEGSongID,
+               (ctx["songID"] as? String) == coverSongID {
+                ctx["coverJPEG"] = cover
+            }
             do {
-                try session.updateApplicationContext(payload)
+                try session.updateApplicationContext(ctx)
             } catch {
                 plog("⌚️ updateApplicationContext failed: \(error)")
             }
@@ -192,46 +253,82 @@ final class WatchSessionBridge: NSObject {
     }
 
     /// 把整个当前播放队列的简化数据推到 Watch, 跟 iPhone 端 NowPlayingView
-    /// 看到的"播放列表"保持一致 (含顺序 + 全部条目)。
+    /// 看到的"播放列表"保持一致 (含顺序)。
     ///
-    /// 投递通道根据 payload 大小自适应:
-    /// - 估算 < 55KB: 走 sendMessage 即时投递 (reachable 时)
-    /// - 否则: 走 transferUserInfo 排队投递, 几秒延迟可接受
-    /// 单首条目大约 50-200 字节 (中文 UTF-8 偏长), 一首平均 ~150B, 55KB 大约
-    /// 能塞 350 首; 更长的队列自动降级。
+    /// 投递通道: reachable 走 sendMessage 即时投递, 否则走 transferUserInfo
+    /// 排队投递。两个通道的 payload 上限都约 65KB, 所以无论走哪条都先按累计
+    /// 字节把队列截断到 55KB 安全线 (带 totalCount/truncated 标记), 避免超大
+    /// 队列 payloadTooLarge 失败导致 watch 列表整页空白。单首条目大约 50-200
+    /// 字节 (中文 UTF-8 偏长), 55KB 大约能塞 300-350 首。
     func pushLibraryDigest() {
         guard let session, session.activationState == .activated, session.isPaired,
               session.isWatchAppInstalled else { return }
         guard let player else { return }
 
         let songs = player.queue
-        let ids = songs.map(\.id)
-        let titles = songs.map(\.title)
-        let artists = songs.map { $0.artistName ?? "" }
+        var ids = songs.map(\.id)
+        var titles = songs.map(\.title)
+        var artists = songs.map { $0.artistName ?? "" }
 
+        // 去重 hash 用整条队列算 (截断前), 这样队列任何变化都能触发重发。
         var hasher = Hasher()
         for id in ids { hasher.combine(id) }
         let h = hasher.finalize()
         if h == lastLibraryHash { return }
-        lastLibraryHash = h
+
+        // sendMessage 和 transferUserInfo 的 payload 上限都约 65KB ── 超大队列
+        // (约 400 首以上) 走任一通道都会 payloadTooLarge 失败, 之前错误被吞,
+        // watch 播放列表永远为空。这里按累计字节截断到安全上限, 带 totalCount /
+        // truncated 标记, watch 端至少能显示前若干首而非整页空白。
+        // (理想方案是分片 + watch 端拼装, 但拼装逻辑在 WatchPlayerStore, 不在
+        //  本簇可编辑范围; 截断是当前可安全落地的退路。)
+        let byteBudget = 55_000
+        let perItemOverhead = 24  // 字典 / NSArray 元数据估算
+        var running = 0
+        var keep = 0
+        for i in ids.indices {
+            running += ids[i].utf8.count + titles[i].utf8.count
+                + artists[i].utf8.count + perItemOverhead
+            if running >= byteBudget { break }
+            keep = i + 1
+        }
+        let totalCount = ids.count
+        let truncated = keep < totalCount
+        if truncated {
+            ids = Array(ids.prefix(keep))
+            titles = Array(titles.prefix(keep))
+            artists = Array(artists.prefix(keep))
+        }
 
         let payload: [String: Any] = [
             "libraryKind": "queue",
             "songIDs": ids,
             "titles": titles,
             "artists": artists,
+            "totalCount": totalCount,
+            "truncated": truncated,
         ]
-        let estimatedBytes = ids.reduce(0) { $0 + $1.utf8.count }
-            + titles.reduce(0) { $0 + $1.utf8.count }
-            + artists.reduce(0) { $0 + $1.utf8.count }
-            + songs.count * 24  // 字典开销 / NSArray 元数据估算
-        plog("⌚️ pushQueueDigest count=\(songs.count) bytes~\(estimatedBytes) reachable=\(session.isReachable)")
+        plog("⌚️ pushQueueDigest sent=\(ids.count)/\(totalCount) bytes~\(running) truncated=\(truncated) reachable=\(session.isReachable)")
 
-        if session.isReachable && estimatedBytes < 55_000 {
-            session.sendMessage(payload, replyHandler: nil, errorHandler: Self.deliverErrorHandler)
+        // 投递确认前不更新 lastLibraryHash ── sendMessage 失败时回滚 (置 0,
+        // 下个 tick 重发), 否则失败的这版队列永远不会重发。
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil,
+                                errorHandler: Self.libraryDigestErrorHandler)
         } else {
-            // 大队列或不可达: 排队投递。watch 端 didReceiveUserInfo 同样能消化。
+            // 不可达: 排队投递。watch 端 didReceiveUserInfo 同样能消化。
+            // transferUserInfo 失败由 session(_:didFinish:error:) 统一回滚重试。
             _ = session.transferUserInfo(payload)
+        }
+        lastLibraryHash = h
+    }
+
+    /// 队列推送失败时把 lastLibraryHash 清零, 让下个 0.5s tick 自动重发这版
+    /// 队列。nonisolated `@Sendable` ── WCSession 在后台 queue 调用。
+    nonisolated static let libraryDigestErrorHandler: @Sendable (Error) -> Void = { error in
+        Task { @MainActor in
+            plog("⌚️ pushQueueDigest sendMessage failed: \(error.localizedDescription) — will retry")
+            WatchSessionBridge.shared.lastLibraryHash = 0
         }
     }
 
@@ -347,6 +444,20 @@ extension WatchSessionBridge: WCSessionDelegate {
         WCSession.default.activate()
     }
 
+    /// transferUserInfo 完成回调 ── 之前完全没实现, 队列走排队通道失败
+    /// (payloadTooLarge 等) 时错误被彻底吞掉。这里捕获失败, 把队列推送的
+    /// 去重 hash 清零, 让下个 tick 重发。
+    nonisolated func session(_ session: WCSession,
+                             didFinish userInfoTransfer: WCSessionUserInfoTransfer,
+                             error: Error?) {
+        guard let error else { return }
+        let isQueue = userInfoTransfer.userInfo["libraryKind"] as? String == "queue"
+        Task { @MainActor in
+            plog("⌚️ transferUserInfo didFinish error: \(error.localizedDescription) isQueue=\(isQueue)")
+            if isQueue { Self.shared.lastLibraryHash = 0 }
+        }
+    }
+
     /// Reachability 改变 (e.g. watch app 进入前台) ── 立刻推一份最新状态,
     /// 而不是等下一次 1Hz tick。这能让 watch 切回前台立刻看到当前曲目。
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
@@ -408,14 +519,28 @@ extension WatchSessionBridge: WCSessionDelegate {
         case "seek":
             if let t = cmd.time { player.seek(to: t) }
         case "requestState":
+            // watch 主动拉状态 (冷启动 / 重新可达 / 前台) ── 视为 watch 端
+            // 缓存全失效: 清空封面去重戳强制补发封面, 清空 library hash 强制
+            // 重发队列。否则正在播歌时打开 watch 只能看到占位渐变。
+            lastSentCoverSongID = nil
             lastLibraryHash = 0
             pushIfMeaningfulChange(force: true)
             pushLibraryDigest()
             return
         case "playSong":
             guard let id = cmd.songID, let library else { return }
-            if let song = library.songs.first(where: { $0.id == id }) {
+            // 用户播放入口必须走 visible* API: 歌曲所属源在 watch 队列快照推送
+            // 之后被停用时, 不能再让 iPhone 播放已停用源的歌曲。与 ContentView
+            // 等其它外部播放入口口径一致。
+            if let song = library.visibleSongs.first(where: { $0.id == id }) {
                 await player.play(song: song, caller: "watch")
+            } else {
+                // 未命中 (源已停用 / 队列已变) ── 清掉去重 hash 强推一次最新
+                // 队列, 让 watch 列表自我修正。注意推送的是 player.queue, 仅当
+                // 队列变了才会过 hash 去重; 这里置 0 确保即便队列未变也会重发,
+                // 把 watch 端可能残留的旧快照覆盖掉。
+                lastLibraryHash = 0
+                pushLibraryDigest()
             }
         default:
             plog("⌚️ unknown command: \(cmd.command)")

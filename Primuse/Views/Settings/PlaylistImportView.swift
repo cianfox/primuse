@@ -22,6 +22,8 @@ struct PlaylistImportView: View {
     @State private var csvDocument = PlaylistImportCSVDocument()
     @State private var manualMatchEntry: PlaylistImporter.ImportEntry?
     @State private var manualMatchQuery = ""
+    /// 解析 + 库匹配在后台跑期间为 true, 用来显示进度并阻止重复触发。
+    @State private var isParsing = false
 
     var body: some View {
         #if os(macOS)
@@ -46,7 +48,7 @@ struct PlaylistImportView: View {
             isPresented: $showFileImporter,
             allowedContentTypes: importableTypes()
         ) { result in
-            handleFile(result)
+            Task { await handleFile(result) }
         }
         .fileExporter(
             isPresented: $showCSVExporter,
@@ -192,18 +194,29 @@ struct PlaylistImportView: View {
             }
             .padding(.top, 4)
 
-            Button {
-                showFileImporter = true
-            } label: {
-                Label("playlist_import_pick_file", systemImage: "folder")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .frame(height: 34)
-                    .background(PMColor.brand, in: .rect(cornerRadius: 8))
+            if isParsing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("scanning")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(PMColor.textMuted)
+                }
+                .padding(.top, 6)
+            } else {
+                Button {
+                    showFileImporter = true
+                } label: {
+                    Label("playlist_import_pick_file", systemImage: "folder")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(height: 34)
+                        .background(PMColor.brand, in: .rect(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 6)
 
             Spacer(minLength: 0)
         }
@@ -516,21 +529,26 @@ struct PlaylistImportView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button {
-                    showFileImporter = true
-                } label: {
-                    HStack {
-                        Label("playlist_import_pick_file", systemImage: "folder")
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                if isParsing {
+                    ProgressView { Text("scanning") }
+                        .padding(.top, 8)
+                } else {
+                    Button {
+                        showFileImporter = true
+                    } label: {
+                        HStack {
+                            Label("playlist_import_pick_file", systemImage: "folder")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 8)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
@@ -615,20 +633,264 @@ struct PlaylistImportView: View {
 
     // MARK: - Actions
 
-    private func handleFile(_ result: Result<URL, Error>) {
+    private func handleFile(_ result: Result<URL, Error>) async {
         switch result {
         case .success(let url):
+            guard !isParsing else { return }
+            // 主线程只负责拍 songs 快照 + 读文件字节 (security-scoped 访问要
+            // 在主线程短暂持有), 解析 + 库匹配 (O(条目数×库) 带 folding)
+            // 全部丢到后台跑, 否则 1000 条对 5 万首库会冻结 UI 数秒。
+            // 匹配池用 visibleSongs(排除停用源), 与歌单展示 / 手动匹配口径一致 ——
+            // 命中停用源的歌写进歌单后 songs(forPlaylist:) 也看不到。
+            let snapshot = library.visibleSongs
+            isParsing = true
+            defer { isParsing = false }
             do {
-                let p = try PlaylistImporter.parseAndMatch(fileURL: url, library: library)
+                let data = try readImportData(url)
+                let ext = url.pathExtension.lowercased()
+                let fileName = url.deletingPathExtension().lastPathComponent
+                let raw = try await Task.detached(priority: .userInitiated) {
+                    try Self.parseAndMatchOffMain(data: data, ext: ext, fileName: fileName, songs: snapshot)
+                }.value
+                // @MainActor 隔离的 ImportEntry/ImportPreview 只能在主线程构造,
+                // 但这一步是 O(条目数) 纯映射 (无 folding/全库扫描), 不卡 UI。
+                let p = PlaylistImporter.ImportPreview(
+                    suggestedName: raw.suggestedName,
+                    entries: raw.matches.map { m in
+                        PlaylistImporter.ImportEntry(
+                            displayTitle: m.displayTitle,
+                            displayArtist: m.displayArtist,
+                            matchedSong: m.matchedSong,
+                            matchKind: m.matchKindRaw.flatMap { PlaylistImporter.ImportEntry.MatchKind(rawValue: $0) }
+                        )
+                    }
+                )
                 preview = p
                 playlistName = p.suggestedName
-                importedFromName = url.deletingPathExtension().lastPathComponent
+                importedFromName = fileName
             } catch {
                 importError = error.localizedDescription
             }
         case .failure(let error):
             importError = error.localizedDescription
         }
+    }
+
+    /// 读取被沙箱保护的 import 文件字节。Files document picker 给的 URL 必须
+    /// startAccessing 才能读 (否则 Data(contentsOf:) 报权限错)。
+    private func readImportData(_ url: URL) throws -> Data {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            return try Data(contentsOf: url)
+        } catch {
+            throw OffMainImportError.malformed(error.localizedDescription)
+        }
+    }
+
+    /// 后台解析产出的中间结果 —— 全部 Sendable, 不碰 @MainActor 隔离的
+    /// PlaylistImporter.ImportEntry/ImportPreview (那两个只能在主线程构造)。
+    nonisolated private struct RawMatch: Sendable {
+        let displayTitle: String
+        let displayArtist: String?
+        let matchedSong: Song?
+        let matchKindRaw: String?  // PlaylistImporter.ImportEntry.MatchKind.rawValue
+    }
+
+    nonisolated private struct RawImportResult: Sendable {
+        let suggestedName: String
+        let matches: [RawMatch]
+    }
+
+    /// 后台可抛的错误 —— 复刻 PlaylistImporter.ImportError 的三种 case 与本地化
+    /// 文案。PlaylistImporter.ImportError 自身被 @MainActor 隔离, 不能在后台抛。
+    nonisolated private enum OffMainImportError: LocalizedError {
+        case unsupportedFormat
+        case malformed(String)
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedFormat: return String(localized: "playlist_import_err_format")
+            case .malformed(let why): return String(format: String(localized: "playlist_import_err_malformed_format"), why)
+            case .empty: return String(localized: "playlist_import_err_empty")
+            }
+        }
+    }
+
+    /// 后台解析 + 库匹配。复刻 `PlaylistImporter.parseAndMatch` 的解析与匹配
+    /// 优先级 (songID → basename → title+artist 模糊), 但:
+    /// - 不在 @MainActor 上, 可丢到 Task.detached;
+    /// - 匹配前预构建 basename → [Song] / normalized(title) → [Song] 字典,
+    ///   把每条目匹配从 O(全库) 降为 O(1), 不再对每条目全量 filter + folding。
+    nonisolated private static func parseAndMatchOffMain(
+        data: Data,
+        ext: String,
+        fileName: String,
+        songs: [Song]
+    ) throws -> RawImportResult {
+        let index = MatchIndex(songs: songs)
+        switch ext {
+        case "m3u", "m3u8":
+            return try parseM3U8OffMain(data: data, fileName: fileName, index: index)
+        case "json":
+            return try parseJSONOffMain(data: data, fileName: fileName, index: index)
+        default:
+            throw OffMainImportError.unsupportedFormat
+        }
+    }
+
+    /// 预建匹配索引: basename(小写) → [Song], normalized(title) → [Song]。
+    /// 每条目匹配降为字典查找 + 同 normalized(artist) 过滤命中桶。
+    nonisolated private struct MatchIndex {
+        let byBasename: [String: [Song]]
+        let byNormTitle: [String: [Song]]
+        let byID: [String: Song]
+
+        init(songs: [Song]) {
+            var basename: [String: [Song]] = [:]
+            var normTitle: [String: [Song]] = [:]
+            var ids: [String: Song] = [:]
+            basename.reserveCapacity(songs.count)
+            normTitle.reserveCapacity(songs.count)
+            ids.reserveCapacity(songs.count)
+            for song in songs {
+                ids[song.id] = song
+                let base = (song.filePath as NSString).lastPathComponent.lowercased()
+                basename[base, default: []].append(song)
+                let nt = Self.normalize(song.title)
+                if !nt.isEmpty {
+                    normTitle[nt, default: []].append(song)
+                }
+            }
+            byBasename = basename
+            byNormTitle = normTitle
+            byID = ids
+        }
+
+        func songByID(_ id: String) -> Song? { byID[id] }
+
+        func matchByBasename(_ path: String) -> Song? {
+            let needle = (path as NSString).lastPathComponent.lowercased()
+            return Self.chooseBest(from: byBasename[needle] ?? [])
+        }
+
+        func matchByTitleArtist(title: String, artist: String?) -> Song? {
+            let normTitle = Self.normalize(title)
+            guard !normTitle.isEmpty, let bucket = byNormTitle[normTitle] else { return nil }
+            let normArtist = artist.map { Self.normalize($0) }
+            let hits = bucket.filter { song in
+                if let normArtist {
+                    return Self.normalize(song.artistName ?? "") == normArtist
+                }
+                return true
+            }
+            return Self.chooseBest(from: hits)
+        }
+
+        /// 多个命中挑最高音质 (跟 PlaylistImporter / DuplicateDetector 一致)。
+        static func chooseBest(from songs: [Song]) -> Song? {
+            songs.max { DuplicateDetector.qualityScore(of: $0) < DuplicateDetector.qualityScore(of: $1) }
+        }
+
+        static func normalize(_ s: String) -> String {
+            s.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        }
+    }
+
+    nonisolated private static func parseJSONOffMain(
+        data: Data,
+        fileName: String,
+        index: MatchIndex
+    ) throws -> RawImportResult {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let file: PlaylistExporter.PrimusePlaylistFile
+        do {
+            file = try decoder.decode(PlaylistExporter.PrimusePlaylistFile.self, from: data)
+        } catch {
+            throw OffMainImportError.malformed(error.localizedDescription)
+        }
+        guard !file.tracks.isEmpty else { throw OffMainImportError.empty }
+
+        let matches = file.tracks.map { track -> RawMatch in
+            if let s = index.songByID(track.songID) {
+                return RawMatch(displayTitle: track.title, displayArtist: track.artistName, matchedSong: s, matchKindRaw: "songID")
+            }
+            if let s = index.matchByBasename(track.filePath) {
+                return RawMatch(displayTitle: track.title, displayArtist: track.artistName, matchedSong: s, matchKindRaw: "basename")
+            }
+            if let s = index.matchByTitleArtist(title: track.title, artist: track.artistName) {
+                return RawMatch(displayTitle: track.title, displayArtist: track.artistName, matchedSong: s, matchKindRaw: "fuzzy")
+            }
+            return RawMatch(displayTitle: track.title, displayArtist: track.artistName, matchedSong: nil, matchKindRaw: nil)
+        }
+        return RawImportResult(suggestedName: file.playlist.name, matches: matches)
+    }
+
+    nonisolated private static func parseM3U8OffMain(
+        data: Data,
+        fileName: String,
+        index: MatchIndex
+    ) throws -> RawImportResult {
+        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            throw OffMainImportError.malformed("encoding")
+        }
+        var playlistName = fileName
+        var pendingExtInf: String?
+        var rawEntries: [(path: String, extInf: String?)] = []
+
+        for rawLine in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if line.hasPrefix("#EXTM3U") { continue }
+            if line.hasPrefix("#PLAYLIST:") {
+                playlistName = String(line.dropFirst("#PLAYLIST:".count)).trimmingCharacters(in: .whitespaces)
+                if playlistName.isEmpty { playlistName = fileName }
+                continue
+            }
+            if line.hasPrefix("#EXTINF:") {
+                pendingExtInf = String(line.dropFirst("#EXTINF:".count))
+                continue
+            }
+            if line.hasPrefix("#") { continue }
+            rawEntries.append((path: line, extInf: pendingExtInf))
+            pendingExtInf = nil
+        }
+        guard !rawEntries.isEmpty else { throw OffMainImportError.empty }
+
+        let matches = rawEntries.map { raw -> RawMatch in
+            let (displayTitle, displayArtist) = Self.parseExtInf(raw.extInf, fallbackPath: raw.path)
+            if let s = index.matchByBasename(raw.path) {
+                return RawMatch(displayTitle: displayTitle, displayArtist: displayArtist, matchedSong: s, matchKindRaw: "basename")
+            }
+            if let s = index.matchByTitleArtist(title: displayTitle, artist: displayArtist) {
+                return RawMatch(displayTitle: displayTitle, displayArtist: displayArtist, matchedSong: s, matchKindRaw: "fuzzy")
+            }
+            return RawMatch(displayTitle: displayTitle, displayArtist: displayArtist, matchedSong: nil, matchKindRaw: nil)
+        }
+        return RawImportResult(suggestedName: playlistName, matches: matches)
+    }
+
+    /// 解析 `#EXTINF:duration,Artist - Title`。Artist 段可能没有, 这种整段当
+    /// title (跟 PlaylistImporter.parseExtInf 行为一致)。
+    nonisolated private static func parseExtInf(_ extInf: String?, fallbackPath: String) -> (title: String, artist: String?) {
+        guard let extInf else {
+            let base = (fallbackPath as NSString).lastPathComponent
+            let withoutExt = (base as NSString).deletingPathExtension
+            return (withoutExt, nil)
+        }
+        guard let commaIdx = extInf.firstIndex(of: ",") else {
+            return (extInf.trimmingCharacters(in: .whitespaces), nil)
+        }
+        let rest = String(extInf[extInf.index(after: commaIdx)...]).trimmingCharacters(in: .whitespaces)
+        if let dashRange = rest.range(of: " - ") {
+            let artist = String(rest[..<dashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let title = String(rest[dashRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            return (title, artist.isEmpty ? nil : artist)
+        }
+        return (rest, nil)
     }
 
     private func confirm() {

@@ -15,6 +15,28 @@ struct MacHomeView: View {
     @Environment(ThemeService.self) private var theme
     @Environment(AppUpdateChecker.self) private var updateChecker
 
+    // 派生聚合缓存 —— mosaicSongs(全库 sort)、heroStats(全库 reduce)、三个 ratio
+    // (各一次全库 filter) 都很重。首页同时观察 scanStates(每扫一个文件就变)和
+    // backfill 计数, 扫描/回填期间这些属性高频变化, 每次 body 求值都把全库遍历
+    // 在主线程重跑一遍 → 万首级曲库下首页卡顿。把结果缓存到 @State, 仅在库内容
+    // (searchRevision)或播放历史变化时重算一次, 跟 iOS HomeView / MacSimilarSongsPopover
+    // 一致。
+    @State private var derived = DerivedSnapshot()
+    // 合并 searchRevision 风暴 —— MusicLibrary 在扫描的每个 upsert 批次都 bump
+    // searchRevision, 不去抖会触发几十次全库重算。cancel + 重启计时, 只在最后
+    // 一次 revision 落定后重算。
+    @State private var derivedRefreshTask: Task<Void, Never>?
+    private static let derivedRefreshDebounce: Duration = .milliseconds(300)
+
+    private struct DerivedSnapshot {
+        var mosaicSongs: [Song] = []
+        var totalDurationSec: Double = 0
+        var coverCount: Int = 0
+        var lyricsCount: Int = 0
+        var playableCount: Int = 0
+        var songCount: Int = 0
+    }
+
     private var hasContent: Bool { !library.visibleSongs.isEmpty }
 
     var body: some View {
@@ -43,6 +65,61 @@ struct MacHomeView: View {
             .padding(.bottom, 104)
         }
         .background(PMColor.bg.ignoresSafeArea())
+        .task {
+            refreshDerivedIfNeeded()
+        }
+        .onChange(of: library.searchRevision) { _, _ in
+            scheduleDerivedRefresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
+            refreshDerived()
+        }
+        .onDisappear {
+            derivedRefreshTask?.cancel()
+            derivedRefreshTask = nil
+        }
+    }
+
+    /// 合并 searchRevision 风暴: cancel 上一次再重启计时, 只有最后一次 revision
+    /// 落定后才真正重算。
+    private func scheduleDerivedRefresh() {
+        derivedRefreshTask?.cancel()
+        derivedRefreshTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.derivedRefreshDebounce)
+            guard !Task.isCancelled else { return }
+            refreshDerived()
+        }
+    }
+
+    /// 首次出现时如果缓存还没填(songCount 与当前 visibleSongs 不一致)就算一次,
+    /// 避免每次回到首页都重跑全库。
+    private func refreshDerivedIfNeeded() {
+        if derived.songCount != library.visibleSongs.count {
+            refreshDerived()
+        }
+    }
+
+    /// 全库聚合的唯一计算入口 —— 在主线程跑, 但只有库内容/播放历史变化时才调一次。
+    private func refreshDerived() {
+        let songs = library.visibleSongs
+        var snapshot = DerivedSnapshot()
+        snapshot.songCount = songs.count
+        var totalSec = 0.0
+        var coverCount = 0
+        var lyricsCount = 0
+        var playableCount = 0
+        for song in songs {
+            totalSec += max(0, song.duration)
+            if song.coverArtFileName?.isEmpty == false { coverCount += 1 }
+            if song.lyricsFileName?.isEmpty == false { lyricsCount += 1 }
+            if song.isPlayable { playableCount += 1 }
+        }
+        snapshot.totalDurationSec = totalSec
+        snapshot.coverCount = coverCount
+        snapshot.lyricsCount = lyricsCount
+        snapshot.playableCount = playableCount
+        snapshot.mosaicSongs = computeMosaicSongs()
+        derived = snapshot
     }
 
     // MARK: - Update banner
@@ -154,7 +231,7 @@ struct MacHomeView: View {
         let sources = sourcesStore.sources.filter(\.isEnabled).count
         let albums = library.visibleAlbums.count
         let artists = library.visibleArtists.count
-        let totalSec = library.visibleSongs.reduce(0.0) { $0 + max(0, $1.duration) }
+        let totalSec = derived.totalDurationSec
         let days = Int(totalSec / 86400)
         let hours = Int((totalSec.truncatingRemainder(dividingBy: 86400)) / 3600)
         if days > 0 {
@@ -312,7 +389,10 @@ struct MacHomeView: View {
         return (Array(pool.prefix(1)), 1)
     }
 
-    private var mosaicSongs: [Song] {
+    private var mosaicSongs: [Song] { derived.mosaicSongs }
+
+    /// 实际计算封面马赛克候选(全库 sort, 较重)—— 只在 refreshDerived 时调一次。
+    private func computeMosaicSongs() -> [Song] {
         let recent = library.recentlyPlayedSongs(limit: 12)
         let added = library.visibleSongs.sorted { $0.dateAdded > $1.dateAdded }.prefix(40)
         var pool = recent
@@ -949,13 +1029,13 @@ struct MacHomeView: View {
 
     private var enabledSourcesCount: Int { sourcesStore.sources.filter(\.isEnabled).count }
 
-    private var coverRatio: Double { ratio(count: library.visibleSongs.filter { $0.coverArtFileName?.isEmpty == false }.count) }
-    private var lyricsRatio: Double { ratio(count: library.visibleSongs.filter { $0.lyricsFileName?.isEmpty == false }.count) }
-    private var playableRatio: Double { ratio(count: library.visibleSongs.filter(\.isPlayable).count) }
+    private var coverRatio: Double { ratio(count: derived.coverCount) }
+    private var lyricsRatio: Double { ratio(count: derived.lyricsCount) }
+    private var playableRatio: Double { ratio(count: derived.playableCount) }
 
     private func ratio(count: Int) -> Double {
-        guard !library.visibleSongs.isEmpty else { return 0 }
-        return Double(count) / Double(library.visibleSongs.count)
+        guard derived.songCount > 0 else { return 0 }
+        return Double(count) / Double(derived.songCount)
     }
 
     // MARK: - Actions

@@ -75,6 +75,7 @@ struct SourcesView: View {
     @State private var showAddSource = false
     @State private var editingSource: MusicSource?
     @State private var connectingSource: MusicSource?
+    @State private var pendingDeleteSource: MusicSource?
     @State private var diagnosingSource: MusicSource?
     @State private var cacheAlert: SourceCacheAlert?
     @State private var activeCacheRun: SourceCacheRun?
@@ -132,6 +133,26 @@ struct SourcesView: View {
                     )
                 }
             }
+            .confirmationDialog(
+                Text("delete"),
+                isPresented: deleteConfirmationBinding,
+                titleVisibility: .visible,
+                presenting: pendingDeleteSource
+            ) { source in
+                Button(role: .destructive) {
+                    deleteSource(source)
+                    pendingDeleteSource = nil
+                } label: {
+                    Text("delete")
+                }
+                Button(role: .cancel) {
+                    pendingDeleteSource = nil
+                } label: {
+                    Text("cancel")
+                }
+            } message: { source in
+                Text(verbatim: source.name)
+            }
             .navigationDestination(isPresented: $openAppleMusicSettings) {
                 AppleMusicSettingsView()
             }
@@ -165,7 +186,7 @@ struct SourcesView: View {
     }
 
     private func sourceCard(_ source: MusicSource) -> some View {
-        let dirs = decodeDirs(source.extraConfig)
+        let dirs = source.scannedDirectories
         let scanning = scanService.scanStates[source.id]
         let displayedSongCount = if let scanning, scanning.isScanning || scanning.canResume {
             scanning.scannedCount
@@ -173,12 +194,18 @@ struct SourcesView: View {
             source.songCount
         }
         let sourcePlayableSongs = playableSongs(for: source)
-        let hasSourceDownloads = sourcePlayableSongs.contains {
-            sourceManager.offlineAudioSnapshot(for: $0).isDownloading
-        }
-        let hasOtherSourceDownloads = library.visibleSongs.contains {
-            $0.sourceID != source.id && sourceManager.offlineAudioSnapshot(for: $0).isDownloading
-        }
+        // A song can only ever be `.downloading` while it has an in-memory
+        // snapshot entry (written by SourceManager.performOfflineDownload); the
+        // disk-stat fallback in `offlineAudioSnapshot(for:)` never returns
+        // `.downloading`. So compute the set of currently-downloading source IDs
+        // straight from the observed snapshot dictionary instead of calling
+        // `offlineAudioSnapshot` per song — that fallback does a synchronous
+        // FileManager stat for every uncached song and, scanning the full
+        // library per card per frame, makes the Sources page stutter during
+        // scans / batch caching on large libraries.
+        let downloadingIDs = downloadingSourceIDs
+        let hasSourceDownloads = downloadingIDs.contains(source.id)
+        let hasOtherSourceDownloads = downloadingIDs.contains { $0 != source.id }
         let isSourceCaching = activeCacheRun?.sourceID == source.id || hasSourceDownloads
         let isAnotherSourceCaching = (activeCacheRun != nil && activeCacheRun?.sourceID != source.id) || hasOtherSourceDownloads
         let cacheButtonTitle: LocalizedStringKey = isSourceCaching ? "source_cache_all_loading" : "source_cache_all_short"
@@ -384,12 +411,12 @@ struct SourcesView: View {
                 Button { editingSource = source } label: { Label("edit", systemImage: "pencil") }
                 Button { diagnosingSource = source } label: { Label("source_diagnostics", systemImage: "stethoscope") }
                 Divider()
-                Button(role: .destructive) { deleteSource(source) } label: { Label("delete", systemImage: "trash") }
+                Button(role: .destructive) { pendingDeleteSource = source } label: { Label("delete", systemImage: "trash") }
             }
         }
-        .swipeActions(edge: .trailing) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if source.id != AppleMusicLibraryService.systemSourceID {
-                Button(role: .destructive) { deleteSource(source) } label: { Label("delete", systemImage: "trash") }
+                Button(role: .destructive) { pendingDeleteSource = source } label: { Label("delete", systemImage: "trash") }
                 Button { editingSource = source } label: { Label("edit", systemImage: "pencil") }.tint(.orange)
                 Button { diagnosingSource = source } label: { Label("source_diagnostics_short", systemImage: "stethoscope") }.tint(.blue)
             }
@@ -492,6 +519,28 @@ struct SourcesView: View {
             .filteredPlayable()
     }
 
+    /// Source IDs that currently have at least one song being downloaded for
+    /// offline use. Derived from the observed `offlineAudioSnapshots` dictionary
+    /// (only songs SourceManager has touched are present, so this is far smaller
+    /// than the full library) and resolved to source IDs via `song(id:)`. Used by
+    /// `sourceCard` so the per-card "is caching" checks never fall through to the
+    /// synchronous disk-stat path of `offlineAudioSnapshot(for:)`.
+    private var downloadingSourceIDs: Set<String> {
+        var ids = Set<String>()
+        for (songID, snapshot) in sourceManager.offlineAudioSnapshots where snapshot.isDownloading {
+            if let sourceID = library.song(id: songID)?.sourceID {
+                ids.insert(sourceID)
+            }
+        }
+        return ids
+    }
+
+    /// In-memory only `.downloading` check — mirrors `downloadingSourceIDs`'s
+    /// reasoning so progress accounting can gate on it without a disk stat.
+    private func isDownloading(_ song: Song) -> Bool {
+        sourceManager.offlineAudioSnapshots[song.id]?.isDownloading ?? false
+    }
+
     private func presentCacheConfirmation(for source: MusicSource, songs: [Song]) {
         cacheAlert = .confirm(SourceCacheRequest(
             source: source,
@@ -557,7 +606,7 @@ struct SourcesView: View {
             return sourceCacheProgress(songs: run.songs, estimate: run.estimate)
         }
 
-        guard songs.contains(where: { sourceManager.offlineAudioSnapshot(for: $0).isDownloading }) else {
+        guard songs.contains(where: { isDownloading($0) }) else {
             return nil
         }
 
@@ -715,8 +764,12 @@ struct SourcesView: View {
     @ViewBuilder
     private func connectionSheet(for source: MusicSource) -> some View {
         let selectedDirectories = Binding(
-            get: { decodeDirs(currentSource(for: source).extraConfig) },
-            set: { newDirs in updateSource(source.id) { $0.extraConfig = encodeDirs(newDirs) } }
+            get: { currentSource(for: source).scannedDirectories },
+            set: { newDirs in
+                updateSource(source.id) {
+                    $0.extraConfig = MusicSource.encodeScannedDirectories(newDirs, into: $0.extraConfig, type: $0.type)
+                }
+            }
         )
 
         switch source.type {
@@ -743,6 +796,16 @@ struct SourcesView: View {
             NFSBrowserView(source: source, selectedDirectories: selectedDirectories)
         case .upnp:
             UPnPBrowserView(source: source, selectedDirectories: selectedDirectories)
+        case .qnap, .ugreen, .fnos, .s3:
+            // Connector-driven sources: extraConfig holds the scanned-directory
+            // list (S3 keeps its region alongside, transparently handled by the
+            // S3-aware binding above), so the generic connector browser drives
+            // selection/scan the same way SMB/WebDAV/FTP do.
+            ConnectorDirectoryBrowserView(
+                source: source,
+                connector: sourceManager.connector(for: source),
+                selectedDirectories: selectedDirectories
+            )
         case .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox, .pan115, .pan123:
             CloudDriveConnectionView(
                 source: source,
@@ -782,21 +845,27 @@ struct SourcesView: View {
         Set(sourceStore.sources.filter { !$0.isEnabled }.map(\.id))
     }
 
+    /// Drives the delete confirmation dialog: presented while a source is
+    /// pending; dismissal (tap outside / cancel) clears the pending source.
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingDeleteSource != nil },
+            set: { if !$0 { pendingDeleteSource = nil } }
+        )
+    }
+
     private func deleteSource(_ source: MusicSource) {
         // Cancel any active scan first — otherwise it keeps adding songs back
         stopBackgroundWork(for: source.id)
         library.removeSongsForSource(source.id)
+        // Soft-delete: the row moves to "Recently Deleted" and stays
+        // recoverable for the retention window. Credentials, OAuth tokens,
+        // app credentials and cloud directory names are deliberately NOT
+        // wiped here — destroying them on soft-delete would leave a restored
+        // source unable to log in / re-authorize. Their physical removal
+        // belongs to the permanent-purge stage.
         sourceStore.remove(id: source.id)
         scanService.removeSynologyAPI(for: source.id)
-        KeychainService.deletePassword(for: source.id)
-        if source.type.isCloudDrive {
-            Task {
-                let tokenManager = CloudTokenManager(sourceID: source.id)
-                await tokenManager.deleteTokens()
-                await tokenManager.deleteAppCredentials()
-            }
-            CloudDirectoryNameStore.deleteAll(for: source.id)
-        }
         Task { await sourceManager.removeConnector(for: source.id) }
     }
 
@@ -829,15 +898,6 @@ struct SourcesView: View {
         return lastComponent.isEmpty ? path : lastComponent
     }
 
-    private func decodeDirs(_ config: String?) -> [String] {
-        guard let config, let data = config.data(using: .utf8),
-              let dirs = try? JSONDecoder().decode([String].self, from: data) else { return [] }
-        return dirs
-    }
-
-    private func encodeDirs(_ dirs: [String]) -> String? {
-        (try? JSONEncoder().encode(dirs)).flatMap { String(data: $0, encoding: .utf8) }
-    }
 }
 
 private struct SourceDiagnosticsView: View {

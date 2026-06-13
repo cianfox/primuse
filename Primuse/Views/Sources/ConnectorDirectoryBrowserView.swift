@@ -22,6 +22,7 @@ struct ConnectorDirectoryBrowserView: View {
     @State private var hasLoadedRoot = false
     @State private var sslTrustDomain: String?
     @State private var sslTrustContinuation: CheckedContinuation<Bool, Never>?
+    @State private var loadTask: Task<Void, Never>?
 
     var body: some View {
         #if os(macOS)
@@ -217,13 +218,19 @@ struct ConnectorDirectoryBrowserView: View {
     }
 
     private func loadDirectory() {
+        loadTask?.cancel()
+
         isLoading = true
         errorMessage = nil
 
-        Task {
+        // 捕获本次请求对应的路径, 写回前校验仍是当前目录, 避免快速导航时晚到的响应覆盖列表。
+        let requestPath = currentPath
+        loadTask = Task {
             do {
                 try await connector.connect()
-                items = try await connector.listFiles(at: currentPath)
+                let loaded = try await connector.listFiles(at: requestPath)
+                guard !Task.isCancelled, requestPath == currentPath else { return }
+                items = loaded
                 if source.type.isCloudDrive {
                     CloudDirectoryNameStore.save(items, for: source.id)
                     if let current = pathStack.last {
@@ -232,11 +239,15 @@ struct ConnectorDirectoryBrowserView: View {
                 }
                 isLoading = false
             } catch {
+                guard !Task.isCancelled, requestPath == currentPath else { return }
                 let trusted = await promptSSLTrust(for: error)
+                guard !Task.isCancelled, requestPath == currentPath else { return }
                 if trusted {
                     do {
                         try await connector.connect()
-                        items = try await connector.listFiles(at: currentPath)
+                        let loaded = try await connector.listFiles(at: requestPath)
+                        guard !Task.isCancelled, requestPath == currentPath else { return }
+                        items = loaded
                         if source.type.isCloudDrive {
                             CloudDirectoryNameStore.save(items, for: source.id)
                             if let current = pathStack.last {
@@ -244,6 +255,7 @@ struct ConnectorDirectoryBrowserView: View {
                             }
                         }
                     } catch {
+                        guard !Task.isCancelled, requestPath == currentPath else { return }
                         errorMessage = error.localizedDescription
                     }
                 } else {

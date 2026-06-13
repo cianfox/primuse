@@ -197,7 +197,9 @@ private enum MacScreenshotWindowPreset {
         window.canBecomeMain &&
         !window.styleMask.contains(.utilityWindow) &&
         window.frameAutosaveName != "PrimuseMiniPlayer" &&
-        window.frameAutosaveName != "PrimuseDesktopLyrics"
+        window.frameAutosaveName != "PrimuseDesktopLyrics_v2" &&
+        window.frameAutosaveName != "PrimuseSettings" &&
+        window.frameAutosaveName != "PrimuseScrapeOptions"
     }
 
     @MainActor
@@ -312,21 +314,32 @@ final class PrimuseAppDelegate: NSObject, NSApplicationDelegate {
     /// 是 NSWindow 而非 NSPanel,并且 canBecomeMain。
     @MainActor
     private func mainAppWindow() -> NSWindow? {
-        // 优先 mainWindow / keyWindow,如果它符合"非 panel + canBecomeMain"
-        // 就直接用,这是 macOS 标准 mainWindow 选择器。
-        if let main = NSApp.mainWindow, !(main is NSPanel), main.canBecomeMain {
+        // 优先 mainWindow / keyWindow,但同样要排除 mini player / 桌面歌词 /
+        // Settings / 刮削等副窗口——它们也是 canBecomeMain 的 NSWindow,用户
+        // 红灯关掉主窗口而副窗口仍聚焦时,快路径会误命中。与
+        // MacMenuBarController.existingMainWindow() 保持一致的过滤集。
+        if let main = NSApp.mainWindow, Self.isMainAppWindow(main) {
             return main
         }
-        if let key = NSApp.keyWindow, !(key is NSPanel), key.canBecomeMain {
+        if let key = NSApp.keyWindow, Self.isMainAppWindow(key) {
             return key
         }
         // fallback: 遍历所有窗口找第一个不是 panel 的可主窗口。
-        return NSApp.windows.first {
-            !($0 is NSPanel) && $0.canBecomeMain &&
-            !$0.styleMask.contains(.utilityWindow) &&
-            $0.frameAutosaveName != "PrimuseMiniPlayer" &&
-            $0.frameAutosaveName != "PrimuseDesktopLyrics"
-        }
+        return NSApp.windows.first(where: Self.isMainAppWindow)
+    }
+
+    /// 判断某个 NSWindow 是不是 SwiftUI 主窗口(排除 mini player / 桌面歌词 /
+    /// Settings / 刮削 / 各种 NSPanel 副窗口)。这些副窗口同样 canBecomeMain,
+    /// 必须联合 autosaveName 过滤,不能只看 canBecomeMain。
+    @MainActor
+    private static func isMainAppWindow(_ window: NSWindow) -> Bool {
+        !(window is NSPanel) &&
+        window.canBecomeMain &&
+        !window.styleMask.contains(.utilityWindow) &&
+        window.frameAutosaveName != "PrimuseMiniPlayer" &&
+        window.frameAutosaveName != "PrimuseDesktopLyrics_v2" &&
+        window.frameAutosaveName != "PrimuseSettings" &&
+        window.frameAutosaveName != "PrimuseScrapeOptions"
     }
 
     func application(
@@ -489,7 +502,16 @@ struct PrimuseApp: App {
                     )
                     #endif
                     if iCloudSyncEnabled { await cloudSync.start() }
-                    if dlnaRendererEnabled { dlnaRenderer.start() }
+                    if dlnaRendererEnabled {
+                        // keepAlive 开关由 @AppStorage("dlna.keepAlive") 持久;重启后
+                        // renderer.keepAliveInBackground 默认是 false,必须在这里回读
+                        // 应用,否则后台保活设置重启后静默失效。start() 内部的
+                        // syncKeepAliveState 会兜底调度,set 顺序不敏感。
+                        dlnaRenderer.setKeepAliveInBackground(
+                            UserDefaults.standard.bool(forKey: "dlna.keepAlive")
+                        )
+                        dlnaRenderer.start()
+                    }
                     // Apple Music user library 启动自动 sync 一次 ── songCache
                     // 是 in-memory, 重启后空; 没 cache → play 走 catalog lookup,
                     // 用 user library 的 i.* id 查 catalog 必失败 → 卡 loading。

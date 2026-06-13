@@ -28,14 +28,18 @@ struct SmartPlaylistDetailView: View {
     }
 
     var body: some View {
+        // matched 是 computed property, 每次访问都完整跑一遍 SmartPlaylistEngine.match
+        // (全库 filter + PlayStats 聚合 + 排序)。单次 body 渲染会被多处访问 6-8 次,
+        // 这里取一次快照向下传递, 把每帧的全库扫描收敛成 1 次。
+        let matched = self.matched
         #if os(macOS)
-        macBody
+        return AnyView(macBody(matched))
         #else
-        legacyBody
+        return AnyView(legacyBody(matched))
         #endif
     }
 
-    private var legacyBody: some View {
+    private func legacyBody(_ matched: [Song]) -> some View {
         Group {
             if let smart {
                 ScrollView {
@@ -154,12 +158,12 @@ struct SmartPlaylistDetailView: View {
     }
 
     #if os(macOS)
-    private var macBody: some View {
+    private func macBody(_ matched: [Song]) -> some View {
         Group {
             if let smart {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        macHeader(smart)
+                        macHeader(smart, matched: matched)
 
                         VStack(alignment: .leading, spacing: PMSpace.l) {
                             macRuleCard(smart)
@@ -174,7 +178,7 @@ struct SmartPlaylistDetailView: View {
                                 .frame(maxWidth: .infinity)
                                 .padding(.top, 48)
                             } else {
-                                macSongTable
+                                macSongTable(matched)
                             }
                         }
                         .padding(.horizontal, PMSpace.xxxl)
@@ -198,7 +202,7 @@ struct SmartPlaylistDetailView: View {
         }
     }
 
-    private func macHeader(_ smart: SmartPlaylist) -> some View {
+    private func macHeader(_ smart: SmartPlaylist, matched: [Song]) -> some View {
         MacLibraryHeader(
             eyebrow: "smart_playlists_section",
             title: smart.name,
@@ -212,13 +216,13 @@ struct SmartPlaylistDetailView: View {
                 player.shuffleEnabled = true
                 playAll()
             },
-            moreMenu: smartMoreMenu(smart)
+            moreMenu: smartMoreMenu(smart, matched: matched)
         )
     }
 
     /// header 右上角"更多"菜单: 编辑规则 / 离线 / 删除。删除走这里 + 侧栏右键,
     /// 不再放在规则编辑器弹框里。
-    private func smartMoreMenu(_ smart: SmartPlaylist) -> AnyView {
+    private func smartMoreMenu(_ smart: SmartPlaylist, matched: [Song]) -> AnyView {
         let playable = matched.filteredPlayable()
         return AnyView(MacHeaderMoreMenu(sections: [
             [
@@ -311,7 +315,7 @@ struct SmartPlaylistDetailView: View {
         .padding(.top, -2)
     }
 
-    private var macSongTable: some View {
+    private func macSongTable(_ matched: [Song]) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: PMSpace.s10) {
                 Text("#").frame(width: 28, alignment: .center)

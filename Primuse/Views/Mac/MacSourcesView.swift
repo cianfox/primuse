@@ -59,6 +59,14 @@ struct MacSourcesView: View {
         .onReceive(NotificationCenter.default.publisher(for: CloudDirectoryNameStore.didChangeNotification)) { _ in
             cloudDirectoryNameRefreshID = UUID()
         }
+        // 不可逆清理(歌曲记录/Keychain 凭据/云盘 token/书签/缓存)推迟到源被
+        // *彻底*删除时才执行 —— permanentlyDelete 在手动彻底删除与 30 天 prune
+        // 两条路径都会发这个通知。软删除阶段(remove(id:))只取消扫描/后台任务,
+        // 这样从「最近删除」还原后凭据仍在,源可继续扫描。
+        .onReceive(NotificationCenter.default.publisher(for: .primuseSourceDidDelete)) { note in
+            guard let id = note.userInfo?["id"] as? String else { return }
+            purgeSourceData(id: id)
+        }
         .confirmationDialog(
             Text(verbatim: "移除此音乐源？"),
             isPresented: Binding(
@@ -212,7 +220,7 @@ struct MacSourcesView: View {
     // MARK: - Card
 
     private func sourceCard(_ source: MusicSource) -> some View {
-        let dirs = decodeDirs(source.extraConfig)
+        let dirs = source.scannedDirectories
         let scanning = scanService.scanStates[source.id]
         let state = runtimeState(source)
         let displayedSongCount = if let scanning, scanning.isScanning || scanning.canResume {
@@ -272,7 +280,9 @@ struct MacSourcesView: View {
             }
             Divider()
             Button(role: .destructive) {
-                deleteSource(source)
+                // 与卡片操作行的删除 pill 统一走二次确认对话框,
+                // 右键误点不会直接触发软删除。
+                sourceToDelete = source
             } label: {
                 Label("delete", systemImage: "trash")
             }
@@ -506,8 +516,12 @@ struct MacSourcesView: View {
     @ViewBuilder
     private func connectionSheet(for source: MusicSource) -> some View {
         let selectedDirectories = Binding(
-            get: { decodeDirs(currentSource(for: source).extraConfig) },
-            set: { newDirs in updateSource(source.id) { $0.extraConfig = encodeDirs(newDirs) } }
+            get: { currentSource(for: source).scannedDirectories },
+            set: { newDirs in
+                updateSource(source.id) {
+                    $0.extraConfig = MusicSource.encodeScannedDirectories(newDirs, into: $0.extraConfig, type: $0.type)
+                }
+            }
         )
 
         switch source.type {
@@ -524,6 +538,15 @@ struct MacSourcesView: View {
         case .sftp: SFTPBrowserView(source: source, selectedDirectories: selectedDirectories)
         case .nfs: NFSBrowserView(source: source, selectedDirectories: selectedDirectories)
         case .upnp: UPnPBrowserView(source: source, selectedDirectories: selectedDirectories)
+        case .s3:
+            // S3 stores region + dir list together in extraConfig; the S3-aware
+            // binding above keeps the region intact while the connector browser
+            // drives directory selection.
+            ConnectorDirectoryBrowserView(
+                source: source,
+                connector: sourceManager.connector(for: source),
+                selectedDirectories: selectedDirectories
+            )
         case .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox, .pan115, .pan123:
             CloudDriveConnectionView(source: source, selectedDirectories: selectedDirectories)
         default:
@@ -564,23 +587,33 @@ struct MacSourcesView: View {
         Set(sourceStore.sources.filter { !$0.isEnabled }.map(\.id))
     }
 
+    /// 软删除:把源移入「最近删除」,只停掉扫描/后台任务与内存态连接器。
+    /// **不**碰歌曲记录、Keychain 凭据、云盘 token、书签 —— 这些留到源被
+    /// 彻底删除(permanentlyDelete → .primuseSourceDidDelete)时才清,否则从
+    /// 回收站还原后源会因凭据丢失而不可用,与「包含连接凭据」的承诺矛盾。
     private func deleteSource(_ source: MusicSource) {
         stopBackgroundWork(for: source.id)
-        library.removeSongsForSource(source.id)
-        sourceStore.remove(id: source.id)
         scanService.removeSynologyAPI(for: source.id)
-        sourceManager.deleteSourceCaches(sourceID: source.id)
-        LocalBookmarkStore.remove(sourceID: source.id)
-        KeychainService.deletePassword(for: source.id)
-        if source.type.isCloudDrive {
-            Task {
-                let tm = CloudTokenManager(sourceID: source.id)
-                await tm.deleteTokens()
-                await tm.deleteAppCredentials()
-            }
-            CloudDirectoryNameStore.deleteAll(for: source.id)
-        }
+        sourceStore.remove(id: source.id)
         Task { await sourceManager.removeConnector(for: source.id) }
+    }
+
+    /// 不可逆清理:歌曲记录、Keychain 凭据、云盘 token / app 凭据 / 目录名、
+    /// 安全书签、派生缓存。仅在源被*彻底*删除时调用(手动彻底删除或 30 天
+    /// prune,均经由 permanentlyDelete 发 .primuseSourceDidDelete)。此刻
+    /// sourceStore 里已无该行,故云盘清理按 sourceID 无条件执行 —— 这些方法
+    /// 对非云盘源是 no-op,安全。
+    private func purgeSourceData(id: String) {
+        library.removeSongsForSource(id)
+        sourceManager.deleteSourceCaches(sourceID: id)
+        LocalBookmarkStore.remove(sourceID: id)
+        KeychainService.deletePassword(for: id)
+        Task {
+            let tm = CloudTokenManager(sourceID: id)
+            await tm.deleteTokens()
+            await tm.deleteAppCredentials()
+        }
+        CloudDirectoryNameStore.deleteAll(for: id)
     }
 
     private func stopBackgroundWork(for sourceID: String) {
@@ -607,15 +640,6 @@ struct MacSourcesView: View {
         sourceStore.update(sourceID, mutate: mutate)
     }
 
-    private func decodeDirs(_ config: String?) -> [String] {
-        guard let config, let data = config.data(using: .utf8),
-              let dirs = try? JSONDecoder().decode([String].self, from: data) else { return [] }
-        return dirs
-    }
-
-    private func encodeDirs(_ dirs: [String]) -> String? {
-        (try? JSONEncoder().encode(dirs)).flatMap { String(data: $0, encoding: .utf8) }
-    }
 }
 
 // MARK: - Pill button

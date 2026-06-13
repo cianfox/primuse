@@ -18,9 +18,22 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling, @unchec
                 return
             }
             let player = AppServices.shared.playerService
+            let song = result.queue[result.startIndex]
             player.setQueue(result.queue, startAt: result.startIndex)
-            await player.play(song: result.queue[result.startIndex])
-            box.value(INPlayMediaIntentResponse(code: .success, userActivity: nil))
+            await player.play(song: song)
+            // play() returns once setup is kicked off; actual playback (esp.
+            // cloud sources) can take a few seconds. Poll briefly for the
+            // loading-or-playing state — same pattern as the CarPlay path —
+            // so we don't tell Siri "playing" when a 401 / network failure
+            // left nothing playing.
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if player.isPlaying || player.isLoading { break }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            let code: INPlayMediaIntentResponseCode =
+                (player.isPlaying || player.isLoading) ? .success : .failure
+            box.value(INPlayMediaIntentResponse(code: code, userActivity: nil))
         }
     }
 
@@ -69,6 +82,7 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling, @unchec
                }) {
                 let songs = library.songs(forAlbum: album.id)
                     .sorted { ($0.discNumber ?? 0, $0.trackNumber ?? 0) < ($1.discNumber ?? 0, $1.trackNumber ?? 0) }
+                    .filteredPlayable()
                 if !songs.isEmpty { return (songs, 0) }
             }
         }
@@ -80,7 +94,7 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling, @unchec
                let artist = library.visibleArtists.first(where: {
                    $0.name.lowercased().contains(target)
                }) {
-                let songs = library.songs(forArtist: artist.id)
+                let songs = library.songs(forArtist: artist.id).filteredPlayable()
                 if !songs.isEmpty { return (songs, 0) }
             }
         }
@@ -91,15 +105,23 @@ final class PlayMediaIntentHandler: NSObject, INPlayMediaIntentHandling, @unchec
             let matches = library.visibleSongs.filter { song in
                 song.title.lowercased().contains(target) ||
                 (song.artistName?.lowercased().contains(target) ?? false)
-            }
+            }.filteredPlayable()
             if !matches.isEmpty {
                 return (matches, 0)
             }
         }
 
-        // 4. No search — shuffle whole library
-        if intent.mediaSearch == nil, !library.visibleSongs.isEmpty {
-            return (library.visibleSongs.shuffled(), 0)
+        // 4. No usable search term — shuffle whole library. Covers both
+        // "mediaSearch == nil" and the common Siri "play music" form where
+        // it builds an INMediaSearch(mediaType: .music) with every name
+        // field nil/empty. Steps 1–3 skip those, so without this fallback
+        // resolve() would return nil and the user hears "service unavailable"
+        // even though the library has playable songs.
+        let hasSearchTerm = [mediaName, artistName, albumName]
+            .contains { ($0?.isEmpty == false) }
+        if !hasSearchTerm {
+            let pool = library.visibleSongs.filteredPlayable()
+            if !pool.isEmpty { return (pool.shuffled(), 0) }
         }
 
         return nil

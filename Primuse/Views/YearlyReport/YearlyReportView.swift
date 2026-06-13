@@ -61,10 +61,10 @@ struct YearlyReportView: View {
                 Image(systemName: "music.note.list")
                     .font(.system(size: 80, weight: .light))
                     .foregroundStyle(.white.opacity(0.6))
-                Text("\(String(data.year)) 年度报告")
+                Text(String(format: String(localized: "yearly_empty_title_format"), String(data.year)))
                     .font(.system(.title2, design: .rounded).weight(.bold))
                     .foregroundStyle(.white)
-                Text("今年还没有听够多歌\n听满 30 秒以上的歌曲会自动计入年度统计")
+                Text(String(localized: "yearly_empty_desc"))
                     .font(.callout)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
@@ -132,10 +132,10 @@ struct YearlyReportView: View {
                 .foregroundStyle(Color(red: 0.85, green: 0.43, blue: 0.27))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(verbatim: "Primuse Wrapped")
+                Text(String(localized: "yearly_wrapped_brand"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.55))
-                Text(verbatim: "\(data.year) 年度报告")
+                Text(String(format: String(localized: "yearly_report_year_title_format"), String(data.year)))
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(Color(red: 0.95, green: 0.93, blue: 0.90))
             }
@@ -228,7 +228,7 @@ struct YearlyReportView: View {
                             Button {
                                 shareCurrent()
                             } label: {
-                                Label("分享卡片", systemImage: "square.and.arrow.up")
+                                Label(String(localized: "yearly_share_card"), systemImage: "square.and.arrow.up")
                                     .font(.system(size: 12, weight: .semibold))
                                     .labelStyle(.titleAndIcon)
                                     .padding(.horizontal, 12)
@@ -240,7 +240,7 @@ struct YearlyReportView: View {
                             Button {
                                 macAdvance()
                             } label: {
-                                Text(verbatim: "下一张")
+                                Text(String(localized: "yearly_next_card"))
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.white.opacity(0.72))
                                     .padding(.horizontal, 12)
@@ -336,43 +336,81 @@ struct YearlyReportView: View {
 
         switch card {
         case .hero:
-            return ("Primuse Wrapped", "\(data.year)", "让 Primuse 陪你回看这一年的音乐轨迹", "sparkles", false)
+            return (String(localized: "yearly_wrapped_brand"), "\(data.year)", String(localized: "yearly_meta_hero_sub"), "sparkles", false)
         case .overview:
-            return ("总时长", "\(hours) 小时", "\(data.uniqueSongCount) 首歌 · \(data.uniqueArtistCount) 位艺术家 · \(data.totalEntries) 次播放", "chart.bar.xaxis", true)
+            return (String(localized: "yearly_meta_overview_title"),
+                    String(format: String(localized: "yearly_meta_overview_big_format"), hours),
+                    String(format: String(localized: "yearly_meta_overview_sub_format"), data.uniqueSongCount, data.uniqueArtistCount, data.totalEntries),
+                    "chart.bar.xaxis", true)
         case .firstSong:
-            return ("年度第一首", data.firstSong?.songTitle ?? "还没有记录", data.firstSong?.artistName ?? "第一段播放会从这里开始", "play.rectangle.fill", false)
+            return (String(localized: "yearly_meta_first_song_title"),
+                    data.firstSong?.songTitle ?? String(localized: "yearly_no_record"),
+                    data.firstSong?.artistName ?? String(localized: "yearly_meta_first_song_placeholder_artist"),
+                    "play.rectangle.fill", false)
         case .topArtistHero:
-            return ("Top 艺术家", topArtist?.title ?? "暂无艺术家", "\(topArtist?.playCount ?? 0) 次播放 · \(formatDuration(topArtist?.totalSec ?? 0))", "person.wave.2", false)
+            return (String(localized: "yearly_meta_top_artist_title"),
+                    topArtist?.title ?? String(localized: "yearly_no_artist"),
+                    String(format: String(localized: "yearly_meta_top_artist_sub_format"), topArtist?.playCount ?? 0, formatDuration(topArtist?.totalSec ?? 0)),
+                    "person.wave.2", false)
         case .topArtistsList:
-            return ("常听阵容", topArtistsText, "这些名字构成了今年最熟悉的声音", "person.3.fill", false)
+            return (String(localized: "yearly_meta_artists_title"), topArtistsText, String(localized: "yearly_meta_artists_sub"), "person.3.fill", false)
         case .topSongs:
-            return ("Top 歌曲", topSong?.title ?? "暂无歌曲", "\(topSong?.subtitle ?? "") · \(topSong?.playCount ?? 0) 次播放", "music.note.list", false)
+            return (String(localized: "yearly_meta_top_songs_title"),
+                    topSong?.title ?? String(localized: "yearly_no_song"),
+                    String(format: String(localized: "yearly_meta_top_songs_sub_format"), topSong?.subtitle ?? "", topSong?.playCount ?? 0),
+                    "music.note.list", false)
         case .moments:
-            return ("最长连听", formatDuration(data.longestSession?.totalSec ?? 0), "\(data.longestSession?.songCount ?? 0) 首连续播放 · \(dateText(data.longestSession?.startedAt))", "clock.arrow.circlepath", false)
+            return (String(localized: "yearly_meta_moments_title"),
+                    formatDuration(data.longestSession?.totalSec ?? 0),
+                    String(format: String(localized: "yearly_meta_moments_sub_format"), data.longestSession?.songCount ?? 0, dateText(data.longestSession?.startedAt)),
+                    "clock.arrow.circlepath", false)
         case .timeOfDay:
-            return ("晨听 vs 夜听", "\(Int(data.nightRatio * 100))% 夜听", "\(data.timeOfDayLabel)最活跃 · 高峰 \(data.peakHour):00", "moon.stars.fill", false)
+            return (String(localized: "yearly_meta_time_title"),
+                    String(format: String(localized: "yearly_meta_time_big_format"), Int(data.nightRatio * 100)),
+                    String(format: String(localized: "yearly_meta_time_sub_format"), data.timeOfDayLabel, data.peakHour),
+                    "moon.stars.fill", false)
         case .genres:
             let topGenre = data.topGenres.first
             let names = data.topGenres.prefix(3).map(\.title).joined(separator: " · ")
-            return ("流派地图", topGenre?.title ?? "\(data.genreCount) 种流派", names.isEmpty ? "资料库补齐 genre 后这里会更丰富" : "今年最常出现的声音颜色", "guitars", false)
+            return (String(localized: "yearly_meta_genres_title"),
+                    topGenre?.title ?? String(format: String(localized: "yearly_meta_genres_placeholder_format"), data.genreCount),
+                    names.isEmpty ? String(localized: "yearly_meta_genres_sub_empty") : String(localized: "yearly_meta_genres_sub"),
+                    "guitars", false)
         case .exploration:
             let focus = Int((data.explorationTopArtistShare * 100).rounded())
             let exploration = max(0, 100 - focus)
-            return ("探索度", "\(exploration)%", "Top 5 艺术家占 \(focus)% · \(data.personality?.exploration == .explorer ? "偏向探索" : "偏向深听")", "safari.fill", false)
+            let tendency = data.personality?.exploration == .explorer
+                ? String(localized: "yearly_exploration_explorer")
+                : String(localized: "yearly_exploration_deep")
+            return (String(localized: "yearly_meta_exploration_title"),
+                    "\(exploration)%",
+                    String(format: String(localized: "yearly_meta_exploration_sub_format"), focus, tendency),
+                    "safari.fill", false)
         case .sources:
-            return ("最常用源", topSource?.displayName ?? "暂无音乐源", "\(topSource?.playCount ?? 0) 次播放 · \(formatDuration(topSource?.totalSec ?? 0))", topSource?.iconSymbol ?? "externaldrive", false)
+            return (String(localized: "yearly_meta_sources_title"),
+                    topSource?.displayName ?? String(localized: "yearly_no_source"),
+                    String(format: String(localized: "yearly_meta_sources_sub_format"), topSource?.playCount ?? 0, formatDuration(topSource?.totalSec ?? 0)),
+                    topSource?.iconSymbol ?? "externaldrive", false)
         case .peakMonth:
-            return ("最热月份", "\(data.peakMonth) 月", data.peakMonthTopSong.map { "那个月最常响起的是 \($0)" } ?? "全年播放峰值来自这个月份", "calendar", false)
+            return (String(localized: "yearly_meta_peak_month_title"),
+                    String(format: String(localized: "yearly_meta_peak_month_big_format"), data.peakMonth),
+                    data.peakMonthTopSong.map { String(format: String(localized: "yearly_meta_peak_month_sub_format"), $0) } ?? String(localized: "yearly_meta_peak_month_sub_default"),
+                    "calendar", false)
         case .personality:
-            return ("你的音乐人格", personality?.displayName ?? "还在形成中", personality?.oneLiner ?? "继续听歌，报告会逐渐长出你的轮廓", "person.crop.circle.badge.checkmark", false)
+            return (String(localized: "yearly_meta_personality_title"),
+                    personality?.displayName ?? String(localized: "yearly_meta_personality_placeholder"),
+                    personality?.oneLiner ?? String(localized: "yearly_meta_personality_sub"),
+                    "person.crop.circle.badge.checkmark", false)
         case .closing:
-            return ("感谢", "让 Primuse 陪你听了 \(max(1, hours / 24)) 天音乐", "继续保持 · 分享你的报告", "heart.fill", false)
+            return (String(localized: "yearly_meta_closing_title"),
+                    String(format: String(localized: "yearly_meta_closing_big_format"), max(1, hours / 24)),
+                    String(localized: "yearly_meta_closing_sub"), "heart.fill", false)
         }
     }
 
     private var topArtistsText: String {
         let names = data.topArtists.prefix(3).map(\.title)
-        return names.isEmpty ? "暂无艺术家" : names.joined(separator: " · ")
+        return names.isEmpty ? String(localized: "yearly_no_artist") : names.joined(separator: " · ")
     }
 
     private func macAdvance() {
@@ -392,15 +430,15 @@ struct YearlyReportView: View {
     }
 
     private func formatDuration(_ sec: TimeInterval) -> String {
-        guard sec > 0 else { return "0 分钟" }
+        guard sec > 0 else { return String(localized: "yearly_duration_zero") }
         let hours = Int(sec / 3600)
         let minutes = Int(sec.truncatingRemainder(dividingBy: 3600) / 60)
-        if hours > 0 { return "\(hours) 小时 \(minutes) 分" }
-        return "\(minutes) 分钟"
+        if hours > 0 { return String(format: String(localized: "yearly_duration_hm_format"), hours, minutes) }
+        return String(format: String(localized: "yearly_duration_minutes_format"), minutes)
     }
 
     private func dateText(_ date: Date?) -> String {
-        guard let date else { return "暂无日期" }
+        guard let date else { return String(localized: "yearly_no_date") }
         return date.formatted(.dateTime.month().day())
     }
     #endif
@@ -544,8 +582,17 @@ struct YearlyReportView: View {
 
     private func tick() {
         let now = Date()
+        // 分享面板打开期间暂停计时, 否则底层卡片会继续 advance, 最终走到
+        // 末张的 dismiss() 把报告连同分享面板一起关掉, 打断用户分享。
+        guard shareImageItem == nil else {
+            lastTickAt = now
+            return
+        }
         let dt = now.timeIntervalSince(lastTickAt)
         lastTickAt = now
+        // 单次 dt 设上限: App 退后台再回前台时 dt 会包含整个后台时长,
+        // 直接累计会跳过若干张卡, 丢弃这类异常大的间隔。
+        guard dt <= 1 else { return }
         elapsed += dt
         if elapsed >= Self.cardDuration {
             advance()
@@ -593,7 +640,7 @@ struct YearlyReportView: View {
             cardForSharing(card: card)
             VStack {
                 Spacer()
-                Text("由 Primuse · 猿音 生成")
+                Text(String(localized: "yearly_share_footer"))
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.6))
                     .padding(.bottom, 12)
@@ -643,20 +690,20 @@ enum YearlyReportCard: Int, CaseIterable {
     /// 顶部副标题 (在 progress 条下方显示)
     var subtitle: String {
         switch self {
-        case .hero: return "封面"
-        case .overview: return "总览"
-        case .firstSong: return "第一首"
-        case .topArtistHero: return "你的最爱"
-        case .topArtistsList: return "Top 艺术家"
-        case .topSongs: return "Top 歌曲"
-        case .moments: return "高光时刻"
-        case .timeOfDay: return "时段画像"
-        case .genres: return "流派画像"
-        case .exploration: return "探索度"
-        case .sources: return "音乐源画像"
-        case .peakMonth: return "代表月份"
-        case .personality: return "音乐人格"
-        case .closing: return "感谢与告别"
+        case .hero: return String(localized: "yearly_sub_hero")
+        case .overview: return String(localized: "yearly_sub_overview")
+        case .firstSong: return String(localized: "yearly_sub_first_song")
+        case .topArtistHero: return String(localized: "yearly_sub_top_artist_hero")
+        case .topArtistsList: return String(localized: "yearly_sub_top_artists")
+        case .topSongs: return String(localized: "yearly_sub_top_songs")
+        case .moments: return String(localized: "yearly_sub_moments")
+        case .timeOfDay: return String(localized: "yearly_sub_time_of_day")
+        case .genres: return String(localized: "yearly_sub_genres")
+        case .exploration: return String(localized: "yearly_sub_exploration")
+        case .sources: return String(localized: "yearly_sub_sources")
+        case .peakMonth: return String(localized: "yearly_sub_peak_month")
+        case .personality: return String(localized: "yearly_sub_personality")
+        case .closing: return String(localized: "yearly_sub_closing")
         }
     }
 

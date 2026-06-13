@@ -92,6 +92,17 @@ struct CachedArtworkView: View {
     /// blow the cache budget by itself. Larger than any device's hero art.
     private static let fullMaxPixel: Int = 1536
 
+    /// Shared session for source-side cover fetches. A delegate-backed
+    /// URLSession strongly retains its delegate and never deallocates until
+    /// explicitly invalidated, so creating one per fetch leaks both the
+    /// session and the SmartSSLDelegate while scrolling long lists. Reuse a
+    /// single long-lived session instead (SmartSSLDelegate is Sendable).
+    private static let sharedArtworkSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 10
+        return URLSession(configuration: config, delegate: SmartSSLDelegate(), delegateQueue: nil)
+    }()
+
     // Backward compatible init — old call sites use coverFileName
     init(coverFileName: String?, size: CGFloat? = nil, cornerRadius: CGFloat = 12,
          sourceID: String? = nil, filePath: String? = nil,
@@ -470,20 +481,14 @@ struct CachedArtworkView: View {
     ) async -> Data? {
         // Case 1: URL reference (media server API — already a full URL)
         if let ref, ref.contains("://"), let url = URL(string: ref) {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 10
-            let session = URLSession(configuration: config, delegate: SmartSSLDelegate(), delegateQueue: nil)
-            return try? await session.data(from: url).0
+            return try? await sharedArtworkSession.data(from: url).0
         }
 
         // Case 2: Sidecar reference on source — get a streaming URL (no file download needed).
         // Cloud drives may store opaque file IDs here, not just slashy paths.
         if let ref, !ref.isEmpty, let sourceID {
             if let imageURL = await sourceManager.imageURL(for: ref, sourceID: sourceID) {
-                let config = URLSessionConfiguration.default
-                config.timeoutIntervalForRequest = 10
-                let session = URLSession(configuration: config, delegate: SmartSSLDelegate(), delegateQueue: nil)
-                return try? await session.data(from: imageURL).0
+                return try? await sharedArtworkSession.data(from: imageURL).0
             }
         }
 

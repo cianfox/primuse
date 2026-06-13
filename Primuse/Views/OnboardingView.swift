@@ -105,7 +105,7 @@ struct OnboardingView: View {
         HStack(spacing: 14) {
             PMWindowTrafficLights(closeOnly: true)
             Spacer()
-            Text("步骤 \(pageIndex + 1) / 3")
+            Text(String(format: String(localized: "onboarding_mac_step_format"), pageIndex + 1))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
         }
@@ -134,7 +134,9 @@ struct OnboardingView: View {
                     finish()
                 }
             } label: {
-                Text(pageIndex > 0 ? "上一步" : "跳过引导")
+                Text(pageIndex > 0
+                     ? String(localized: "onboarding_mac_back")
+                     : String(localized: "onboarding_mac_skip"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.62))
                     .frame(height: 32)
@@ -162,7 +164,9 @@ struct OnboardingView: View {
                     presentAddSource = true
                 }
             } label: {
-                Text(pageIndex == pageCount - 1 ? "完成" : "继续")
+                Text(pageIndex == pageCount - 1
+                     ? String(localized: "onboarding_mac_done")
+                     : String(localized: "onboarding_mac_continue"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(height: 32)
@@ -180,7 +184,7 @@ struct OnboardingView: View {
         VStack(spacing: 18) {
             Spacer(minLength: 0)
 
-            Text("猿")
+            Text(verbatim: "猿")
                 .font(.system(size: 60, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 110, height: 110)
@@ -200,11 +204,11 @@ struct OnboardingView: View {
                         }
                 }
 
-            Text("欢迎使用猿音 Primuse")
+            Text(String(localized: "onboarding_mac_welcome_title"))
                 .font(.system(size: 40, weight: .bold))
                 .multilineTextAlignment(.center)
 
-            Text("一个为 NAS / 媒体服务器烧友打造的原生 macOS 播放器。让你的 FLAC、DSD、APE 在一个统一的资料库里安家。")
+            Text(String(localized: "onboarding_mac_welcome_desc"))
                 .font(.system(size: 15))
                 .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.center)
@@ -213,9 +217,9 @@ struct OnboardingView: View {
 
             macGlassCard {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("隐私承诺")
+                    Text(String(localized: "onboarding_mac_privacy_title"))
                         .font(.system(size: 12, weight: .semibold))
-                    Text("Primuse 不会上传你的资料库到任何云服务。所有播放历史、统计、设置都只通过你的 iCloud 同步。OAuth 授权一律走系统浏览器,我们绝不嵌 WebView 收集你的密码。")
+                    Text(String(localized: "onboarding_mac_privacy_desc"))
                         .font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.85))
                         .lineSpacing(4)
@@ -231,11 +235,11 @@ struct OnboardingView: View {
 
     private var macProtocolsPage: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("来自任何地方")
+            Text(String(localized: "onboarding_mac_sources_title"))
                 .font(.system(size: 32, weight: .bold))
                 .padding(.bottom, 8)
 
-            Text("Primuse 支持 21 种连接方式 · 你可以加任意多个源,会合并成一个统一的资料库。")
+            Text(String(localized: "onboarding_mac_sources_desc"))
                 .font(.system(size: 14))
                 .foregroundStyle(.white.opacity(0.70))
                 .padding(.bottom, 26)
@@ -256,12 +260,12 @@ struct OnboardingView: View {
             Spacer(minLength: 0)
 
             VStack(spacing: 0) {
-                Text("添加你的第一个音乐源")
+                Text(String(localized: "onboarding_mac_add_first_title"))
                     .font(.system(size: 32, weight: .bold))
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 8)
 
-                Text("你可以稍后在 Sources 里继续添加更多。")
+                Text(String(localized: "onboarding_mac_add_first_desc"))
                     .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.70))
                     .multilineTextAlignment(.center)
@@ -269,14 +273,14 @@ struct OnboardingView: View {
 
                 macGlassCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("连接到 SMB · NAS")
+                        Text(String(localized: "onboarding_mac_connect_smb"))
                             .font(.system(size: 12))
                             .foregroundStyle(.white.opacity(0.62))
 
-                        macSourceField(label: "服务器", value: "smb://10.0.0.4", monospaced: true)
-                        macSourceField(label: "共享", value: "Music", monospaced: true)
-                        macSourceField(label: "用户名", value: "pan", monospaced: true)
-                        macSourceField(label: "密码", value: "••••••••", monospaced: false)
+                        macSourceField(label: String(localized: "onboarding_mac_field_server"), value: "smb://10.0.0.4", monospaced: true)
+                        macSourceField(label: String(localized: "onboarding_mac_field_share"), value: "Music", monospaced: true)
+                        macSourceField(label: String(localized: "onboarding_mac_field_username"), value: "pan", monospaced: true)
+                        macSourceField(label: String(localized: "onboarding_mac_field_password"), value: "••••••••", monospaced: false)
 
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark")
@@ -284,7 +288,7 @@ struct OnboardingView: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 14, height: 14)
                                 .background(PMColor.brand, in: .rect(cornerRadius: 3))
-                            Text("将凭据保存到 macOS 钥匙串 · 跨 Mac 同步")
+                            Text(String(localized: "onboarding_mac_keychain_note"))
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(.white.opacity(0.70))
                         }
@@ -302,10 +306,10 @@ struct OnboardingView: View {
 
     private var macProtocolGroups: [MacOnboardingProtocolGroup] {
         [
-            MacOnboardingProtocolGroup(title: "本地协议", items: ["SMB / CIFS", "WebDAV", "SFTP", "FTP", "NFS", "S3 兼容", "UPnP / DLNA"]),
-            MacOnboardingProtocolGroup(title: "媒体服务器", items: ["Jellyfin", "Emby", "Plex", "Synology Audio Station", "QNAP", "绿联 UGOS", "飞牛 fnOS"]),
-            MacOnboardingProtocolGroup(title: "云盘", items: ["百度网盘", "阿里云盘", "Google Drive", "OneDrive", "Dropbox"]),
-            MacOnboardingProtocolGroup(title: "其他", items: ["Apple Music", "本地文件 / iCloud Drive"]),
+            MacOnboardingProtocolGroup(title: String(localized: "onboarding_mac_group_local"), items: ["SMB / CIFS", "WebDAV", "SFTP", "FTP", "NFS", "S3", "UPnP / DLNA"]),
+            MacOnboardingProtocolGroup(title: String(localized: "onboarding_mac_group_media_server"), items: ["Jellyfin", "Emby", "Plex", "Synology Audio Station", "QNAP", "UGREEN UGOS", "fnOS"]),
+            MacOnboardingProtocolGroup(title: String(localized: "onboarding_mac_group_cloud"), items: ["Baidu Pan", "Aliyun Drive", "Google Drive", "OneDrive", "Dropbox"]),
+            MacOnboardingProtocolGroup(title: String(localized: "onboarding_mac_group_other"), items: ["Apple Music", String(localized: "onboarding_mac_source_local_file")]),
         ]
     }
 

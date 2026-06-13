@@ -864,8 +864,6 @@ private struct MacEQFader: View {
 
 private struct MacSTEffectsView: View {
     @Environment(AudioEffectsService.self) private var fx
-    @State private var stereoEnabled = true
-    @State private var stereoWidth = 75.0
 
     var body: some View {
         @Bindable var fx = fx
@@ -985,19 +983,6 @@ private struct MacSTEffectsView: View {
                             in: -20...20
                         )
                     }
-                }
-            }
-        }
-        .disabled(!fx.effectChainEnabled)
-        .opacity(fx.effectChainEnabled ? 1 : 0.56)
-
-        MacSTSection(Lz("Stereo Enhancement")) {
-            MacSTGroup {
-                MacSTRow(Lz("Toggle"), hint: "FX-05", divider: false) {
-                    MacSTToggle(isOn: $stereoEnabled)
-                }
-                MacSTRow(Lz("Width")) {
-                    MacSTSlider(value: $stereoWidth)
                 }
             }
         }
@@ -3673,7 +3658,7 @@ private struct MacSTSSLView: View {
                     Text(verbatim: Lz("Add Trusted Domain"))
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(PMColor.text)
-                    Text(verbatim: PMTextWithoutDesignCodes(Lz("ST-10 · Trust self-signed certificates for this domain only")))
+                    Text(verbatim: PMTextWithoutDesignCodes(Lz("ST-10 · Accept any certificate this domain presents")))
                         .font(PMFont.caption)
                         .foregroundStyle(PMColor.textMuted)
                 }
@@ -3701,6 +3686,15 @@ private struct MacSTSSLView: View {
                 Text(verbatim: Lz("Enter only the host — no need to include https:// or a path."))
                     .font(PMFont.caption)
                     .foregroundStyle(PMColor.textFaint)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(PMColor.warn)
+                    Text(verbatim: Lz("Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected."))
+                        .font(PMFont.caption)
+                        .foregroundStyle(PMColor.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(18)
 
@@ -3898,7 +3892,6 @@ private struct MacUpdateCheckView: View {
     private static let contentSize = CGSize(width: 520, height: 390)
 
     @Environment(AppUpdateChecker.self) private var checker
-    @AppStorage("primuse.update.autoCheckEnabled") private var autoCheck = true
 
     private var hasUpdate: Bool {
         checker.availableUpdate != nil
@@ -4048,8 +4041,7 @@ private struct MacUpdateCheckView: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 10) {
-                MacSTToggle(isOn: $autoCheck)
-                Text(verbatim: Lz("Auto-check for updates (daily)"))
+                Text(verbatim: Lz("Checks the App Store for new versions once a day."))
                     .font(.system(size: 11.5))
                     .foregroundStyle(PMColor.textFaint)
                 Spacer()
@@ -4238,10 +4230,58 @@ private struct MacLicenseComponent: Identifiable, Hashable {
     }
 }
 
+/// Live process metrics for the diagnostics window, read from the Mach kernel
+/// rather than hard-coded constants.
+private enum MacDiagnosticsMetrics {
+    /// Resident memory footprint of this process, in bytes.
+    static func residentMemoryBytes() -> Int64? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return Int64(info.resident_size)
+    }
+
+    /// Aggregate CPU usage across all live threads of this process, in percent
+    /// (can exceed 100 on multi-core when several threads are busy).
+    static func processCPUUsage() -> Double? {
+        var threadList: thread_act_array_t?
+        var threadCount = mach_msg_type_number_t(0)
+        guard task_threads(mach_task_self_, &threadList, &threadCount) == KERN_SUCCESS,
+              let threads = threadList else { return nil }
+        defer {
+            vm_deallocate(mach_task_self_,
+                          vm_address_t(UInt(bitPattern: threads)),
+                          vm_size_t(Int(threadCount) * MemoryLayout<thread_t>.stride))
+        }
+        var total = 0.0
+        for index in 0..<Int(threadCount) {
+            var info = thread_basic_info()
+            var infoCount = mach_msg_type_number_t(MemoryLayout<thread_basic_info>.size / MemoryLayout<natural_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(infoCount)) {
+                    thread_info(threads[index], thread_flavor_t(THREAD_BASIC_INFO), $0, &infoCount)
+                }
+            }
+            guard result == KERN_SUCCESS,
+                  info.flags & TH_FLAGS_IDLE == 0 else { continue }
+            total += Double(info.cpu_usage) / Double(TH_USAGE_SCALE) * 100.0
+        }
+        return total
+    }
+}
+
 private struct MacDiagnosticsWindowView: View {
     @State private var tick = 0
     @State private var selectedFilter: MacLogFilter = .all
     @State private var copiedRowID: String?
+    @State private var memoryText = "—"
+    @State private var cpuText = "—"
+    @State private var cacheText = "—"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4265,9 +4305,9 @@ private struct MacDiagnosticsWindowView: View {
             Rectangle().fill(PMColor.divider).frame(height: 0.5)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
-                healthMetric(Lz("Memory"), value: "412 MB", color: PMColor.ok)
-                healthMetric(Lz("CPU (playback)"), value: "4.2%", color: PMColor.ok)
-                healthMetric(Lz("Cache"), value: "318 / 500 MB", color: PMColor.text)
+                healthMetric(Lz("Memory"), value: memoryText, color: PMColor.ok)
+                healthMetric(Lz("CPU (playback)"), value: cpuText, color: PMColor.ok)
+                healthMetric(Lz("Cache"), value: cacheText, color: PMColor.text)
                 healthMetric(Lz("Crashes (30 days)"), value: "\(AppServices.shared.crashDiagnostics.reports().count)", color: PMColor.ok)
             }
             .padding(.horizontal, 20)
@@ -4289,6 +4329,14 @@ private struct MacDiagnosticsWindowView: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if logRows.isEmpty {
+                        Text(verbatim: Lz("No logs yet"))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.45))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 6)
+                    }
                     ForEach(Array(logRows.enumerated()), id: \.offset) { _, row in
                         HStack(alignment: .top, spacing: 10) {
                             Text(verbatim: row.time)
@@ -4333,11 +4381,32 @@ private struct MacDiagnosticsWindowView: View {
         }
         .background(PMColor.bg)
         .task {
+            await refreshMetrics()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 tick &+= 1
+                await refreshMetrics()
             }
         }
+    }
+
+    @MainActor
+    private func refreshMetrics() async {
+        if let bytes = MacDiagnosticsMetrics.residentMemoryBytes() {
+            memoryText = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
+        } else {
+            memoryText = "—"
+        }
+        if let usage = MacDiagnosticsMetrics.processCPUUsage() {
+            cpuText = String(format: "%.1f%%", usage)
+        } else {
+            cpuText = "—"
+        }
+        let used = await AudioCacheManager.shared.totalCacheSize()
+        let limit = await AudioCacheManager.shared.cacheLimitBytes()
+        let usedStr = ByteCountFormatter.string(fromByteCount: used, countStyle: .file)
+        let limitStr = ByteCountFormatter.string(fromByteCount: limit, countStyle: .file)
+        cacheText = "\(usedStr) / \(limitStr)"
     }
 
     private func healthMetric(_ label: String, value: String, color: Color) -> some View {
@@ -4377,8 +4446,7 @@ private struct MacDiagnosticsWindowView: View {
             .suffix(80)
             .map(String.init)
         let parsed = recent.compactMap(MacLogRow.parse)
-        let rows = parsed.isEmpty ? MacLogRow.samples : parsed
-        return rows.filter { selectedFilter.matches($0) }
+        return parsed.filter { selectedFilter.matches($0) }
     }
 
     private func copy(_ row: MacLogRow) {
@@ -4447,16 +4515,6 @@ private struct MacLogRow {
         let module = rest.split(separator: " ").first.map(String.init) ?? "App"
         return MacLogRow(time: String(time.prefix(8)), level: level, module: String(module.prefix(12)), message: rest)
     }
-
-    static let samples: [MacLogRow] = [
-        .init(time: "21:14:08", level: "INFO", module: "ScanService", message: "Synology WebDAV · Phase B complete · 1208 songs"),
-        .init(time: "21:13:52", level: "INFO", module: "Metadata", message: "Backfill remaining 2384 · 18/s"),
-        .init(time: "21:12:30", level: "WARN", module: "CloudKit", message: "Push throttled · retrying in 60s"),
-        .init(time: "21:10:04", level: "INFO", module: "AudioEngine", message: "DSD256 → PCM384 realtime conversion · iFi Zen DAC"),
-        .init(time: "21:08:41", level: "ERROR", module: "SFTP", message: "archive.home · key expired · auth failed"),
-        .init(time: "21:05:19", level: "INFO", module: "Scrobble", message: "Last.fm · submitted track (50%)"),
-        .init(time: "21:02:00", level: "INFO", module: "App", message: "One-shot launch tasks completed · 247ms"),
-    ]
 }
 
 private struct MacSTAboutView: View {

@@ -18,6 +18,24 @@ final class CarPlaySceneDelegate: UIResponder {
     private var songsTemplate: CPListTemplate?
     private var searchTemplate: CPSearchTemplate?
 
+    /// Root tab bar — kept so library refreshes can rebuild only the
+    /// currently-selected tab and lazily refresh the others when the user
+    /// switches to them.
+    private weak var tabBarTemplate: CPTabBarTemplate?
+
+    /// Root tab templates that became stale while a *different* tab was on
+    /// screen. We skip rebuilding them on a library change and rebuild them
+    /// lazily in `tabBarTemplate(_:didSelectTemplate:)` instead, so a scan
+    /// over a large library doesn't re-sort + re-pinyin every tab on every
+    /// batch. Tracked by identity because CPListTemplate isn't Hashable.
+    private var staleRootTemplates: Set<ObjectIdentifier> = []
+
+    /// Coalesces bursty library mutations (replaceSongs runs in batches and
+    /// triggers rebuildVisibleCache repeatedly during a scan/backfill) into
+    /// one refresh, so the main actor isn't pegged re-rendering CarPlay rows
+    /// faster than anyone could read them.
+    private var libraryRefreshTask: Task<Void, Never>?
+
     /// Currently visible queue page (if any). When the player advances, we
     /// patch its sections in place so the user sees the next track highlighted.
     private weak var openQueueTemplate: CPListTemplate?
@@ -65,6 +83,10 @@ extension CarPlaySceneDelegate: CPTemplateApplicationSceneDelegate {
         artistsTemplate = nil
         songsTemplate = nil
         searchTemplate = nil
+        tabBarTemplate = nil
+        staleRootTemplates.removeAll()
+        libraryRefreshTask?.cancel()
+        libraryRefreshTask = nil
         openQueueTemplate = nil
         searchResults.removeAll()
         pendingSearchTask?.cancel()
@@ -98,6 +120,21 @@ extension CarPlaySceneDelegate: @preconcurrency CPNowPlayingTemplateObserver {
     }
 }
 
+// MARK: - Tab selection (lazy refresh of stale tabs)
+
+extension CarPlaySceneDelegate: CPTabBarTemplateDelegate {
+    func tabBarTemplate(_ tabBarTemplate: CPTabBarTemplate, didSelect selectedTemplate: CPTemplate) {
+        // A library change while a different tab was on screen only rebuilds
+        // the then-visible tab and marks the rest stale. When the user lands
+        // on a stale tab, rebuild it now (and only it).
+        guard let list = selectedTemplate as? CPListTemplate else { return }
+        let key = ObjectIdentifier(list)
+        guard staleRootTemplates.contains(key) else { return }
+        rebuildRootTemplate(list)
+        staleRootTemplates.remove(key)
+    }
+}
+
 // MARK: - Root tab bar + per-tab templates
 
 extension CarPlaySceneDelegate {
@@ -117,7 +154,10 @@ extension CarPlaySceneDelegate {
         // an NSException at init. Search is exposed via a magnifying-glass
         // bar button on every list template instead (see makeSearchBarButton).
         // 5 个 tab 是上限, 顺序按车里使用频率: 最近 / 歌单 / 专辑 / 艺术家 / 歌曲
-        return CPTabBarTemplate(templates: [recent, playlists, albums, artists, songs])
+        let tabBar = CPTabBarTemplate(templates: [recent, playlists, albums, artists, songs])
+        tabBar.delegate = self
+        tabBarTemplate = tabBar
+        return tabBar
     }
 
     private func makeSearchBarButton() -> CPBarButton {
@@ -365,9 +405,11 @@ extension CarPlaySceneDelegate {
 extension CarPlaySceneDelegate {
     /// Returns A–Z (or pinyin first letter for CJK) for the section index
     /// strip on the right edge of CarPlay lists. Anything that doesn't
-    /// resolve to an ASCII letter falls into the "#" bucket.
-    nonisolated static func indexLetter(for str: String) -> String {
-        guard let first = str.first else { return "#" }
+    /// resolve to an ASCII letter falls into the "#" bucket. The bucket only
+    /// depends on the title's first character, so we compute from that
+    /// directly — lets the memo cache key on a `Character` instead of the
+    /// whole title.
+    nonisolated private static func indexLetter(forFirstCharacter first: Character) -> String {
         if first.isASCII, first.isLetter {
             return String(first).uppercased()
         }
@@ -382,12 +424,27 @@ extension CarPlaySceneDelegate {
         return "#"
     }
 
-    nonisolated static func sectionedByIndexLetter<T>(
+    /// Memoizes the (relatively costly) pinyin `CFStringTransform` keyed by
+    /// the title's first character. On a large library every rebuild buckets
+    /// up to ~1500 rows; cache hits dominate after the first pass so we avoid
+    /// re-running the transform for every "周…" / "陈…" track. Main-actor
+    /// isolated, so plain `[Character: String]` is safe without locking.
+    @MainActor private static var indexLetterCache: [Character: String] = [:]
+
+    @MainActor static func cachedIndexLetter(for str: String) -> String {
+        guard let first = str.first else { return "#" }
+        if let hit = indexLetterCache[first] { return hit }
+        let letter = indexLetter(forFirstCharacter: first)
+        indexLetterCache[first] = letter
+        return letter
+    }
+
+    @MainActor static func sectionedByIndexLetter<T>(
         _ items: [T],
         titleKey: (T) -> String,
         makeItem: (T) -> CPListItem
     ) -> [CPListSection] {
-        let grouped = Dictionary(grouping: items) { indexLetter(for: titleKey($0)) }
+        let grouped = Dictionary(grouping: items) { cachedIndexLetter(for: titleKey($0)) }
         let sortedKeys = grouped.keys.sorted { a, b in
             // "#" sinks to the bottom of the strip.
             if a == "#" { return false }
@@ -591,13 +648,28 @@ extension CarPlaySceneDelegate {
 // explicit cancel on item disposal.
 extension CarPlaySceneDelegate {
     private func loadArtwork(forSongID songID: String, into item: CPListItem) {
+        // Keep the non-Sendable `item` on the main actor (this Task inherits
+        // @MainActor), but offload the fetch + `UIImage(data:)` decode to a
+        // detached task. Previously the decode ran on the main thread for
+        // every row — even on cache hits — so a big list pegged the main
+        // actor. `UIImage` is Sendable, so handing the decoded image back is
+        // safe; `item` never leaves the main actor.
         Task { [weak item] in
-            guard let data = await MetadataAssetStore.shared.cachedCoverData(forSongID: songID),
-                  let image = UIImage(data: data) else { return }
-            await MainActor.run {
-                item?.setImage(image)
-            }
+            let image = await Self.decodeCover(forSongID: songID)
+            guard let image, let item else { return }
+            item.setImage(image)
         }
+    }
+
+    /// Off-main cover fetch + decode. Runs detached so neither the actor hop
+    /// nor `UIImage(data:)` touches the main thread.
+    nonisolated private static func decodeCover(forSongID songID: String) async -> UIImage? {
+        await Task.detached(priority: .utility) {
+            guard let data = await MetadataAssetStore.shared.cachedCoverData(forSongID: songID) else {
+                return nil
+            }
+            return UIImage(data: data)
+        }.value
     }
 
     private func loadArtwork(forAlbumID albumID: String, into item: CPListItem) {
@@ -704,14 +776,22 @@ extension CarPlaySceneDelegate {
                 item.playingIndicatorLocation = .leading
             }
             item.handler = { [weak self] _, completion in
-                let absoluteIndex = safeIdx + offset
-                // The captured `queue` is a snapshot — re-validate the
-                // index against it before playing in case anything moved.
-                guard queue.indices.contains(absoluteIndex) else {
-                    completion()
-                    return
+                // The page was built from a queue snapshot, but observePlayerState()
+                // intentionally doesn't track player.queue — so phone-side
+                // insertNextInQueue/appendToQueue/removeFromQueue changes that
+                // don't move currentIndex won't have refreshed this open page.
+                // Read the live queue at tap time and re-locate the tapped song
+                // by id, so playing a row never replays a stale snapshot (which
+                // would silently drop tracks added on the phone since the page
+                // opened).
+                let live = AppServices.shared.playerService.queue
+                if let liveIndex = live.firstIndex(where: { $0.id == song.id }) {
+                    self?.play(queue: live, startAt: liveIndex)
+                } else {
+                    // Song no longer in the live queue (removed on the phone) —
+                    // play it as a single-item queue rather than doing nothing.
+                    self?.play(queue: [song], startAt: 0)
                 }
-                self?.play(queue: queue, startAt: absoluteIndex)
                 completion()
             }
             return item
@@ -735,9 +815,24 @@ extension CarPlaySceneDelegate {
             _ = library.allPlaylists  // 包含已删除的 — 影响 playlists 计算
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                self?.refreshRootTemplates()
-                self?.observeLibraryChanges()
+                guard let self else { return }
+                self.scheduleRootTemplateRefresh()
+                self.observeLibraryChanges()
             }
+        }
+    }
+
+    /// Debounces library changes. `replaceSongs` runs in batches during a
+    /// scan/backfill and triggers `rebuildVisibleCache` repeatedly; without
+    /// coalescing, each batch would re-sort + re-pinyin every tab on the main
+    /// actor (the same one driving the phone UI). 350ms collapses a burst
+    /// into a single rebuild once the cache settles.
+    private func scheduleRootTemplateRefresh() {
+        libraryRefreshTask?.cancel()
+        libraryRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self else { return }
+            self.refreshRootTemplates()
         }
     }
 
@@ -763,13 +858,43 @@ extension CarPlaySceneDelegate {
         }
     }
 
+    /// Rebuilds only the currently-visible tab (plus any open drill-downs),
+    /// and marks the other root tabs stale so they're rebuilt lazily the next
+    /// time the user switches to them (see `tabBarTemplate(_:didSelectTemplate:)`).
+    /// Rebuilding all 5 tabs eagerly on every change pegs the main actor on a
+    /// large library — each tab does a full sort + per-row pinyin transform and
+    /// allocates hundreds of CPListItems.
     private func refreshRootTemplates() {
-        recentTemplate?.updateSections(recentSections())
-        playlistsTemplate?.updateSections(playlistsSections())
-        albumsTemplate?.updateSections(albumsSections())
-        artistsTemplate?.updateSections(artistsSections())
-        songsTemplate?.updateSections(songsSections())
+        let roots = [recentTemplate, playlistsTemplate, albumsTemplate, artistsTemplate, songsTemplate]
+        // Identify which tab is on screen. If we can't tell (no tab bar yet),
+        // treat "recent" as visible — it's the default first tab — so we
+        // always rebuild at least one tab now; the rest refresh lazily on
+        // selection via the tab-bar delegate.
+        let selected = (tabBarTemplate?.selectedTemplate as? CPListTemplate) ?? recentTemplate
+        for case let template? in roots {
+            if template === selected {
+                rebuildRootTemplate(template)
+                staleRootTemplates.remove(ObjectIdentifier(template))
+            } else {
+                staleRootTemplates.insert(ObjectIdentifier(template))
+            }
+        }
         refreshDrillDownTemplates()
+    }
+
+    /// Re-renders one root tab's sections from the latest library state.
+    private func rebuildRootTemplate(_ template: CPListTemplate) {
+        if template === recentTemplate {
+            template.updateSections(recentSections())
+        } else if template === playlistsTemplate {
+            template.updateSections(playlistsSections())
+        } else if template === albumsTemplate {
+            template.updateSections(albumsSections())
+        } else if template === artistsTemplate {
+            template.updateSections(artistsSections())
+        } else if template === songsTemplate {
+            template.updateSections(songsSections())
+        }
     }
 }
 

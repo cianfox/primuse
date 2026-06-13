@@ -45,6 +45,8 @@ struct LibraryView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Binding private var deepLink: LibraryDeepLink?
     @State private var navigationPath = NavigationPath()
+    /// 重复歌组数 ── 后台算好回填, 不在 body 里同步跑 (大库会卡 1-3s)。
+    @State private var duplicateGroupsCount = 0
 
     private var songs: [Song] { library.visibleSongs }
     private var albums: [Album] { library.visibleAlbums }
@@ -229,14 +231,26 @@ struct LibraryView: View {
             .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlist: $0) }
             .onAppear { applyDeepLink(deepLink) }
             .onChange(of: deepLink) { _, newValue in applyDeepLink(newValue) }
+            .task(id: library.songCount) { await recomputeDuplicateGroups() }
         }
+    }
+
+    /// 重复歌检测丢到后台跑, 再回主线程更新徽标。songCount 变 (扫描/回填)
+    /// 时由 `.task(id:)` 重新触发, 主线程 body 不再同步扫全库。
+    private func recomputeDuplicateGroups() async {
+        let snapshot = songs
+        let count = await Task.detached(priority: .utility) {
+            DuplicateDetector.detect(in: snapshot).count
+        }.value
+        guard !Task.isCancelled else { return }
+        duplicateGroupsCount = count
     }
 
     // MARK: - Recent Items
 
     private var recentItems: [RecentItem] {
         if !albums.isEmpty {
-            return albums.prefix(6).map { album in
+            return library.recentlyAddedAlbums(limit: 6).map { album in
                 let albumSongs = library.songs(forAlbum: album.id)
                 let firstSong = albumSongs.first { $0.coverArtFileName?.isEmpty == false } ?? albumSongs.first
                 return RecentItem(
@@ -253,7 +267,7 @@ struct LibraryView: View {
                 )
             }
         }
-        return songs.prefix(6).map { song in
+        return songs.sorted { $0.dateAdded > $1.dateAdded }.prefix(6).map { song in
             RecentItem(
                 id: song.id,
                 title: song.title,
@@ -376,13 +390,7 @@ struct LibraryView: View {
 
     // MARK: - Cleanup section
 
-    /// 待整理: 重复歌组数 + 回收站项数。两者都 > 0 时整段才显示。
-    /// 重复歌检测是 O(N) 一次扫, library 大时 (上万首) 可能微卡, 但只在
-    /// LibraryView body 渲染时跑一次, 不进 timer 循环, 可接受。
-    private var duplicateGroupsCount: Int {
-        DuplicateDetector.detect(in: songs).count
-    }
-
+    /// 待整理: 重复歌组数 (后台算, 见 `duplicateGroupsCount` @State) + 回收站项数。
     private var trashItemsCount: Int {
         library.recentlyDeletedPlaylists.count
             + library.recentlyDeletedSmartPlaylists.count

@@ -63,7 +63,7 @@ struct ExternalDisplayNowPlayingView: View {
 
             // 右: 标题 + 歌词
             VStack(alignment: .leading, spacing: 24) {
-                Text("外接显示器 · 第二屏")
+                Text(String(localized: "external_display_label"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.55))
                     .textCase(.uppercase)
@@ -134,10 +134,10 @@ struct ExternalDisplayNowPlayingView: View {
             Image(systemName: "music.note")
                 .font(.system(size: 96, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.55))
-            Text("猿音")
+            Text(String(localized: "app_name"))
                 .font(.system(size: 64, weight: .bold))
                 .foregroundStyle(.white)
-            Text("从主屏开始播放")
+            Text(String(localized: "external_display_idle"))
                 .font(.system(size: 24))
                 .foregroundStyle(.white.opacity(0.55))
         }

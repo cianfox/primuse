@@ -64,7 +64,15 @@ struct ScrobbleSettingsView: View {
             guard lastFmPendingToken != nil,
                   !lastFmConnected,
                   !isLoggingInLastFm else { return }
+            // iOS 的 SFSafariViewController 是用户授权完成后才手动关闭, 此时
+            // 兑换失败弹错是合理的; macOS 走系统浏览器, sheet 在打开浏览器后
+            // 立即 dismiss (此时用户还没点 Allow), 兑换必然失败, 不能弹错 ——
+            // 改由 didBecomeActiveNotification 静默探测 + 「我已授权」按钮完成。
+            #if os(iOS)
             Task { await confirmLastFmAuthorization(showError: true) }
+            #else
+            Task { await confirmLastFmAuthorization(showError: false) }
+            #endif
         }) { session in
             #if os(iOS)
             LastFmAuthSafariView(url: session.url)

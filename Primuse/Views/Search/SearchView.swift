@@ -42,7 +42,10 @@ struct SearchView: View {
             }
             #endif
         }
-        .onAppear(perform: loadRecentSearches)
+        .onAppear {
+            loadRecentSearches()
+            resumeSearchIfNeeded()
+        }
         .onReceive(NotificationCenter.default.publisher(for: CloudKVSSync.externalChangeNotification)) { note in
             guard let key = note.userInfo?["key"] as? String,
                   key == Self.recentSearchesKey else { return }
@@ -843,6 +846,18 @@ struct SearchView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// 视图重新出现时补跑当前 query。两种丢状态场景:(1) iPhone 切 tab 时
+    /// onDisappear 取消了搜索 task, isSearching 被 defer 置回 false, 但 renderedQuery
+    /// 仍是旧值;(2) iPad detail 重建导致 @State(searchResults/renderedQuery) 清零,
+    /// 而 searchText 由 ContentView 持有保留非空。两种情况都没有任何 task 在跑,
+    /// body 会永久落在 searchingPlaceholder 分支。这里检测到"有词、结果对不上、
+    /// 且当前没在搜"时重新触发, 让结果恢复。
+    private func resumeSearchIfNeeded() {
+        guard !searchText.isEmpty, !isSearching, renderedQuery != searchText else { return }
+        performSearch(query: searchText)
+        appleMusic.search(query: searchText)
     }
 
     private func performSearch(query: String) {

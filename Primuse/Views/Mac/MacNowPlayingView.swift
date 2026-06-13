@@ -92,6 +92,12 @@ struct MacNowPlayingView: View {
         .background {
             NowPlayingWindowResolver { window in
                 hostWindow = window
+                // 初始同步: 视图可能在主窗口已经全屏之后才被创建,此时早已发出的
+                // didEnterFullScreen 通知收不到,只能直接读窗口的 styleMask 兜底,
+                // 否则全屏下会错渲染成窗口版布局。
+                if let window {
+                    isWindowFullScreen = window.styleMask.contains(.fullScreen)
+                }
             }
         }
         .task(id: player.currentSong?.id) { await reloadLyrics() }
@@ -105,10 +111,14 @@ struct MacNowPlayingView: View {
             Task { await reloadLyrics() }
         }
         // 监听主窗口进入/退出全屏(macOS NSWindow 通知),切换布局。
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in
+        // 校验通知来源窗口是本视图所在的 hostWindow,避免多开主窗口或设置等
+        // 其他窗口的全屏事件误触发本窗口的布局切换。
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { note in
+            guard (note.object as? NSWindow) === hostWindow else { return }
             isWindowFullScreen = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { note in
+            guard (note.object as? NSWindow) === hostWindow else { return }
             isWindowFullScreen = false
         }
         .alert(String(localized: "scrape_song"),

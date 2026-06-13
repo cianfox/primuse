@@ -200,9 +200,9 @@ struct MacQueuePanel: View {
 
     private func playAt(index: Int) {
         guard index >= 0, index < player.queue.count else { return }
-        player.currentIndex = index
-        let song = player.queue[index]
-        Task { await player.play(song: song) }
+        // 经 playFromQueue 而非直接写 currentIndex: shuffle 开启时它会把该
+        // 队列索引 swap 到当前 shufflePosition,保持显示序与实际播放序一致。
+        Task { await player.playFromQueue(at: index) }
     }
 
     private func clearPlayed(uptoIndex: Int) {

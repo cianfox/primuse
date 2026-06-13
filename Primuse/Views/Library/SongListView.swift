@@ -34,6 +34,10 @@ struct SongListView: View {
     @State private var showContextSongInfo = false
     @State private var showContextTagEditor = false
     @State private var exportError: String?
+    /// songID → 播放次数, 由 PlayHistory 一次性折叠而来。重建只发生在
+    /// onAppear 和 PlayHistory 变更通知时, 而不是每行重算 (否则 LazyVStack
+    /// 滚动时每实例化一行都要 O(5000) 折叠+建字典)。
+    @State private var playCountsBySongID: [String: Int] = [:]
     #endif
 
     enum SongSortOrder: String, CaseIterable {
@@ -226,6 +230,10 @@ struct SongListView: View {
             .padding(.bottom, 112)
         }
         .background(PMColor.bg.ignoresSafeArea())
+        .onAppear { rebuildPlayCounts() }
+        .onReceive(NotificationCenter.default.publisher(for: .primuseListeningStatsDidChange)) { _ in
+            rebuildPlayCounts()
+        }
     }
 
     private var sourceFilterChips: some View {
@@ -462,12 +470,13 @@ struct SongListView: View {
     }
 
     /// 一次性把 PlayHistory 折叠成 songID → count 字典, 避免每行 O(N) 扫描。
-    private var playCountsBySongID: [String: Int] {
+    /// 结果写入 @State playCountsBySongID, 仅在 onAppear / 变更通知时调用。
+    private func rebuildPlayCounts() {
         var dict: [String: Int] = [:]
         for e in PlayHistoryStore.shared.entries {
             dict[e.songID, default: 0] += 1
         }
-        return dict
+        playCountsBySongID = dict
     }
 
     @ViewBuilder
@@ -715,8 +724,8 @@ struct SongListView: View {
             alignment: .leading,
             spacing: 20
         ) {
-            ForEach(Array(filteredSongs.enumerated()), id: \.element.id) { index, song in
-                songGridTile(song, highlighted: player.currentSong?.id == song.id || index == 7)
+            ForEach(filteredSongs) { song in
+                songGridTile(song, highlighted: player.currentSong?.id == song.id)
             }
         }
         .padding(.top, 12)

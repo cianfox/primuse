@@ -443,6 +443,13 @@ struct MacDirTreeBrowser: View {
             rootLoaded = true
             Task { await loadRoot() }
         }
+        .onDisappear {
+            // 用户在 SSL 弹窗未处理时直接关窗(traffic-light / Esc),
+            // 必须 resume 未决 continuation,否则挂起的加载 Task 与 connector 引用永久泄漏。
+            let cont = sslTrustContinuation
+            sslTrustDomain = nil; sslTrustContinuation = nil
+            cont?.resume(returning: false)
+        }
         .alert(
             String(localized: "ssl_trust_title"),
             isPresented: Binding(
@@ -735,6 +742,9 @@ struct MacDirTreeBrowser: View {
         guard let domain = SSLTrustStore.sslErrorDomain(from: error) else { return false }
         if SSLTrustStore.shared.isTrusted(domain: domain) { return true }
         return await withCheckedContinuation { continuation in
+            // 并发失败时(toggleExpand 与 focus 同时报错)可能已有一个未决的
+            // continuation 在等 alert,直接覆盖会让它永不恢复 —— 先把旧的放掉。
+            sslTrustContinuation?.resume(returning: false)
             sslTrustDomain = domain; sslTrustContinuation = continuation
         }
     }

@@ -456,13 +456,15 @@ struct SimilarSongsSheet: View {
     @State private var isLoadingLastFm: Bool = true
     @State private var lastFmError: String?
 
-    private var results: [MusicDiscoveryResult] {
-        MusicDiscoveryEngine.similarSongs(to: seed, in: library, limit: 30)
-    }
+    /// 本地相似度结果, 在 .task 里算一次缓存进来 (而不是每次 body 求值都重跑
+    /// 全库 O(n) 扫描)。`resultsLoaded` 区分"还没算"和"算完为空", 避免在计算
+    /// 完成前闪一下空状态。
+    @State private var results: [MusicDiscoveryResult] = []
+    @State private var resultsLoaded: Bool = false
 
-    private var radioQueue: [MusicDiscoveryResult] {
-        MusicDiscoveryEngine.songRadio(from: seed, in: library, limit: 48)
-    }
+    /// 点"歌曲电台"时 songRadio 是 @MainActor 的全库 O(limit×n) 扫描, 给按钮一个
+    /// loading 态, 让 spinner 先上屏再跑同步计算。
+    @State private var isBuildingRadio: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -473,8 +475,15 @@ struct SimilarSongsSheet: View {
                         Button {
                             startSongRadio()
                         } label: {
-                            Label(String(localized: "start_song_radio"), systemImage: "dot.radiowaves.left.and.right")
+                            HStack {
+                                Label(String(localized: "start_song_radio"), systemImage: "dot.radiowaves.left.and.right")
+                                if isBuildingRadio {
+                                    Spacer()
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
                         }
+                        .disabled(isBuildingRadio)
 
                         Button {
                             startSimilarMix()
@@ -484,7 +493,7 @@ struct SimilarSongsSheet: View {
                     }
                 }
 
-                if results.isEmpty && lastFmCandidates.isEmpty && !isLoadingLastFm {
+                if resultsLoaded && results.isEmpty && lastFmCandidates.isEmpty && !isLoadingLastFm {
                     ContentUnavailableView {
                         Label(String(localized: "similar_songs_empty"), systemImage: "sparkles")
                     } description: {
@@ -541,8 +550,19 @@ struct SimilarSongsSheet: View {
                     Button(String(localized: "done")) { dismiss() }
                 }
             }
+            .task { await loadLocalResults() }
             .task { await loadLastFmSimilar() }
         }
+    }
+
+    /// 本地相似度只算一次, 缓存进 `results`。songRadio/similarSongs 都是 @MainActor
+    /// 绑定的全库扫描, 没法真正搬到后台线程; 这里先 yield 让 sheet 上屏再跑同步
+    /// 计算, 避免打开瞬间卡住转场动画。
+    private func loadLocalResults() async {
+        guard !resultsLoaded else { return }
+        await Task.yield()
+        results = MusicDiscoveryEngine.similarSongs(to: seed, in: library, limit: 30)
+        resultsLoaded = true
     }
 
     private func loadLastFmSimilar() async {
@@ -600,12 +620,21 @@ struct SimilarSongsSheet: View {
     }
 
     private func startSongRadio() {
-        let queue = radioQueue.map(\.song).filteredPlayable()
-        guard let first = queue.first else { return }
-        player.shuffleEnabled = false
-        player.setQueue(queue, startAt: 0)
-        dismiss()
-        Task { await player.play(song: first) }
+        guard !isBuildingRadio else { return }
+        isBuildingRadio = true
+        // songRadio 是 @MainActor 的 O(limit×n) 全库扫描, 没法搬离主线程; 先 yield
+        // 让按钮 loading 态上屏, 万首库上点这个按钮才不会像彻底卡死。
+        Task { @MainActor in
+            await Task.yield()
+            let radio = MusicDiscoveryEngine.songRadio(from: seed, in: library, limit: 48)
+            let queue = radio.map(\.song).filteredPlayable()
+            isBuildingRadio = false
+            guard let first = queue.first else { return }
+            player.shuffleEnabled = false
+            player.setQueue(queue, startAt: 0)
+            dismiss()
+            await player.play(song: first)
+        }
     }
 
     private func play(_ song: Song) {

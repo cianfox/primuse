@@ -125,10 +125,10 @@ struct TagEditorView: View {
                     }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("编辑标签")
+                    Text(String(localized: "tag_editor_mac_title"))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(PMColor.text)
-                    Text("1 首选中 · 改动会写入资料库记录")
+                    Text(String(localized: "tag_editor_mac_subtitle"))
                         .font(PMFont.caption)
                         .foregroundStyle(PMColor.textMuted)
                 }
@@ -140,7 +140,7 @@ struct TagEditorView: View {
                     matching: .images,
                     photoLibrary: .shared()
                 ) {
-                    Label("更换封面", systemImage: "photo.on.rectangle")
+                    Label(String(localized: "tag_editor_mac_change_cover"), systemImage: "photo.on.rectangle")
                         .font(PMFont.bodyM)
                         .foregroundStyle(PMColor.text)
                         .padding(.horizontal, 10)
@@ -160,29 +160,29 @@ struct TagEditorView: View {
 
             ScrollView {
                 VStack(spacing: 6) {
-                    macField("标题", text: $title, original: song.title)
-                    macField("艺术家", text: $artist, original: song.artistName ?? "")
-                    macField("专辑", text: $album, original: song.albumTitle ?? "")
-                    macReadOnlyField("格式", value: song.fileFormat.displayName)
-                    macReadOnlyField("音频规格", value: macAudioSpec)
-                    macField("流派", text: $genre, original: song.genre ?? "")
-                    macField("发行年", text: $yearText, original: song.year.map(String.init) ?? "")
+                    macField(String(localized: "tag_editor_title"), text: $title, original: song.title)
+                    macField(String(localized: "tag_editor_artist"), text: $artist, original: song.artistName ?? "")
+                    macField(String(localized: "tag_editor_album"), text: $album, original: song.albumTitle ?? "")
+                    macReadOnlyField(String(localized: "tag_editor_field_format"), value: song.fileFormat.displayName)
+                    macReadOnlyField(String(localized: "tag_editor_field_audio_spec"), value: macAudioSpec)
+                    macField(String(localized: "tag_editor_genre"), text: $genre, original: song.genre ?? "")
+                    macField(String(localized: "tag_editor_year"), text: $yearText, original: song.year.map(String.init) ?? "")
 
                     HStack(spacing: 10) {
-                        macField("曲目号", text: $trackText, original: song.trackNumber.map(String.init) ?? "")
-                        macField("碟号", text: $discText, original: song.discNumber.map(String.init) ?? "")
+                        macField(String(localized: "tag_editor_track"), text: $trackText, original: song.trackNumber.map(String.init) ?? "")
+                        macField(String(localized: "tag_editor_disc"), text: $discText, original: song.discNumber.map(String.init) ?? "")
                     }
 
-                    macReadOnlyField("文件大小", value: macFileSizeText)
-                    macReadOnlyField("时长", value: macDurationText)
-                    macReadOnlyField("文件位置", value: song.filePath, monospace: true)
+                    macReadOnlyField(String(localized: "tag_editor_field_file_size"), value: macFileSizeText)
+                    macReadOnlyField(String(localized: "tag_editor_field_duration"), value: macDurationText)
+                    macReadOnlyField(String(localized: "tag_editor_field_location"), value: song.filePath, monospace: true)
 
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "info.circle")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(PMColor.textFaint)
                             .padding(.top, 1)
-                        Text("改动会保存到 Primuse 资料库记录；封面会写入本地缓存并同步显示。")
+                        Text(String(localized: "tag_editor_mac_note"))
                             .font(PMFont.caption)
                             .foregroundStyle(PMColor.textFaint)
                             .fixedSize(horizontal: false, vertical: true)
@@ -200,7 +200,9 @@ struct TagEditorView: View {
             Rectangle().fill(PMColor.divider).frame(height: 0.5)
 
             HStack(spacing: 10) {
-                Text(hasChanges ? "● \(macChangedCount) 处改动" : "未改动")
+                Text(hasChanges
+                     ? String(format: String(localized: "tag_editor_mac_changed_format"), macChangedCount)
+                     : String(localized: "tag_editor_mac_unchanged"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(hasChanges ? PMColor.brand : PMColor.textFaint)
 
@@ -233,7 +235,7 @@ struct TagEditorView: View {
                 Button {
                     Task { await save() }
                 } label: {
-                    Text("保存并写回")
+                    Text(String(localized: "tag_editor_mac_save"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(height: 26)
@@ -307,7 +309,7 @@ struct TagEditorView: View {
             Circle()
                 .fill(changed ? PMColor.brand : .clear)
                 .frame(width: 8, height: 8)
-                .help(changed ? Text("已改动") : Text(verbatim: ""))
+                .help(changed ? Text(String(localized: "tag_editor_mac_field_changed")) : Text(verbatim: ""))
         }
     }
 

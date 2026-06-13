@@ -78,6 +78,13 @@ struct HomeView: View {
     @AppStorage("primuse.home.showContinueListening") private var showContinueListening: Bool = true
     @State private var homeSnapshot = HomeSnapshot()
     @State private var lastHomeSnapshotSignature: HomeSnapshotSignature?
+    // Debounce for `searchRevision`-driven refreshes. MusicLibrary bumps
+    // `searchRevision` on *every* upsert batch during a scan, so a large
+    // library scan would otherwise fire refreshHomeSnapshot(force:) dozens
+    // of times — each one a full main-thread resort/regroup/recommend.
+    // Coalesce the storm and only recompute once it settles.
+    @State private var homeRefreshDebounceTask: Task<Void, Never>?
+    private static let homeRefreshDebounce: Duration = .milliseconds(500)
 
     private struct HomeSnapshotSignature: Equatable {
         let libraryRevision: Int
@@ -149,9 +156,28 @@ struct HomeView: View {
             refreshHomeSnapshotIfNeeded()
         }
         .onChange(of: library.searchRevision) { _, _ in
-            refreshHomeSnapshot(force: true)
+            scheduleDebouncedHomeRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
+            refreshHomeSnapshot(force: true)
+        }
+        .onDisappear {
+            homeRefreshDebounceTask?.cancel()
+            homeRefreshDebounceTask = nil
+        }
+    }
+
+    /// Coalesce `searchRevision` storms (scan batches) into a single
+    /// recompute. Each call cancels the pending one and restarts the
+    /// timer, so only the last revision in a burst actually rebuilds the
+    /// snapshot. Uses `force: true` to bypass signature dedup the same way
+    /// the previous direct call did — the debounce is what suppresses the
+    /// redundant work now.
+    private func scheduleDebouncedHomeRefresh() {
+        homeRefreshDebounceTask?.cancel()
+        homeRefreshDebounceTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.homeRefreshDebounce)
+            guard !Task.isCancelled else { return }
             refreshHomeSnapshot(force: true)
         }
     }

@@ -185,10 +185,11 @@ struct NowPlayingView: View {
         // 着播下去 (同一首歌、同样的队列顺序、相同的播放位置、同样的播放/
         // 暂停状态)。
         //
-        // 队列截前 50 首是 payload size 安全垫: NSUserActivity userInfo 总
+        // 队列截 50 首是 payload size 安全垫: NSUserActivity userInfo 总
         // 大小 ~128KB,单 song.id (SHA256 hex) 64 字符,50 首 ~3.2KB,余量
-        // 充裕。超过的尾部由 receiver 进入队列后,下一首靠 setQueue 内的
-        // 自然推进就能继续 ── 主接力点是当前歌 + 接下来几首。
+        // 充裕。窗口以 currentIndex 为基准 (前 5 首上下文 + 之后 45 首),
+        // 保证当前歌一定在 payload 内, 超出的尾部由 receiver 进入队列后下一
+        // 首靠 setQueue 自然推进继续 ── 主接力点是当前歌 + 接下来几首。
         .userActivity(
             "com.welape.yuanyin.nowplaying",
             isActive: player.currentSong != nil
@@ -201,7 +202,18 @@ struct NowPlayingView: View {
             activity.isEligibleForSearch = false
             activity.isEligibleForPublicIndexing = false
 
-            let queueIDs = Array(player.queue.prefix(50).map(\.id))
+            // 以 currentIndex 为基准取窗口而非整队列前 50 首: 长队列后段接力
+            // 时, 整队前缀里根本不含当前歌, receiver 会找不到 songID 落入兜底
+            // (整库从头播)。这里保证当前歌 + 接下来几首都在 payload 里 ——
+            // 当前歌前 5 首给点上下文, 之后 45 首是真正的接力窗口。
+            let queueIDs: [String] = {
+                let q = player.queue
+                guard !q.isEmpty else { return [] }
+                let idx = min(max(player.currentIndex, 0), q.count - 1)
+                let lower = max(0, idx - 5)
+                let upper = min(q.count, lower + 50)
+                return Array(q[lower..<upper].map(\.id))
+            }()
             activity.userInfo = [
                 "songID": song.id,
                 "queueIDs": queueIDs,
@@ -690,8 +702,29 @@ struct NowPlayingView: View {
     private func deleteCurrentSong() {
         guard let song = player.currentSong else { return }
         Task {
-            // Skip to next before deleting
-            await player.next()
+            // Move off the deleted song AND drop every queue entry that
+            // points at it before touching the files. Otherwise the stale
+            // entries linger in the queue (played / up-next), and repeat-all
+            // wrap, previous(), or tapping the row would re-play a song whose
+            // file is already gone + tombstoned → resolveURL throws.
+            let remainingQueue = player.queue.filter { $0.id != song.id }
+            if remainingQueue.isEmpty {
+                // This was the only thing queued — replaying it via next()
+                // would just decode the file we're about to delete. Tear the
+                // queue down instead.
+                player.stop()
+                player.clearQueue()
+            } else {
+                // Skip to a different track first so playback keeps going,
+                // then rebuild the queue without the deleted song. setQueue
+                // resets currentIndex, bumps the queue generation, and (when
+                // shuffle is on) rebuilds the shuffle order around the new
+                // current song.
+                await player.next()
+                let newSongID = player.currentSong?.id
+                let anchorIndex = remainingQueue.firstIndex { $0.id == newSongID } ?? 0
+                player.setQueue(remainingQueue, startAt: anchorIndex)
+            }
             let retainedSongs = library.songs.filter { $0.id != song.id }
             let deleteSidecars = sourceManager.shouldDeleteSidecars(for: song, retaining: retainedSongs)
             _ = await sourceManager.deleteSourceFilesAndCaches(for: song, deleteSidecars: deleteSidecars)
@@ -910,7 +943,7 @@ struct NowPlayingView: View {
                !cached.isEmpty {
                 plog(String(format: "📜 Apple Music lyrics cache hit '%@' (%d lines)",
                             song.title, cached.count))
-                setLyrics(cached)
+                setLyricsIfCurrent(cached, for: song)
                 return
             }
             do {
@@ -920,7 +953,7 @@ struct NowPlayingView: View {
                     _ = await MetadataAssetStore.shared.cacheLyrics(lyrics, forSongID: song.id, force: true)
                     plog(String(format: "📜 Apple Music lyrics fetched '%@' in %.0fms (%d lines)",
                                 song.title, Date().timeIntervalSince(loadStart) * 1000, lyrics.count))
-                    setLyrics(lyrics)
+                    setLyricsIfCurrent(lyrics, for: song)
                     return
                 } else {
                     plog("📜 Apple Music lyrics: no official lyrics for '\(song.title)'")
@@ -928,7 +961,7 @@ struct NowPlayingView: View {
             } catch {
                 plog("⚠️Apple Music lyrics fetch failed for '\(song.title)': \(error.localizedDescription)")
             }
-            setLyrics([])
+            setLyricsIfCurrent([], for: song)
             return
         }
 
@@ -937,7 +970,7 @@ struct NowPlayingView: View {
         // 在根源上修复, 这里允许 cache hit 立即显示, 后台再校验。
         if let cached = await MetadataAssetStore.shared.cachedLyrics(forSongID: song.id), !cached.isEmpty {
             plog(String(format: "📜 loadLyrics '%@' Tier1a hit (songID hash) in %.0fms (%d lines)", song.title, Date().timeIntervalSince(loadStart) * 1000, cached.count))
-            setLyrics(cached)
+            guard setLyricsIfCurrent(cached, for: song) else { return }
             // NAS path 时, 后台校验 cache 是否 stale (NAS sidecar 才是真相)。
             // 静默成功 = no-op; 若发现差异会 update UI + cache。
             if (song.lyricsFileName ?? "").contains("/") {
@@ -953,7 +986,7 @@ struct NowPlayingView: View {
            let cached = await MetadataAssetStore.shared.lyrics(named: song.lyricsFileName) {
             await MetadataAssetStore.shared.cacheLyrics(cached, forSongID: song.id)
             plog(String(format: "📜 loadLyrics '%@' Tier1b hit (named ref) in %.0fms (%d lines)", song.title, Date().timeIntervalSince(loadStart) * 1000, cached.count))
-            setLyrics(cached); return
+            setLyricsIfCurrent(cached, for: song); return
         }
 
         // Tier 2: Check local audio cache for sidecar .lrc (filesystem only, zero network)
@@ -962,11 +995,11 @@ struct NowPlayingView: View {
            let parsed = try? LyricsParser.parse(from: lrcURL), !parsed.isEmpty {
             await MetadataAssetStore.shared.cacheLyrics(parsed, forSongID: song.id)
             plog(String(format: "📜 loadLyrics '%@' Tier2 hit (audio cache sidecar) in %.0fms (%d lines)", song.title, Date().timeIntervalSince(loadStart) * 1000, parsed.count))
-            setLyrics(parsed); return
+            setLyricsIfCurrent(parsed, for: song); return
         }
 
         // Tier 3: 首次必走 (无 cache, 无本地 sidecar)
-        setLyrics([])
+        guard setLyricsIfCurrent([], for: song) else { return }
         plog(String(format: "📜 loadLyrics '%@' miss Tier1+2, falling to Tier3 (NAS fetch)", song.title))
         runLyricsTier3Fetch(song: song, currentCache: nil)
     }
@@ -1070,6 +1103,18 @@ struct NowPlayingView: View {
     private static func lyricsFingerprint(_ lines: [LyricLine]) -> String {
         guard let first = lines.first, let last = lines.last else { return "empty" }
         return "\(lines.count)|\(first.timestamp)|\(first.text)|\(last.timestamp)|\(last.text)"
+    }
+
+    /// loadLyrics 的同步 tier (Tier1a/1b/2 + Apple Music) 在 await 之后写歌词
+    /// 前的统一守卫: 切歌时 .task(id:) 会 cancel 旧任务, 但取消是协作式的, actor
+    /// 跳跃的 await 不是取消点, 旧任务恢复后仍会跑完。这里校验任务未被取消且
+    /// song 仍是 currentSong, 避免先发出但后完成的旧任务用旧歌缓存/空数组覆盖
+    /// 已显示的新歌歌词。与 Tier3 的 `player.currentSong?.id == songID` 守卫一致。
+    @discardableResult
+    private func setLyricsIfCurrent(_ value: [LyricLine], for song: Song) -> Bool {
+        guard !Task.isCancelled, player.currentSong?.id == song.id else { return false }
+        setLyrics(value)
+        return true
     }
 
     private func setLyrics(_ value: [LyricLine]) {

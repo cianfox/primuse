@@ -141,21 +141,32 @@ final class MacMenuBarController: NSObject, NSPopoverDelegate {
         MainWindowOpener.openMainWindow()
     }
 
+    /// 这些 autosaveName 对应的窗口都是 canBecomeMain 的普通 titled
+    /// NSWindow(设置 / 刮削)或附属面板(mini player / 桌面歌词),
+    /// 不是 SwiftUI 主窗口,必须在主窗口探测里排除掉,否则用户红灯关掉
+    /// 主窗口、但设置/刮削窗还开着时,"Open Main Window" 会误命中它们而
+    /// 不去重建主窗口。
+    private static let nonMainAutosaveNames: Set<String> = [
+        "PrimuseMiniPlayer",
+        "PrimuseDesktopLyrics_v2",
+        "PrimuseSettings",
+        "PrimuseScrapeOptions",
+    ]
+
     /// 找到当前 SwiftUI 主窗口。排除 mini player / 桌面歌词 / Settings /
-    /// 各种 NSPanel 副窗口。Settings 也是 canBecomeMain 的 NSWindow,
-    /// 必须用 identifier / autosaveName / title 联合过滤,不能只看
-    /// canBecomeMain。
+    /// 刮削 / 各种 NSPanel 副窗口。这些副窗口也是 canBecomeMain 的 NSWindow,
+    /// 必须用 autosaveName 联合过滤,不能只看 canBecomeMain。
     private func existingMainWindow() -> NSWindow? {
         NSApp.windows.first { window in
             guard window.canBecomeMain,
                   !(window is NSPanel),
                   !window.styleMask.contains(.utilityWindow) else { return false }
-            // Settings 场景的 identifier 形如 "com_apple_SwiftUI_Settings_window"。
+            // Settings 场景(已弃用的 SwiftUI Settings scene)identifier
+            // 形如 "com_apple_SwiftUI_Settings_window"。
             if let id = window.identifier?.rawValue, id.contains("Settings") {
                 return false
             }
-            if window.frameAutosaveName == "PrimuseMiniPlayer" ||
-                window.frameAutosaveName == "PrimuseDesktopLyrics" {
+            if Self.nonMainAutosaveNames.contains(window.frameAutosaveName) {
                 return false
             }
             return true

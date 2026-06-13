@@ -28,6 +28,12 @@ final class AppServices {
     let crashDiagnostics: CrashDiagnosticsService
     let duplicateCleanup: DuplicateCleanupService
 
+    #if os(iOS)
+    /// 持有 Live Activity 管理器 —— observation 驱动 start/update/end。必须强引用
+    /// 存活,否则 init 末尾实例化后立即释放,observation 也随之失效。
+    private var liveActivity: LiveActivityManager?
+    #endif
+
     private init() {
         // Class is @MainActor so this initializer is too — but the static
         // `shared` instantiation is lazy-on-first-access. If anything
@@ -148,6 +154,14 @@ final class AppServices {
 
         wireIntentBridge()
         observeSpotlightReindex()
+
+        #if os(iOS)
+        // 接线 Live Activity:绑到播放器状态后,锁屏 / 灵动岛随播放自动 start /
+        // update / end。store 起来保活,否则 observation 跟着 manager 一起释放。
+        let liveActivity = LiveActivityManager()
+        liveActivity.start(observing: player)
+        self.liveActivity = liveActivity
+        #endif
     }
 
     /// Spotlight 重建索引 ── 启动时跑一次, 之后只要 library 的
@@ -201,9 +215,12 @@ final class AppServices {
 
         bridge.playSong = { title, artist in
             let candidates = Self.matchingSongs(in: library.visibleSongs, title: title, artist: artist)
+                .filteredPlayable()
             guard let song = candidates.first else { return nil }
             // 命中歌 + 整库剩下的拼起来当队列,播完会自然往下接。
-            let rest = library.visibleSongs.filter { s in !candidates.contains(where: { $0.id == s.id }) }
+            let rest = library.visibleSongs
+                .filter { s in !candidates.contains(where: { $0.id == s.id }) }
+                .filteredPlayable()
             player.setQueue(candidates + rest, startAt: 0)
             await player.play(song: song, caller: "AppIntent")
             let by = song.artistName.map { " by \($0)" } ?? ""
@@ -215,7 +232,7 @@ final class AppServices {
             let exact = library.playlists.first(where: { $0.name.lowercased() == trimmed })
             let target = exact ?? library.playlists.first(where: { $0.name.lowercased().contains(trimmed) })
             guard let playlist = target else { return nil }
-            let songs = library.songs(forPlaylist: playlist.id)
+            let songs = library.songs(forPlaylist: playlist.id).filteredPlayable()
             guard let first = songs.first else { return nil }
             player.setQueue(songs, startAt: 0)
             await player.play(song: first, caller: "AppIntent")
@@ -223,7 +240,7 @@ final class AppServices {
         }
 
         bridge.shuffleLibrary = {
-            let pool = library.visibleSongs.shuffled()
+            let pool = library.visibleSongs.filteredPlayable().shuffled()
             guard let first = pool.first else { return }
             player.setQueue(pool, startAt: 0)
             await player.play(song: first, caller: "AppIntent")

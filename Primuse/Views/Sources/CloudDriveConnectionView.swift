@@ -81,7 +81,7 @@ struct CloudDriveConnectionView: View {
                     Text(verbatim: "\(source.type.displayName) · OAuth")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(PMColor.text)
-                    Text(verbatim: "系统浏览器授权")
+                    Text(String(localized: "cloud_oauth_browser_subtitle"))
                         .font(.system(size: 11))
                         .foregroundStyle(PMColor.textFaint)
                 }
@@ -124,7 +124,7 @@ struct CloudDriveConnectionView: View {
         VStack(spacing: 20) {
             Spacer()
             ProgressView().scaleEffect(1.3)
-            Text("正在检查授权状态…")
+            Text(String(localized: "cloud_oauth_checking"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -147,9 +147,9 @@ struct CloudDriveConnectionView: View {
                     .foregroundStyle(.orange.gradient)
 
                 VStack(spacing: 8) {
-                    Text("需要配置开发者凭证")
+                    Text(String(localized: "cloud_setup_needs_creds_title"))
                         .font(.title3).fontWeight(.bold)
-                    Text("请先在「编辑源」中填写 Client ID，然后再回来授权连接。")
+                    Text(String(localized: "cloud_setup_needs_creds_desc"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -158,9 +158,9 @@ struct CloudDriveConnectionView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     guideStep(number: 1, text: platformGuideText)
-                    guideStep(number: 2, text: "创建应用，获取 Client ID（和 Client Secret）")
-                    guideStep(number: 3, text: "回到猿音，编辑此源，填入凭证")
-                    guideStep(number: 4, text: "再次点击「连接」即可授权")
+                    guideStep(number: 2, text: String(localized: "cloud_setup_step_create_app"))
+                    guideStep(number: 3, text: String(localized: "cloud_setup_step_back_to_app"))
+                    guideStep(number: 4, text: String(localized: "cloud_setup_step_connect"))
                 }
                 .padding(.horizontal, 30)
 
@@ -176,10 +176,10 @@ struct CloudDriveConnectionView: View {
                 .font(.system(size: 20))
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(source.type.displayName) 暂未开放")
+                Text(String(format: String(localized: "cloud_pending_unavailable_format"), source.type.displayName))
                     .font(.subheadline).fontWeight(.semibold)
                     .foregroundStyle(.primary)
-                Text("猿音正在向 \(source.type.displayName) 开放平台申请官方接入资质,审核通过后即可直接登录使用,敬请期待。若你已自有该平台的开发者应用,也可按下方步骤填入凭证先行试用。")
+                Text(String(format: String(localized: "cloud_pending_desc_format"), source.type.displayName))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -194,14 +194,14 @@ struct CloudDriveConnectionView: View {
 
     private var platformGuideText: String {
         switch source.type {
-        case .baiduPan: return "前往 pan.baidu.com/union 注册开发者应用"
-        case .aliyunDrive: return "前往 alipan.com/developer 申请接入"
-        case .googleDrive: return "前往 console.cloud.google.com 创建 OAuth 凭证"
-        case .oneDrive: return "前往 entra.microsoft.com 注册应用"
-        case .dropbox: return "前往 dropbox.com/developers/apps 创建应用"
-        case .pan115: return "前往 115.com 开放平台申请开发者应用"
-        case .pan123: return "前往 123pan.cn/developer 申请开发者应用"
-        default: return "前往对应平台的开发者中心注册"
+        case .baiduPan: return String(localized: "cloud_guide_baidu")
+        case .aliyunDrive: return String(localized: "cloud_guide_aliyun")
+        case .googleDrive: return String(localized: "cloud_guide_google")
+        case .oneDrive: return String(localized: "cloud_guide_onedrive")
+        case .dropbox: return String(localized: "cloud_guide_dropbox")
+        case .pan115: return String(localized: "cloud_guide_pan115")
+        case .pan123: return String(localized: "cloud_guide_pan123")
+        default: return String(localized: "cloud_guide_default")
         }
     }
 
@@ -239,9 +239,9 @@ struct CloudDriveConnectionView: View {
                 .foregroundStyle(.blue.gradient)
 
             VStack(spacing: 6) {
-                Text("连接 \(source.type.displayName)")
+                Text(String(format: String(localized: "cloud_auth_connect_format"), source.type.displayName))
                     .font(.title3).fontWeight(.semibold)
-                Text("点击「授权连接」,将在系统浏览器中打开授权页。\n登录并同意授权后会自动返回猿音。")
+                Text(String(localized: "cloud_auth_prompt_mac"))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -251,7 +251,7 @@ struct CloudDriveConnectionView: View {
             Button {
                 startOAuth()
             } label: {
-                Label("授权连接", systemImage: "link.badge.plus")
+                Label(String(localized: "cloud_auth_button"), systemImage: "link.badge.plus")
                     .frame(maxWidth: 220)
             }
             .buttonStyle(.borderedProminent)
@@ -277,9 +277,9 @@ struct CloudDriveConnectionView: View {
                 .foregroundStyle(.blue.gradient)
 
             VStack(spacing: 8) {
-                Text("连接 \(source.type.displayName)")
+                Text(String(format: String(localized: "cloud_auth_connect_format"), source.type.displayName))
                     .font(.title3).fontWeight(.bold)
-                Text("点击下方按钮，将在浏览器中打开授权页面。\n登录并同意授权后，猿音即可访问您的文件。")
+                Text(String(localized: "cloud_auth_prompt_ios"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -289,7 +289,7 @@ struct CloudDriveConnectionView: View {
             Button {
                 startOAuth()
             } label: {
-                Label("授权连接", systemImage: "link.badge.plus")
+                Label(String(localized: "cloud_auth_button"), systemImage: "link.badge.plus")
                     .font(.body).fontWeight(.semibold)
                     .frame(maxWidth: 260).padding(.vertical, 6)
             }
@@ -334,23 +334,23 @@ struct CloudDriveConnectionView: View {
             .frame(width: 72, height: 72)
 
             VStack(spacing: 7) {
-                Text("\(source.type.displayName) · 授权")
+                Text(String(format: String(localized: "cloud_authorizing_title_format"), source.type.displayName))
                     .font(.title3.weight(.semibold))
-                Text("等待系统浏览器返回授权码…")
+                Text(String(localized: "cloud_authorizing_waiting"))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("授权步骤")
+                Text(String(localized: "cloud_authorizing_steps"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
 
-                oauthStep(number: 1, text: "已在系统浏览器打开 \(oauthProviderHost)")
-                oauthStep(number: 2, text: "登录账号并确认读取音乐文件权限")
-                oauthStep(number: 3, text: "浏览器重定向到 \(oauthCallbackDisplay)")
-                oauthStep(number: 4, text: "猿音接收回调并保存访问令牌")
+                oauthStep(number: 1, text: String(format: String(localized: "cloud_authorizing_step1_format"), oauthProviderHost))
+                oauthStep(number: 2, text: String(localized: "cloud_authorizing_step2"))
+                oauthStep(number: 3, text: String(format: String(localized: "cloud_authorizing_step3_format"), oauthCallbackDisplay))
+                oauthStep(number: 4, text: String(localized: "cloud_authorizing_step4"))
             }
             .padding(18)
             .frame(maxWidth: 430, alignment: .leading)
@@ -363,7 +363,7 @@ struct CloudDriveConnectionView: View {
             HStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.small)
-                Text("正在监听 URL Scheme · \(oauthBridgeDisplay)")
+                Text(String(format: String(localized: "cloud_authorizing_listening_format"), oauthBridgeDisplay))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -372,7 +372,7 @@ struct CloudDriveConnectionView: View {
             .frame(height: 34)
             .background(.quaternary.opacity(0.22), in: .capsule)
 
-            Text("授权完成后此窗口会自动进入目录浏览器。请不要关闭系统浏览器中的回调页。")
+            Text(String(localized: "cloud_authorizing_hint"))
                 .font(.system(size: 11.5))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -405,7 +405,7 @@ struct CloudDriveConnectionView: View {
         case .dropbox: return "dropbox.com"
         case .pan115: return "115.com"
         case .pan123: return "123pan.com"
-        default: return "授权服务"
+        default: return String(localized: "cloud_host_default")
         }
     }
 
@@ -429,7 +429,7 @@ struct CloudDriveConnectionView: View {
             Image(systemName: "xmark.circle")
                 .font(.system(size: 52))
                 .foregroundStyle(.red)
-            Text("连接失败")
+            Text(String(localized: "cloud_failed_title"))
                 .font(.headline)
             Text(errorMessage)
                 .font(.subheadline)
@@ -439,13 +439,13 @@ struct CloudDriveConnectionView: View {
 
             HStack(spacing: 16) {
                 Button { startOAuth() } label: {
-                    Label("重试授权", systemImage: "arrow.clockwise")
+                    Label(String(localized: "cloud_retry_auth"), systemImage: "arrow.clockwise")
                         .fontWeight(.medium)
                 }
                 .buttonStyle(.borderedProminent)
 
                 Button { checkStatus() } label: {
-                    Label("重新检查", systemImage: "arrow.triangle.2.circlepath")
+                    Label(String(localized: "cloud_recheck"), systemImage: "arrow.triangle.2.circlepath")
                         .fontWeight(.medium)
                 }
                 .buttonStyle(.bordered)
@@ -517,7 +517,7 @@ struct CloudDriveConnectionView: View {
         Task {
             let tokenManager = CloudTokenManager(sourceID: source.id)
             guard let creds = await resolvedCredentials(using: tokenManager) else {
-                errorMessage = "未配置 Client ID"
+                errorMessage = String(localized: "cloud_err_no_client_id")
                 withAnimation { step = .needsSetup }
                 return
             }
@@ -532,7 +532,7 @@ struct CloudDriveConnectionView: View {
                 await tokenManager.saveTokens(tokens)
                 guard await tokenManager.getTokens() != nil else {
                     plog("⚠️ OAuth token save verification failed type=\(source.type.rawValue) sourceID=\(source.id)")
-                    throw OAuthError.tokenExchangeFailed("授权令牌保存失败")
+                    throw OAuthError.tokenExchangeFailed(String(localized: "cloud_err_token_save_failed"))
                 }
 
                 // Refresh the connector so it picks up the new tokens

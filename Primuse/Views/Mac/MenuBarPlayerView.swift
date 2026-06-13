@@ -55,7 +55,7 @@ struct MenuBarPlayerView: View {
                 onOpenMainWindow()
             }
             menuRow(icon: "gearshape", title: "settings_title", shortcut: "⌘,") {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                SettingsWindowController.shared.show()
             }
             menuRow(icon: "rectangle.portrait.and.arrow.right",
                     title: "quit_app",
@@ -131,15 +131,11 @@ struct MenuBarPlayerView: View {
 
     private var scrubber: some View {
         VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: { player.currentTime },
-                    set: { player.seek(to: $0) }
-                ),
-                in: 0...max(player.duration, 0.01)
-            )
-            .controlSize(.mini)
-            .tint(PMColor.brand)
+            MenuBarScrubberLine(
+                value: player.currentTime,
+                total: player.duration,
+                tint: PMColor.brand
+            ) { player.seek(to: $0) }
 
             HStack {
                 Text(formatTime(player.currentTime))
@@ -273,6 +269,34 @@ struct MenuBarPlayerView: View {
         guard t.isFinite, t >= 0 else { return "0:00" }
         let total = Int(t)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Scrubber slider only commits seek on release, otherwise AVAudioEngine
+/// chokes on the per-frame seeks during a drag.
+private struct MenuBarScrubberLine: View {
+    let value: Double
+    let total: Double
+    var tint: Color = .secondary
+    var onSeek: (Double) -> Void
+
+    @State private var isDragging = false
+    @State private var dragValue: Double = 0
+
+    var body: some View {
+        Slider(
+            value: Binding(
+                get: { isDragging ? dragValue : value },
+                set: { dragValue = $0 }
+            ),
+            in: 0...max(total, 0.01),
+            onEditingChanged: { editing in
+                if editing { isDragging = true; dragValue = value }
+                else { isDragging = false; onSeek(dragValue) }
+            }
+        )
+        .controlSize(.mini)
+        .tint(tint)
     }
 }
 #endif

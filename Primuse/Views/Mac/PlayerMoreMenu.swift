@@ -408,16 +408,41 @@ struct PlayerMoreMenu<MenuLabel: View>: View {
 
     private func deleteCurrentSong() {
         guard let song = player.currentSong else { return }
-        Task { await player.next() }
         let songID = song.id
+        // 先切歌、等 next() 内部 play(song:) 完成,再删缓存/库记录 ——
+        // 否则正在播放/预载的音频文件会被抽走 (异步 next() 与同步删除竞态)。
         Task {
+            await player.next()
+
             await MetadataAssetStore.shared.invalidateCoverCache(forSongID: songID)
             await MetadataAssetStore.shared.invalidateLyricsCache(forSongID: songID)
+            CachedArtworkView.invalidateCache(for: songID)
+            sourceManager.deleteAudioCache(for: song)
+            let remaining = library.deleteSong(song)
+            sourcesStore.updateLocal(song.sourceID) { $0.songCount = remaining }
+
+            // AudioPlayerService 不监听 .primuseSongsRemoved, 删除后这首歌仍留在
+            // 播放队列里 —— 用户点上一首或在队列面板点该行就会再次播放一首库里已不
+            // 存在的歌。这里把它从队列剔除, 并修正 currentIndex 指向当前在播的歌。
+            removeFromPlayerQueue(songID)
         }
-        CachedArtworkView.invalidateCache(for: song.id)
-        sourceManager.deleteAudioCache(for: song)
-        let remaining = library.deleteSong(song)
-        sourcesStore.updateLocal(song.sourceID) { $0.songCount = remaining }
+    }
+
+    /// 把已删除的歌从播放队列剔除。AudioPlayerService 没有"按 id 移除单曲"的 API,
+    /// 用公开的 setQueue 重建队列即可:过滤掉该曲, 并把起点对齐到当前在播的歌。
+    /// 若队列原本只有这一首 (next() 又把它重播了), 过滤后为空 → 停止播放并清队列。
+    private func removeFromPlayerQueue(_ songID: String) {
+        let filtered = player.queue.filter { $0.id != songID }
+        guard filtered.count != player.queue.count else { return }
+        guard !filtered.isEmpty else {
+            player.stop()
+            player.clearQueue()
+            return
+        }
+        let startIndex = player.currentSong.flatMap { current in
+            filtered.firstIndex { $0.id == current.id }
+        } ?? 0
+        player.setQueue(filtered, startAt: startIndex)
     }
 
     private var goToAlbumTitle: String {

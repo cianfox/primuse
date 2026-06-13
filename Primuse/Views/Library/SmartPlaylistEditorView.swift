@@ -182,7 +182,7 @@ struct SmartPlaylistEditorView: View {
                     .frame(height: 32)
                     .background(PMColor.glassBtn, in: .rect(cornerRadius: 7))
 
-                Button("保存智能歌单") { save() }
+                Button(String(localized: "smart_mac_save")) { save() }
                     .buttonStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
@@ -204,7 +204,8 @@ struct SmartPlaylistEditorView: View {
         HStack(spacing: 12) {
             PMWindowTrafficLights(closeOnly: true)
 
-            Text(verbatim: "智能歌单 · \(name.isEmpty ? "新建智能歌单" : name)")
+            Text(String(format: String(localized: "smart_mac_header_format"),
+                        name.isEmpty ? String(localized: "smart_mac_header_new") : name))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(PMColor.text)
                 .padding(.leading, 6)
@@ -230,17 +231,17 @@ struct SmartPlaylistEditorView: View {
                         .strokeBorder(PMColor.dividerStrong, lineWidth: 0.5)
                 }
 
-            Text(verbatim: "满足")
+            Text(String(localized: "smart_mac_match"))
                 .font(.system(size: 12))
                 .foregroundStyle(PMColor.textMuted)
 
             Menu {
-                Button("所有 (AND)") {
+                Button(String(localized: "smart_combinator_all_and")) {
                     if !ruleGroups.isEmpty {
                         ruleGroups[0].combinator = .and
                     }
                 }
-                Button("任一 (OR)") {
+                Button(String(localized: "smart_combinator_any_or")) {
                     if !ruleGroups.isEmpty {
                         ruleGroups[0].combinator = .or
                     }
@@ -251,7 +252,7 @@ struct SmartPlaylistEditorView: View {
             .buttonStyle(.plain)
             .disabled(ruleGroups.isEmpty)
 
-            Text(verbatim: "以下规则")
+            Text(String(localized: "smart_mac_following_rules"))
                 .font(.system(size: 12))
                 .foregroundStyle(PMColor.textMuted)
         }
@@ -259,8 +260,10 @@ struct SmartPlaylistEditorView: View {
     }
 
     private var macRootCombinatorTitle: String {
-        guard let first = ruleGroups.first else { return "所有 (AND)" }
-        return first.combinator == .and ? "所有 (AND)" : "任一 (OR)"
+        guard let first = ruleGroups.first else { return String(localized: "smart_combinator_all_and") }
+        return first.combinator == .and
+            ? String(localized: "smart_combinator_all_and")
+            : String(localized: "smart_combinator_any_or")
     }
 
     private var macRulesCard: some View {
@@ -277,12 +280,12 @@ struct SmartPlaylistEditorView: View {
                     macGroupCombinatorRow
                 }
 
-                ForEach(Array(ruleGroups.indices.dropFirst()), id: \.self) { index in
+                ForEach($ruleGroups.dropFirst()) { $group in
                     MacSmartRuleGroupCard(
-                        group: $ruleGroups[index],
+                        group: $group,
                         canDelete: true,
                         depth: 1,
-                        onDelete: { removeGroup(id: ruleGroups[index].id) }
+                        onDelete: { removeGroup(id: group.id) }
                     )
                 }
             }
@@ -293,15 +296,17 @@ struct SmartPlaylistEditorView: View {
     /// 组合, 跟每个组内部的 combinator 不是一回事 (组内那个在各自卡片头部)。
     private var macGroupCombinatorRow: some View {
         HStack(spacing: 8) {
-            Text(verbatim: "规则组之间")
+            Text(String(localized: "smart_mac_between_groups"))
                 .font(.system(size: 11))
                 .foregroundStyle(PMColor.textMuted)
 
             Menu {
-                Button("所有组都满足 (AND)") { groupCombinator = .and }
-                Button("任一组满足 (OR)") { groupCombinator = .or }
+                Button(String(localized: "smart_combinator_all_groups_match")) { groupCombinator = .and }
+                Button(String(localized: "smart_combinator_any_group_match")) { groupCombinator = .or }
             } label: {
-                macStaticSelect(groupCombinator == .and ? "所有组 (AND)" : "任一组 (OR)", width: 150)
+                macStaticSelect(groupCombinator == .and
+                                ? String(localized: "smart_combinator_all_groups_and")
+                                : String(localized: "smart_combinator_any_group_or"), width: 150)
             }
             .buttonStyle(.plain)
 
@@ -312,7 +317,7 @@ struct SmartPlaylistEditorView: View {
 
     private var macSortInlineCard: some View {
         HStack(spacing: 10) {
-            Text(verbatim: "限制为")
+            Text(String(localized: "smart_mac_limit_to"))
                 .font(.system(size: 12))
                 .foregroundStyle(PMColor.textMuted)
 
@@ -327,7 +332,7 @@ struct SmartPlaylistEditorView: View {
                         .strokeBorder(PMColor.dividerStrong, lineWidth: 0.5)
                 }
 
-            Text(verbatim: "首 · 按")
+            Text(String(localized: "smart_mac_songs_by"))
                 .font(.system(size: 12))
                 .foregroundStyle(PMColor.textMuted)
 
@@ -364,7 +369,7 @@ struct SmartPlaylistEditorView: View {
                     .foregroundStyle(.white)
                     .frame(width: 14, height: 14)
                     .background(PMColor.brand, in: .rect(cornerRadius: 3))
-                Text(verbatim: "实时更新")
+                Text(String(localized: "smart_mac_live_update"))
                     .font(.system(size: 12))
                     .foregroundStyle(PMColor.textMuted)
             }
@@ -382,17 +387,18 @@ struct SmartPlaylistEditorView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 3) {
-                    Text(verbatim: "当前匹配")
+                    Text(String(localized: "smart_mac_current_match"))
                         .foregroundStyle(PMColor.text)
                     Text(verbatim: "\(songs.count)")
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(PMColor.brand)
-                    Text(verbatim: "首")
+                    Text(String(localized: "smart_mac_songs_unit"))
                         .foregroundStyle(PMColor.text)
                 }
                 .font(.system(size: 13, weight: .semibold))
 
-                Text(verbatim: "· \(macPreviewDurationText) · 跨 \(macPreviewSourceCount) 个源")
+                Text(String(format: String(localized: "smart_mac_preview_meta_format"),
+                            macPreviewDurationText, macPreviewSourceCount))
                     .font(.system(size: 11.5))
                     .foregroundStyle(PMColor.textMuted)
             }
@@ -432,8 +438,9 @@ struct SmartPlaylistEditorView: View {
     }
 
     private var macDraftSmartPlaylist: SmartPlaylist {
-        var smart = existing ?? SmartPlaylist(name: name.trimmingCharacters(in: .whitespaces).isEmpty ? "智能歌单" : name)
-        smart.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? "智能歌单" : name
+        let fallbackName = String(localized: "smart_mac_default_name")
+        var smart = existing ?? SmartPlaylist(name: name.trimmingCharacters(in: .whitespaces).isEmpty ? fallbackName : name)
+        smart.name = name.trimmingCharacters(in: .whitespaces).isEmpty ? fallbackName : name
         smart.ruleGroups = macCleanedGroups
         smart.rules = macCleanedGroups.first?.rules ?? []
         smart.combinator = macCleanedGroups.first?.combinator ?? .and
@@ -629,15 +636,15 @@ private struct MacSmartRuleGroupCard: View {
         VStack(alignment: .leading, spacing: 8) {
             if depth > 0 {
                 HStack(spacing: 8) {
-                    Text(verbatim: "满足")
+                    Text(String(localized: "smart_mac_match_satisfy"))
                         .font(.system(size: 11))
                         .foregroundStyle(PMColor.textMuted)
 
                     Menu {
-                        Button("所有 (AND)") {
+                        Button(String(localized: "smart_combinator_all_and")) {
                             group.combinator = .and
                         }
-                        Button("任一 (OR)") {
+                        Button(String(localized: "smart_combinator_any_or")) {
                             group.combinator = .or
                         }
                     } label: {
@@ -645,7 +652,7 @@ private struct MacSmartRuleGroupCard: View {
                     }
                     .buttonStyle(.plain)
 
-                    Text(verbatim: "子规则")
+                    Text(String(localized: "smart_mac_subrules"))
                         .font(.system(size: 11))
                         .foregroundStyle(PMColor.textMuted)
 
@@ -653,12 +660,12 @@ private struct MacSmartRuleGroupCard: View {
                 }
             }
 
-            ForEach(group.rules.indices, id: \.self) { index in
+            ForEach($group.rules) { $rule in
                 MacSmartRuleRow(
-                    rule: $group.rules[index],
+                    rule: $rule,
                     canDelete: group.rules.count > 1 || canDelete,
-                    onDelete: { deleteRule(at: index) },
-                    onAdd: { insertRule(after: index) }
+                    onDelete: { deleteRule(id: rule.id) },
+                    onAdd: { insertRule(after: rule.id) }
                 )
             }
         }
@@ -680,16 +687,19 @@ private struct MacSmartRuleGroupCard: View {
     }
 
     private var combinatorTitle: String {
-        group.combinator == .and ? "所有 (AND)" : "任一 (OR)"
+        group.combinator == .and
+            ? String(localized: "smart_combinator_all_and")
+            : String(localized: "smart_combinator_any_or")
     }
 
-    private func insertRule(after index: Int) {
+    private func insertRule(after id: String) {
+        guard let index = group.rules.firstIndex(where: { $0.id == id }) else { return }
         let insertionIndex = min(group.rules.count, index + 1)
         group.rules.insert(Self.blankRule(), at: insertionIndex)
     }
 
-    private func deleteRule(at index: Int) {
-        guard group.rules.indices.contains(index) else { return }
+    private func deleteRule(id: String) {
+        guard let index = group.rules.firstIndex(where: { $0.id == id }) else { return }
         if group.rules.count > 1 {
             group.rules.remove(at: index)
         } else if canDelete {
@@ -807,13 +817,10 @@ private struct MacSmartRuleRow: View {
 
     private func opLabel(_ op: SmartPlaylistOperator) -> String {
         switch op {
-        case .equals: return "是"
-        case .notEquals: return "不是"
-        case .contains: return "包含"
-        case .notContains: return "不含"
         case .greaterThan: return ">"
         case .lessThan: return "<"
-        case .between: return "范围"
+        default:
+            return String(localized: LocalizedStringResource(stringLiteral: "smart_op_\(op.rawValue)"))
         }
     }
 
