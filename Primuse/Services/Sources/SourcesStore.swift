@@ -98,12 +98,12 @@ final class SourcesStore {
         persist()
     }
 
-    /// Soft-delete: hide from UI, keep the row on disk for recycle-bin
+    /// Source delete: hide from UI, keep the row on disk for recycle-bin
     /// recovery — but push a REAL deleteRecord to CloudKit so the
     /// upstream record clears. The previous "save with isDeleted=true"
     /// strategy left server records lingering, which then resurrected
     /// the source on every fetch (this is the root of the duplicate
-    /// Baidu sources mess).
+    /// Baidu sources mess). This is not used by the enable/disable toggle.
     func remove(id: String) {
         guard let index = allSources.firstIndex(where: { $0.id == id }) else { return }
         allSources[index].isDeleted = true

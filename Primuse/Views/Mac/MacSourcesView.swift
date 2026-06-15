@@ -570,6 +570,8 @@ struct MacSourcesView: View {
         if !enabled {
             stopBackgroundWork(for: source.id)
         }
+        // Disable only removes the source from active views/scans. Deleting
+        // source library rows and caches belongs to deleteSource(_:).
         updateSource(source.id) { $0.isEnabled = enabled }
         library.updateDisabledSourceIDs(disabledSourceIDs)
         if enabled {

@@ -165,7 +165,9 @@ final class AppServices {
             nc.addObserver(forName: .primuseSourceDidSoftDelete, object: nil, queue: .main) { [weak self] note in
                 guard let self, let id = note.userInfo?["id"] as? String else { return }
                 Task { @MainActor in
-                    self.removeSourceLibraryData(id: id, purgePersistentCaches: false)
+                    // This notification is emitted only when a source is deleted
+                    // into Recently Deleted. Toggling isEnabled never posts it.
+                    self.removeSourceLibraryData(id: id, purgePersistentCaches: true)
                 }
             }
         )
