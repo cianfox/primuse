@@ -9,9 +9,22 @@ struct SourceTypeSelectionView: View {
     @Environment(\.dismiss) private var dismiss
     var onAdd: (MusicSource) -> Void
 
-    @State private var selectedType: MusicSourceType?
+    /// 选类型 / 选发现到的设备都只是弹同一个 AddSourceView。合并成单一 item 驱动
+    /// 一个 .sheet —— 早先用两个 .sheet(item:) 叠在同一 view 上, 而该 view 因持续
+    /// 读取 discoveryService(发现服务边扫边刷新)频繁重建, 触发 SwiftUI"同一视图多个
+    /// sheet"缺陷, 把正在填的配置表单误 dismiss 回选择页。
+    enum AddSourceTarget: Identifiable {
+        case type(MusicSourceType)
+        case device(DiscoveredDevice)
+        var id: String {
+            switch self {
+            case .type(let type): return "type-\(type.rawValue)"
+            case .device(let device): return "device-\(device.id)"
+            }
+        }
+    }
+    @State private var addTarget: AddSourceTarget?
     @State private var discoveryService = NetworkDiscoveryService()
-    @State private var selectedDevice: DiscoveredDevice?
     #if os(macOS)
     @State private var pendingType: MusicSourceType?
     #endif
@@ -25,19 +38,21 @@ struct SourceTypeSelectionView: View {
 
     var body: some View {
         content
-        .sheet(item: $selectedType) { type in
-            AddSourceView(sourceType: type) { source in
-                onAdd(source)
-                dismiss()
-            }
-        }
-        .sheet(item: $selectedDevice) { device in
-            AddSourceView(
-                sourceType: device.sourceType,
-                prefillDevice: device
-            ) { source in
-                onAdd(source)
-                dismiss()
+        .sheet(item: $addTarget) { target in
+            switch target {
+            case .type(let type):
+                AddSourceView(sourceType: type) { source in
+                    onAdd(source)
+                    dismiss()
+                }
+            case .device(let device):
+                AddSourceView(
+                    sourceType: device.sourceType,
+                    prefillDevice: device
+                ) { source in
+                    onAdd(source)
+                    dismiss()
+                }
             }
         }
         .onAppear { discoveryService.startDiscovery() }
@@ -217,13 +232,13 @@ struct SourceTypeSelectionView: View {
         }
         .buttonStyle(.plain)
         .onTapGesture(count: 2) {
-            selectedType = type
+            addTarget = .type(type)
         }
     }
 
     private func macDeviceTile(_ device: DiscoveredDevice) -> some View {
         Button {
-            selectedDevice = device
+            addTarget = .device(device)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: device.sourceType.iconName)
@@ -271,7 +286,7 @@ struct SourceTypeSelectionView: View {
 
             Button {
                 if let pendingType {
-                    selectedType = pendingType
+                    addTarget = .type(pendingType)
                 }
             } label: {
                 Text("下一步")
@@ -371,7 +386,7 @@ struct SourceTypeSelectionView: View {
     /// 文字两行紧贴,跟 macOS 系统设置里 source list 的行高一致。
     private func typeButton(_ type: MusicSourceType) -> some View {
         Button {
-            selectedType = type
+            addTarget = .type(type)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: type.iconName)
@@ -405,7 +420,7 @@ struct SourceTypeSelectionView: View {
 
     private func deviceRow(_ device: DiscoveredDevice) -> some View {
         Button {
-            selectedDevice = device
+            addTarget = .device(device)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: device.sourceType.iconName)
@@ -450,7 +465,7 @@ struct SourceTypeSelectionView: View {
                     Section(header: Text(category.displayNameFallback)) {
                         ForEach(filtered, id: \.self) { type in
                             Button {
-                                selectedType = type
+                                addTarget = .type(type)
                             } label: {
                                 iosSourceTypeRow(type)
                             }
@@ -821,7 +836,7 @@ struct SourceTypeSelectionView: View {
 
             ForEach(discoveryService.devices) { device in
                 Button {
-                    selectedDevice = device
+                    addTarget = .device(device)
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: device.sourceType.iconName)
