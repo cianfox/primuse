@@ -98,7 +98,7 @@
 "add_source" = "Add Source";
 "select_source_type" = "Select Source Type";
 "local_import_title" = "Import from Files";
-"local_import_subtitle" = "Choose audio on this device or iCloud Drive";
+"local_import_subtitle" = "Pick one or more folders to import their music";
 "local_import_section_footer" = "Imported songs are copied into the app and play offline.";
 "local_import_source_name" = "Local Music";
 "local_import_none_added" = "No audio files were imported.";
@@ -1635,3 +1635,29 @@
 "cellular_backfill_allow_once" = "Allow Once";
 "cellular_backfill_allow_always" = "Always Allow on Cellular";
 "cellular_backfill_wifi_only" = "Wi-Fi Only";
+
+/* Scraper import review */
+"scraper_review_action" = "Review";
+"scraper_confirm_import" = "Confirm Import";
+"scraper_review_banner" = "Preview only — not imported yet. Tap \"Confirm Import\" to add it; Cancel discards it.";
+"scraper_review_header" = "Review Before Import";
+"scraper_review_footer" = "Importing enables this scraper to run its JavaScript and contact the domains above during metadata lookup.";
+"scraper_review_source" = "Source";
+"scraper_review_configs" = "Configs";
+"scraper_review_capabilities" = "Capabilities";
+"scraper_review_unknown" = "Unknown";
+"scraper_review_requests" = "Requests";
+"scraper_review_endpoints_fmt" = "%1$lld endpoints, %2$@";
+"scraper_review_network_domains" = "Network Domains";
+"scraper_review_tls_trust_domains" = "TLS Trust Domains";
+"scraper_review_headers" = "Headers";
+"scraper_review_cookie" = "Cookie";
+"scraper_review_secrets" = "Secrets";
+"scraper_review_javascript" = "JavaScript";
+"scraper_warn_no_fixed_domain" = "No fixed network domain was detected. The scraper may build URLs dynamically in JavaScript.";
+"scraper_warn_includes_cookie" = "This config includes Cookie data. Import only configs from people you trust.";
+"scraper_warn_custom_headers" = "This config adds custom request headers.";
+"scraper_warn_includes_secrets" = "This config includes local secrets. They will be stored separately and not synced as public config JSON.";
+"scraper_warn_tls_trust_domains" = "This config declares TLS trust domains. Certificate bypass still requires an explicit user trust prompt.";
+"scraper_warn_non_get_requests" = "This scraper can send non-GET requests.";
+"scraper_warn_script_too_large" = "One or more scripts exceed the runtime size limit and may fail to run.";

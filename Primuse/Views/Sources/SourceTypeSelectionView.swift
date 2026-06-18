@@ -13,7 +13,7 @@ struct SourceTypeSelectionView: View {
     @State private var pendingType: MusicSourceType?
     #endif
     #if os(iOS)
-    @State private var showLocalImporter = false
+    @State private var showLocalFolderImporter = false
     @State private var localImportError: String?
     #endif
 
@@ -449,9 +449,13 @@ struct SourceTypeSelectionView: View {
         .navigationTitle("select_source_type")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarTitleDisplayMode(.inline)
+        // 直接打开文件夹选择器。iOS 不允许一个选择器同时勾选文件夹和散文件
+        // (混合 .folder + 文件类型时文件夹只能进入、不可勾选), 故只声明 .folder:
+        // 这样文件夹在多选模式下可直接勾选(一个或多个), copy 再递归枚举其中
+        // (含子目录)所有受支持音频一并导入。
         .fileImporter(
-            isPresented: $showLocalImporter,
-            allowedContentTypes: Self.audioContentTypes + [.folder],
+            isPresented: $showLocalFolderImporter,
+            allowedContentTypes: [.folder],
             allowsMultipleSelection: true
         ) { result in
             handleLocalImport(result)
@@ -473,7 +477,7 @@ struct SourceTypeSelectionView: View {
     private var iosLocalImportSection: some View {
         Section {
             Button {
-                showLocalImporter = true
+                showLocalFolderImporter = true
             } label: {
                 iosLocalImportRow
             }
@@ -522,16 +526,6 @@ struct SourceTypeSelectionView: View {
         case .failure(let error):
             localImportError = error.localizedDescription
         }
-    }
-
-    /// 文件选择器允许的类型: `.audio` 父类型 + 常见具体类型, 再用扩展名兜底
-    /// flac/ape/wv/dsf 等系统不一定声明为 audio 的格式, 让它们在选择器里可选。
-    private static var audioContentTypes: [UTType] {
-        var set: Set<UTType> = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
-        for ext in PrimuseConstants.supportedAudioExtensions {
-            if let type = UTType(filenameExtension: ext) { set.insert(type) }
-        }
-        return Array(set)
     }
 
     @ViewBuilder

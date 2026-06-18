@@ -222,24 +222,24 @@ final class ScraperConfigStore: @unchecked Sendable {
 
         var warnings: [String] = []
         if Set(endpointDomains).isEmpty {
-            warnings.append("No fixed network domain was detected. The scraper may build URLs dynamically in JavaScript.")
+            warnings.append(String(localized: "scraper_warn_no_fixed_domain"))
         }
         if includesCookie {
-            warnings.append("This config includes Cookie data. Import only configs from people you trust.")
+            warnings.append(String(localized: "scraper_warn_includes_cookie"))
         } else if includesHeaders {
-            warnings.append("This config adds custom request headers.")
+            warnings.append(String(localized: "scraper_warn_custom_headers"))
         }
         if includesSecrets {
-            warnings.append("This config includes local secrets. They will be stored separately and not synced as public config JSON.")
+            warnings.append(String(localized: "scraper_warn_includes_secrets"))
         }
         if !sslTrustDomains.isEmpty {
-            warnings.append("This config declares TLS trust domains. Certificate bypass still requires an explicit user trust prompt.")
+            warnings.append(String(localized: "scraper_warn_tls_trust_domains"))
         }
         if endpoints.contains(where: { $0.method.uppercased() != "GET" }) {
-            warnings.append("This scraper can send non-GET requests.")
+            warnings.append(String(localized: "scraper_warn_non_get_requests"))
         }
         if endpoints.contains(where: { $0.script.count > 200_000 }) {
-            warnings.append("One or more scripts exceed the runtime size limit and may fail to run.")
+            warnings.append(String(localized: "scraper_warn_script_too_large"))
         }
 
         return ScraperImportSummary(

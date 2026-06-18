@@ -541,27 +541,31 @@ struct MetadataScrapingView: View {
     private var importScraperSheet: some View {
         NavigationStack {
             Form {
-                Picker("import_mode", selection: $importMode) {
-                    Text("paste_config").tag(ImportMode.paste)
-                    Text("from_url").tag(ImportMode.url)
-                }
-                .pickerStyle(.segmented)
-
-                Section {
-                    if importMode == .paste {
-                        TextEditor(text: $importText)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 200)
-                    } else {
-                        TextField("config_url_placeholder", text: $importText)
-                            .keyboardType(.URL)
-                            .autocapitalization(.none)
+                // review 阶段(已生成预览)隐藏输入区, 只显示预览 —— 否则输入栏/键盘
+                // 会和预览同屏遮挡, 也容易让人误以为"预览=已导入"。
+                if importPreview == nil {
+                    Picker("import_mode", selection: $importMode) {
+                        Text("paste_config").tag(ImportMode.paste)
+                        Text("from_url").tag(ImportMode.url)
                     }
-                } footer: {
-                    if importMode == .paste {
-                        Text("paste_config_footer")
-                    } else {
-                        Text("url_config_footer")
+                    .pickerStyle(.segmented)
+
+                    Section {
+                        if importMode == .paste {
+                            TextEditor(text: $importText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(minHeight: 200)
+                        } else {
+                            TextField("config_url_placeholder", text: $importText)
+                                .keyboardType(.URL)
+                                .autocapitalization(.none)
+                        }
+                    } footer: {
+                        if importMode == .paste {
+                            Text("paste_config_footer")
+                        } else {
+                            Text("url_config_footer")
+                        }
                     }
                 }
 
@@ -572,6 +576,11 @@ struct MetadataScrapingView: View {
                 }
 
                 if let importPreview {
+                    Section {
+                        Label("scraper_review_banner", systemImage: "eye.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     ScraperImportSummaryView(summary: importPreview)
                 }
             }
@@ -582,12 +591,15 @@ struct MetadataScrapingView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("cancel") {
+                        plog("📥 Import cancelled (preview discarded)")
                         importPreview = nil
                         showImportSheet = false
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(importPreview == nil ? "Review" : "Confirm Import") {
+                    Button(importPreview == nil
+                           ? String(localized: "scraper_review_action")
+                           : String(localized: "scraper_confirm_import")) {
                         performImport()
                     }
                     .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -699,23 +711,23 @@ struct ScraperImportSummaryView: View {
     var body: some View {
         Section {
             VStack(alignment: .leading, spacing: 12) {
-                row("Source", summary.sourceDescription)
-                row("Configs", summary.configs.map { "\($0.name) (\($0.id))" }.joined(separator: ", "))
-                row("Capabilities", summary.capabilities.isEmpty ? "Unknown" : summary.capabilities.joined(separator: ", "))
-                row("Requests", "\(summary.endpointCount) endpoints, \(summary.methods.joined(separator: ", "))")
+                row(String(localized: "scraper_review_source"), summary.sourceDescription)
+                row(String(localized: "scraper_review_configs"), summary.configs.map { "\($0.name) (\($0.id))" }.joined(separator: ", "))
+                row(String(localized: "scraper_review_capabilities"), summary.capabilities.isEmpty ? String(localized: "scraper_review_unknown") : summary.capabilities.joined(separator: ", "))
+                row(String(localized: "scraper_review_requests"), String(format: String(localized: "scraper_review_endpoints_fmt"), summary.endpointCount, summary.methods.joined(separator: ", ")))
 
                 if !summary.domains.isEmpty {
-                    tagGroup(title: "Network Domains", values: summary.domains)
+                    tagGroup(title: String(localized: "scraper_review_network_domains"), values: summary.domains)
                 }
                 if !summary.sslTrustDomains.isEmpty {
-                    tagGroup(title: "TLS Trust Domains", values: summary.sslTrustDomains)
+                    tagGroup(title: String(localized: "scraper_review_tls_trust_domains"), values: summary.sslTrustDomains)
                 }
 
                 HStack(spacing: 8) {
-                    permissionBadge("Headers", enabled: summary.includesHeaders)
-                    permissionBadge("Cookie", enabled: summary.includesCookie)
-                    permissionBadge("Secrets", enabled: summary.includesSecrets)
-                    permissionBadge("JavaScript", enabled: summary.scriptCharacterCount > 0)
+                    permissionBadge(String(localized: "scraper_review_headers"), enabled: summary.includesHeaders)
+                    permissionBadge(String(localized: "scraper_review_cookie"), enabled: summary.includesCookie)
+                    permissionBadge(String(localized: "scraper_review_secrets"), enabled: summary.includesSecrets)
+                    permissionBadge(String(localized: "scraper_review_javascript"), enabled: summary.scriptCharacterCount > 0)
                 }
                 .font(.caption)
 
@@ -731,9 +743,9 @@ struct ScraperImportSummaryView: View {
             }
             .padding(.vertical, 4)
         } header: {
-            Text("Review Before Import")
+            Text("scraper_review_header")
         } footer: {
-            Text("Importing enables this scraper to run its JavaScript and contact the domains above during metadata lookup.")
+            Text("scraper_review_footer")
         }
     }
 

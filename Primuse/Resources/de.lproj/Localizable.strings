@@ -232,7 +232,7 @@
 "add_source" = "Quelle hinzufügen";
 "select_source_type" = "Quellentyp auswählen";
 "local_import_title" = "Aus Dateien importieren";
-"local_import_subtitle" = "Audio auf diesem Gerät oder in iCloud Drive wählen";
+"local_import_subtitle" = "Einen oder mehrere Ordner importieren";
 "local_import_section_footer" = "Importierte Titel werden in die App kopiert und offline abgespielt.";
 "local_import_source_name" = "Lokale Musik";
 "local_import_none_added" = "Es wurden keine Audiodateien importiert.";
@@ -1783,3 +1783,29 @@
 "cellular_backfill_allow_once" = "Einmal erlauben";
 "cellular_backfill_allow_always" = "Immer im Mobilfunk erlauben";
 "cellular_backfill_wifi_only" = "Nur WLAN";
+
+/* Scraper import review */
+"scraper_review_action" = "Vorschau";
+"scraper_confirm_import" = "Import bestätigen";
+"scraper_review_banner" = "Nur Vorschau – noch nicht importiert. Auf „Import bestätigen“ tippen zum Hinzufügen; Abbrechen verwirft sie.";
+"scraper_review_header" = "Vor dem Import prüfen";
+"scraper_review_footer" = "Durch den Import darf dieser Scraper bei der Metadatensuche sein JavaScript ausführen und die oben genannten Domains kontaktieren.";
+"scraper_review_source" = "Quelle";
+"scraper_review_configs" = "Konfigurationen";
+"scraper_review_capabilities" = "Funktionen";
+"scraper_review_unknown" = "Unbekannt";
+"scraper_review_requests" = "Anfragen";
+"scraper_review_endpoints_fmt" = "%1$lld Endpunkte, %2$@";
+"scraper_review_network_domains" = "Netzwerk-Domains";
+"scraper_review_tls_trust_domains" = "TLS-Vertrauensdomains";
+"scraper_review_headers" = "Header";
+"scraper_review_cookie" = "Cookie";
+"scraper_review_secrets" = "Geheimnisse";
+"scraper_review_javascript" = "JavaScript";
+"scraper_warn_no_fixed_domain" = "Es wurde keine feste Netzwerk-Domain erkannt. Der Scraper erstellt URLs möglicherweise dynamisch in JavaScript.";
+"scraper_warn_includes_cookie" = "Diese Konfiguration enthält Cookie-Daten. Importiere nur Konfigurationen von Personen, denen du vertraust.";
+"scraper_warn_custom_headers" = "Diese Konfiguration fügt benutzerdefinierte Anfrage-Header hinzu.";
+"scraper_warn_includes_secrets" = "Diese Konfiguration enthält lokale Geheimnisse. Sie werden separat gespeichert und nicht als öffentliches Konfigurations-JSON synchronisiert.";
+"scraper_warn_tls_trust_domains" = "Diese Konfiguration deklariert TLS-Vertrauensdomains. Das Umgehen der Zertifikatsprüfung erfordert dennoch eine ausdrückliche Vertrauensbestätigung des Nutzers.";
+"scraper_warn_non_get_requests" = "Dieser Scraper kann Nicht-GET-Anfragen senden.";
+"scraper_warn_script_too_large" = "Ein oder mehrere Skripte überschreiten das Laufzeit-Größenlimit und können möglicherweise nicht ausgeführt werden.";

@@ -232,7 +232,7 @@
 "add_source" = "Ajouter une source";
 "select_source_type" = "Sélectionner le type de source";
 "local_import_title" = "Importer depuis Fichiers";
-"local_import_subtitle" = "Choisir un audio sur cet appareil ou iCloud Drive";
+"local_import_subtitle" = "Choisir un ou plusieurs dossiers à importer";
 "local_import_section_footer" = "Les morceaux importés sont copiés dans l'app et lisibles hors ligne.";
 "local_import_source_name" = "Musique locale";
 "local_import_none_added" = "Aucun fichier audio n'a été importé.";
@@ -1783,3 +1783,29 @@
 "cellular_backfill_allow_once" = "Autoriser une fois";
 "cellular_backfill_allow_always" = "Toujours autoriser en cellulaire";
 "cellular_backfill_wifi_only" = "Wi-Fi uniquement";
+
+/* Scraper import review */
+"scraper_review_action" = "Aperçu";
+"scraper_confirm_import" = "Confirmer l'import";
+"scraper_review_banner" = "Aperçu uniquement — pas encore importé. Touchez « Confirmer l'import » pour l'ajouter ; Annuler l'abandonne.";
+"scraper_review_header" = "Vérifier avant l'import";
+"scraper_review_footer" = "L'import autorise ce scraper à exécuter son JavaScript et à contacter les domaines ci-dessus lors de la recherche de métadonnées.";
+"scraper_review_source" = "Source";
+"scraper_review_configs" = "Configurations";
+"scraper_review_capabilities" = "Fonctionnalités";
+"scraper_review_unknown" = "Inconnu";
+"scraper_review_requests" = "Requêtes";
+"scraper_review_endpoints_fmt" = "%1$lld points de terminaison, %2$@";
+"scraper_review_network_domains" = "Domaines réseau";
+"scraper_review_tls_trust_domains" = "Domaines de confiance TLS";
+"scraper_review_headers" = "En-têtes";
+"scraper_review_cookie" = "Cookie";
+"scraper_review_secrets" = "Secrets";
+"scraper_review_javascript" = "JavaScript";
+"scraper_warn_no_fixed_domain" = "Aucun domaine réseau fixe n'a été détecté. Le scraper peut générer des URL dynamiquement en JavaScript.";
+"scraper_warn_includes_cookie" = "Cette configuration contient des données de cookie. N'importez que des configurations provenant de personnes de confiance.";
+"scraper_warn_custom_headers" = "Cette configuration ajoute des en-têtes de requête personnalisés.";
+"scraper_warn_includes_secrets" = "Cette configuration contient des secrets locaux. Ils seront stockés séparément et ne seront pas synchronisés en tant que JSON de configuration public.";
+"scraper_warn_tls_trust_domains" = "Cette configuration déclare des domaines de confiance TLS. Le contournement du certificat nécessite toujours une confirmation de confiance explicite de l'utilisateur.";
+"scraper_warn_non_get_requests" = "Ce scraper peut envoyer des requêtes autres que GET.";
+"scraper_warn_script_too_large" = "Un ou plusieurs scripts dépassent la limite de taille d'exécution et risquent de ne pas fonctionner.";

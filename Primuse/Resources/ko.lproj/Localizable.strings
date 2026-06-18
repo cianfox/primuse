@@ -232,7 +232,7 @@
 "add_source" = "소스 추가";
 "select_source_type" = "소스 유형 선택";
 "local_import_title" = "파일에서 가져오기";
-"local_import_subtitle" = "기기 또는 iCloud Drive의 오디오 선택";
+"local_import_subtitle" = "폴더를 선택해 안의 음악을 한 번에 가져오기";
 "local_import_section_footer" = "가져온 곡은 앱에 복사되어 오프라인에서도 재생됩니다.";
 "local_import_source_name" = "로컬 음악";
 "local_import_none_added" = "가져올 오디오 파일이 없습니다.";
@@ -1783,3 +1783,29 @@
 "cellular_backfill_allow_once" = "이번만 허용";
 "cellular_backfill_allow_always" = "셀룰러에서 항상 허용";
 "cellular_backfill_wifi_only" = "Wi-Fi 전용";
+
+/* Scraper import review */
+"scraper_review_action" = "미리 보기";
+"scraper_confirm_import" = "가져오기 확인";
+"scraper_review_banner" = "미리 보기일 뿐 아직 가져오지 않았습니다. \"가져오기 확인\"을 누르면 추가되고, 취소하면 삭제됩니다.";
+"scraper_review_header" = "가져오기 전 검토";
+"scraper_review_footer" = "가져오면 이 스크레이퍼가 메타데이터 조회 시 JavaScript를 실행하고 위 도메인에 연결할 수 있습니다.";
+"scraper_review_source" = "소스";
+"scraper_review_configs" = "구성";
+"scraper_review_capabilities" = "기능";
+"scraper_review_unknown" = "알 수 없음";
+"scraper_review_requests" = "요청";
+"scraper_review_endpoints_fmt" = "엔드포인트 %1$lld개, %2$@";
+"scraper_review_network_domains" = "네트워크 도메인";
+"scraper_review_tls_trust_domains" = "TLS 신뢰 도메인";
+"scraper_review_headers" = "헤더";
+"scraper_review_cookie" = "쿠키";
+"scraper_review_secrets" = "비밀 값";
+"scraper_review_javascript" = "JavaScript";
+"scraper_warn_no_fixed_domain" = "고정된 네트워크 도메인이 감지되지 않았습니다. 이 스크레이퍼는 JavaScript에서 URL을 동적으로 생성할 수 있습니다.";
+"scraper_warn_includes_cookie" = "이 구성에는 쿠키 데이터가 포함되어 있습니다. 신뢰할 수 있는 사람의 구성만 가져오세요.";
+"scraper_warn_custom_headers" = "이 구성은 사용자 지정 요청 헤더를 추가합니다.";
+"scraper_warn_includes_secrets" = "이 구성에는 로컬 비밀 값이 포함되어 있습니다. 별도로 저장되며 공개 구성 JSON으로 동기화되지 않습니다.";
+"scraper_warn_tls_trust_domains" = "이 구성은 TLS 신뢰 도메인을 선언합니다. 인증서 우회에는 여전히 사용자의 명시적 신뢰 확인이 필요합니다.";
+"scraper_warn_non_get_requests" = "이 스크레이퍼는 GET이 아닌 요청을 보낼 수 있습니다.";
+"scraper_warn_script_too_large" = "하나 이상의 스크립트가 런타임 크기 제한을 초과하여 실행되지 않을 수 있습니다.";

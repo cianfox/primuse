@@ -98,7 +98,7 @@
 "add_source" = "添加音乐源";
 "select_source_type" = "选择音乐源类型";
 "local_import_title" = "从文件导入";
-"local_import_subtitle" = "选择本机或 iCloud 云盘里的音频";
+"local_import_subtitle" = "选择文件夹，整包导入其中的音乐";
 "local_import_section_footer" = "导入的歌曲会拷贝到 App 内，离线也能播放。";
 "local_import_source_name" = "本地音乐";
 "local_import_none_added" = "没有可导入的音频文件。";
@@ -1886,3 +1886,29 @@
 "cellular_backfill_allow_once" = "本次允许";
 "cellular_backfill_allow_always" = "始终在蜂窝下允许";
 "cellular_backfill_wifi_only" = "仅 WiFi";
+
+/* Scraper import review */
+"scraper_review_action" = "预览";
+"scraper_confirm_import" = "确认导入";
+"scraper_review_banner" = "仅为预览，尚未导入。点「确认导入」才会添加；取消则丢弃。";
+"scraper_review_header" = "导入前预览";
+"scraper_review_footer" = "导入后，该刮削源在查询元数据时将可运行其 JavaScript 并连接上述域名。";
+"scraper_review_source" = "源";
+"scraper_review_configs" = "配置";
+"scraper_review_capabilities" = "能力";
+"scraper_review_unknown" = "未知";
+"scraper_review_requests" = "请求";
+"scraper_review_endpoints_fmt" = "%1$lld 个端点，%2$@";
+"scraper_review_network_domains" = "网络域名";
+"scraper_review_tls_trust_domains" = "TLS 信任域名";
+"scraper_review_headers" = "请求头";
+"scraper_review_cookie" = "Cookie";
+"scraper_review_secrets" = "密钥";
+"scraper_review_javascript" = "JavaScript";
+"scraper_warn_no_fixed_domain" = "未检测到固定的网络域名。该刮削源可能在 JavaScript 中动态生成 URL。";
+"scraper_warn_includes_cookie" = "此配置包含 Cookie 数据。请仅导入来自可信来源的配置。";
+"scraper_warn_custom_headers" = "此配置会添加自定义请求头。";
+"scraper_warn_includes_secrets" = "此配置包含本地密钥。它们将被单独存储，不会作为公开配置 JSON 同步。";
+"scraper_warn_tls_trust_domains" = "此配置声明了 TLS 信任域名。绕过证书校验仍需用户明确确认信任。";
+"scraper_warn_non_get_requests" = "此刮削源可发送非 GET 请求。";
+"scraper_warn_script_too_large" = "一个或多个脚本超出运行时大小限制，可能无法运行。";

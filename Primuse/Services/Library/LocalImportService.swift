@@ -109,8 +109,28 @@ enum LocalImportService {
         do {
             try fm.copyItem(at: url, to: dest)
             result.copied += 1
+            copySidecars(forAudio: url, audioDest: dest, fm: fm)
         } catch {
             result.skipped += 1
+        }
+    }
+
+    /// 把音频同目录的歌词/封面 sidecar 一并带进沙箱 —— 否则导入后
+    /// SidecarMetadataLoader 在沙箱里按名找不到, 歌词/封面全丢。复用它的查找
+    /// 规则(同名 .lrc; 同名 / `<曲名>-cover` / 目录级 cover.jpg 三档封面)定位
+    /// 源文件, 统一改名成目标音频的 base(歌词→`<base>.lrc`, 封面→
+    /// `<base>-cover.<原扩展>`), 这样即便音频重名被追加了序号 sidecar 仍能命中。
+    private static func copySidecars(forAudio srcURL: URL, audioDest: URL, fm: FileManager) {
+        let destDir = audioDest.deletingLastPathComponent()
+        let destBase = audioDest.deletingPathExtension().lastPathComponent
+
+        if let lrc = SidecarMetadataLoader.findLyrics(for: srcURL) {
+            let dest = destDir.appendingPathComponent("\(destBase).\(lrc.pathExtension)")
+            if !fm.fileExists(atPath: dest.path) { try? fm.copyItem(at: lrc, to: dest) }
+        }
+        if let cover = SidecarMetadataLoader.findCoverArt(for: srcURL) {
+            let dest = destDir.appendingPathComponent("\(destBase)-cover.\(cover.pathExtension)")
+            if !fm.fileExists(atPath: dest.path) { try? fm.copyItem(at: cover, to: dest) }
         }
     }
 

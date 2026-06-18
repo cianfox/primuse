@@ -178,22 +178,25 @@ struct MacMetadataScrapingView: View {
     private var importScraperSheet: some View {
         NavigationStack {
             Form {
-                Picker("import_mode", selection: $importMode) {
-                    Text("paste_config").tag(ImportMode.paste)
-                    Text("from_url").tag(ImportMode.url)
-                }
-                .pickerStyle(.segmented)
-
-                Section {
-                    if importMode == .paste {
-                        TextEditor(text: $importText)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 240)
-                    } else {
-                        TextField("config_url_placeholder", text: $importText)
+                // review 阶段隐藏输入区, 只显示预览, 避免输入框与预览同屏混淆。
+                if importPreview == nil {
+                    Picker("import_mode", selection: $importMode) {
+                        Text("paste_config").tag(ImportMode.paste)
+                        Text("from_url").tag(ImportMode.url)
                     }
-                } footer: {
-                    Text(LocalizedStringKey(importMode == .paste ? "paste_config_footer" : "url_config_footer"))
+                    .pickerStyle(.segmented)
+
+                    Section {
+                        if importMode == .paste {
+                            TextEditor(text: $importText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(minHeight: 240)
+                        } else {
+                            TextField("config_url_placeholder", text: $importText)
+                        }
+                    } footer: {
+                        Text(LocalizedStringKey(importMode == .paste ? "paste_config_footer" : "url_config_footer"))
+                    }
                 }
 
                 if let importError {
@@ -205,6 +208,11 @@ struct MacMetadataScrapingView: View {
                 }
 
                 if let importPreview {
+                    Section {
+                        Label("scraper_review_banner", systemImage: "eye.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     ScraperImportSummaryView(summary: importPreview)
                 }
             }
@@ -213,12 +221,15 @@ struct MacMetadataScrapingView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("cancel") {
+                        plog("📥 Import cancelled (preview discarded)")
                         importPreview = nil
                         showImportSheet = false
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(importPreview == nil ? "Review" : "Confirm Import") { performImport() }
+                    Button(importPreview == nil
+                           ? String(localized: "scraper_review_action")
+                           : String(localized: "scraper_confirm_import")) { performImport() }
                         .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
