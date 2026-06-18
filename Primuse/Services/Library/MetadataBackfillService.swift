@@ -42,6 +42,13 @@ final class MetadataBackfillService {
     /// every app launch.
     private var failedSongIDs: Set<String> = []
 
+    /// Songs that parsed fine (have a usable duration) but yielded no
+    /// extractable embedded artwork. Kept SEPARATE from `failedSongIDs`:
+    /// a missing cover must not mark a song permanently failed (that dropped
+    /// its duration update at flush and stuck it bare). These songs stay
+    /// playable & recoverable; we only stop re-fetching them *for artwork*.
+    private var artworkGivenUpIDs: Set<String> = []
+
     /// Consecutive *transient* failure count per song ID, this session only.
     /// Reset to 0 on a successful backfill. Not persisted — a throttle blip
     /// today must not disqualify the song on future launches.
@@ -74,6 +81,7 @@ final class MetadataBackfillService {
     private let backfillableSourceIDs: () -> Set<String>
     private let metadataService = MetadataService()
     private let failedURL: URL
+    private let artworkGivenUpURL: URL
 
     /// Songs currently being processed (for UI / cancellation).
     private(set) var pendingCount: Int = 0
@@ -109,7 +117,9 @@ final class MetadataBackfillService {
         let directory = appSupport.appendingPathComponent("Primuse", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.failedURL = directory.appendingPathComponent("backfill-failed.json")
+        self.artworkGivenUpURL = directory.appendingPathComponent("backfill-artwork-givenup.json")
         loadFailed()
+        loadArtworkGivenUp()
 
         // One-time migration. Earlier builds had an overly-aggressive
         // partial-merge rule that marked any song as failed when head
@@ -126,6 +136,22 @@ final class MetadataBackfillService {
             plog("📥 Backfill: wiping \(failedSongIDs.count) failedSongIDs (one-time migration: transient/permanent split)")
             failedSongIDs.removeAll()
             saveFailed()
+        }
+
+        // v2026_06b: artwork-only failures used to land in failedSongIDs, which
+        // dropped the song's (already parsed) duration at flush and stuck it
+        // bare — playable songs that merely lacked an embedded cover ended up
+        // unplayable with no cover. Now they go to artworkGivenUpIDs instead.
+        // Wipe the old persisted failures once so anything stuck purely for a
+        // missing cover gets a fresh pass and keeps its duration.
+        let artworkDecoupleKey = "primuse.backfillFailedReset.v2026_06b_artworkDecouple"
+        if !UserDefaults.standard.bool(forKey: artworkDecoupleKey) {
+            if !failedSongIDs.isEmpty {
+                plog("📥 Backfill: wiping \(failedSongIDs.count) failedSongIDs (one-time: artwork/fail decouple)")
+                failedSongIDs.removeAll()
+                saveFailed()
+            }
+            UserDefaults.standard.set(true, forKey: artworkDecoupleKey)
         }
         UserDefaults.standard.set(true, forKey: migrationKey)
 
@@ -474,7 +500,7 @@ final class MetadataBackfillService {
             !failedSongIDs.contains(song.id)
                 && !sessionGivenUpIDs.contains(song.id)
                 && sourceIDs.contains(song.sourceID)
-                && Self.needsBackfill(song)
+                && self.needsBackfill(song)
         }
     }
 
@@ -506,7 +532,7 @@ final class MetadataBackfillService {
             !self.failedSongIDs.contains(song.id) &&
                 !self.sessionGivenUpIDs.contains(song.id) &&
                 sourceIDs.contains(song.sourceID) &&
-                Self.needsBackfill(song) &&
+                self.needsBackfill(song) &&
                 (sourceID == nil || song.sourceID == sourceID)
         }.count
     }
@@ -666,6 +692,12 @@ final class MetadataBackfillService {
                         transientFailureCounts[songID] = count
                     }
                 }
+                if result.outcome.artworkGivenUp {
+                    // Stop re-fetching this song for artwork, but DON'T fail it —
+                    // its duration update below still flushes and it stays playable.
+                    artworkGivenUpIDs.insert(songID)
+                    saveArtworkGivenUp()
+                }
                 if let updated = result.outcome.song {
                     transientFailureCounts[songID] = nil  // success → reset streak
                     pendingFlush.append(updated)
@@ -772,6 +804,11 @@ final class MetadataBackfillService {
         /// network / throttle). The caller bumps a per-song retry counter and
         /// parks the song after `maxTransientRetries` so it stops re-queuing.
         var transientFailure: Bool = false
+        /// Song parsed fine (has a usable duration) but has no extractable
+        /// embedded artwork. Stop retrying it *for artwork* without marking it
+        /// permanently failed — its duration update is still saved and it stays
+        /// playable & recoverable.
+        var artworkGivenUp: Bool = false
     }
 
     private struct BackfillHardTimeoutError: LocalizedError, Sendable {
@@ -1004,7 +1041,10 @@ final class MetadataBackfillService {
         if artworkStillMissing {
             plog("📥 Backfill: '\(song.title)' has no parseable MP3 artwork; skipping future artwork-only retries")
         }
-        return BackfillOutcome(song: merged, markFailed: artworkStillMissing)
+        // Missing artwork must NOT mark the song permanently failed — that
+        // dropped its (just-parsed) duration at flush and stuck it bare. Keep
+        // the duration, record the artwork give-up separately.
+        return BackfillOutcome(song: merged, markFailed: false, artworkGivenUp: artworkStillMissing)
     }
 
     /// Write the partial bytes to a temp file and run the standard metadata
@@ -1152,7 +1192,7 @@ final class MetadataBackfillService {
             guard !self.sessionGivenUpIDs.contains(song.id) else { return false }
             guard !self.library.disabledSourceIDs.contains(song.sourceID) else { return false }
             guard sourceIDs.contains(song.sourceID) else { return false }
-            return Self.needsBackfill(song)
+            return self.needsBackfill(song)
         }
         return Array(candidates.prefix(500))
     }
@@ -1163,11 +1203,16 @@ final class MetadataBackfillService {
         guard !library.disabledSourceIDs.contains(song.sourceID) else { return false }
         guard backfillableSourceIDs().contains(song.sourceID) else { return false }
         guard let live = library.song(id: song.id), live.sourceID == song.sourceID else { return false }
-        return Self.needsBackfill(live)
+        return self.needsBackfill(live)
     }
 
-    private static func needsBackfill(_ song: Song) -> Bool {
-        isBareSong(song) || needsEmbeddedArtworkBackfill(song)
+    /// A song still needs backfill if it's bare (no duration), or it's an MP3
+    /// missing a cover that we haven't already given up on for artwork. The
+    /// artwork-give-up check keeps a duration-complete song from being re-picked
+    /// forever just because its file has no embedded cover.
+    private func needsBackfill(_ song: Song) -> Bool {
+        Self.isBareSong(song)
+            || (Self.needsEmbeddedArtworkBackfill(song) && !artworkGivenUpIDs.contains(song.id))
     }
 
     private static func needsEmbeddedArtworkBackfill(_ song: Song) -> Bool {
@@ -1180,6 +1225,17 @@ final class MetadataBackfillService {
         guard let data = try? Data(contentsOf: failedURL),
               let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
         failedSongIDs = Set(decoded)
+    }
+
+    private func loadArtworkGivenUp() {
+        guard let data = try? Data(contentsOf: artworkGivenUpURL),
+              let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
+        artworkGivenUpIDs = Set(decoded)
+    }
+
+    private func saveArtworkGivenUp() {
+        guard let data = try? JSONEncoder().encode(Array(artworkGivenUpIDs)) else { return }
+        try? data.write(to: artworkGivenUpURL, options: .atomic)
     }
 
     private func saveFailed() {
