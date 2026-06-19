@@ -423,7 +423,7 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
         plog("☁️ Baidu resolveCdnURL start path=\(path)")
         let dlink = try await getDlink(for: path)
         let token = try await getToken()
-        guard let dlinkURL = URL(string: "\(dlink)&access_token=\(token)") else {
+        guard let dlinkURL = Self.appendingAccessToken(to: dlink, token: token) else {
             throw CloudDriveError.invalidResponse
         }
         plog("☁️ Baidu resolveCdnURL HEAD \(dlinkURL.host ?? "?")\(dlinkURL.path.prefix(80))")
@@ -469,10 +469,23 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
 
     // MARK: - Private
 
+    /// 把 access_token 作为 query item 追加到 dlink。dlink 已是带 query 的完整 URL,
+    /// 裸字符串拼接 `&access_token=\(token)` 不会对 token 做百分号编码 —— 令牌含
+    /// 保留字符(`+` `/` 等)时 URL(string:) 会失败/截断致 403。用 URLComponents 编码,
+    /// 并补一道 '+' → %2B(URLComponents 不编码 '+', 部分服务端会当空格)。
+    private static func appendingAccessToken(to dlink: String, token: String) -> URL? {
+        guard var comps = URLComponents(string: dlink) else { return nil }
+        var items = comps.queryItems ?? []
+        items.append(URLQueryItem(name: "access_token", value: token))
+        comps.queryItems = items
+        comps.percentEncodedQuery = comps.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        return comps.url
+    }
+
     private func downloadFile(at path: String) async throws -> Data {
         let token = try await getToken()
         let dlink = try await getDlink(for: path)
-        guard let url = URL(string: "\(dlink)&access_token=\(token)") else {
+        guard let url = Self.appendingAccessToken(to: dlink, token: token) else {
             throw CloudDriveError.invalidResponse
         }
         var request = URLRequest(url: url)

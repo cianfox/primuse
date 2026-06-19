@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import FilesProvider
 import PrimuseKit
@@ -115,12 +116,20 @@ actor WebDAVSource: MusicSourceConnector {
         }
     }
 
+    private static func cacheFileName(for path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        let hash = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        let ext = (path as NSString).pathExtension
+        return ext.isEmpty ? hash : "\(hash).\(ext)"
+    }
+
     func localURL(for path: String) async throws -> URL {
         guard let provider else { throw SourceError.connectionFailed("Not connected") }
 
-        let localPath = cacheDirectory.appendingPathComponent(
-            path.replacingOccurrences(of: "/", with: "_")
-        )
+        // 缓存名用 SHA256 哈希: 朴素的 '/' → '_' 替换会让 "/A/B.mp3" 与 "/A_B.mp3"
+        // 撞到同一缓存键、播到错误文件。
+        let baseName = Self.cacheFileName(for: path)
+        let localPath = cacheDirectory.appendingPathComponent(baseName)
 
         if FileManager.default.fileExists(atPath: localPath.path) {
             return localPath
@@ -133,7 +142,7 @@ actor WebDAVSource: MusicSourceConnector {
         // on failure, so writing straight to localPath would leave a half-written
         // file that future calls treat as a complete cache hit (and never self-heal).
         let tempPath = cacheDirectory.appendingPathComponent(
-            "\(path.replacingOccurrences(of: "/", with: "_")).part-\(UUID().uuidString)"
+            "\(baseName).part-\(UUID().uuidString)"
         )
 
         do {

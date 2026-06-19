@@ -1,3 +1,4 @@
+import CryptoKit
 import FilesProvider
 import Foundation
 import PrimuseKit
@@ -108,12 +109,19 @@ actor FTPSource: MusicSourceConnector {
         }
     }
 
+    /// 缓存文件名用 path 的 SHA256 哈希: 朴素地把 '/' 换 '_' 会让 "/A/B.mp3" 与
+    /// "/A_B.mp3" 撞到同一缓存键、播到错误文件(NFS 已用哈希规避, 这里对齐)。
+    private static func cacheFileName(for path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        let hash = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        let ext = (path as NSString).pathExtension
+        return ext.isEmpty ? hash : "\(hash).\(ext)"
+    }
+
     func localURL(for path: String) async throws -> URL {
         guard let provider else { throw SourceError.connectionFailed("Not connected") }
 
-        let localURL = cacheDirectory.appendingPathComponent(
-            path.replacingOccurrences(of: "/", with: "_")
-        )
+        let localURL = cacheDirectory.appendingPathComponent(Self.cacheFileName(for: path))
 
         if FileManager.default.fileExists(atPath: localURL.path) {
             return localURL

@@ -150,9 +150,12 @@ actor SMBSource: MusicSourceConnector {
             // 接受 UInt64 所以负 offset 需要先拿 fileSize 转换。
             if offset < 0 {
                 let attrs = try await client.attributesOfItem(atPath: relativePath)
-                let total = (attrs[.fileSizeKey] as? Int64)
-                    ?? (attrs[.fileSizeKey] as? Int).map { Int64($0) }
-                    ?? 0
+                // 区分"大小拿不到"与"文件确为 0 字节": 前者无法换算 suffix range,
+                // 返回空会被回填误判为"无尾部标签"而静默丢 moov/ID3v1 标签, 应抛错。
+                guard let total = (attrs[.fileSizeKey] as? Int64)
+                        ?? (attrs[.fileSizeKey] as? Int).map({ Int64($0) }) else {
+                    throw SourceError.fileNotFound(relativePath)
+                }
                 let start = max(0, total + offset)
                 let end = min(total, start + length)
                 guard start < end else { return Data() }

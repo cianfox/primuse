@@ -195,20 +195,12 @@ actor SynologyScanner {
 
                 var song = await extractSongMetadata(item: item, ext: ext)
 
-                // Priority: sidecar path > embedded/cached > nil
-                song = Song(
-                    id: song.id, title: song.title, albumID: song.albumID, artistID: song.artistID,
-                    albumTitle: song.albumTitle, artistName: song.artistName,
-                    trackNumber: song.trackNumber, discNumber: song.discNumber,
-                    duration: song.duration, fileFormat: song.fileFormat,
-                    filePath: song.filePath, sourceID: song.sourceID,
-                    fileSize: song.fileSize, bitRate: song.bitRate,
-                    sampleRate: song.sampleRate, bitDepth: song.bitDepth,
-                    genre: song.genre, year: song.year,
-                    dateAdded: song.dateAdded,
-                    coverArtFileName: coverRef ?? song.coverArtFileName,
-                    lyricsFileName: lyricsRef ?? song.lyricsFileName
-                )
+                // Priority: sidecar path > embedded/cached > nil。原地覆盖这两个
+                // 字段即可, 不要用部分 init 重建 —— 那会把 lastModified/revision/
+                // replayGain/pinyin 等未列出的字段全部丢成 nil, 导致远端同名覆盖文件
+                // 重扫后检测不到变化(mtime/revision 两侧都 nil)而保留旧元数据。
+                if let coverRef { song.coverArtFileName = coverRef }
+                if let lyricsRef { song.lyricsFileName = lyricsRef }
 
                 allSongs.append(song)
 

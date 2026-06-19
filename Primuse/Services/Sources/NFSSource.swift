@@ -244,10 +244,14 @@ actor NFSSource: MusicSourceConnector {
                 client.attributesOfItem(atPath: selection.relativePath) { result in
                     switch result {
                     case .success(let attrs):
-                        let total = (attrs[.fileSizeKey] as? Int64)
-                            ?? (attrs[.fileSizeKey] as? Int).map { Int64($0) }
-                            ?? 0
-                        continuation.resume(returning: total)
+                        // 区分"大小拿不到"与"0 字节文件": 前者无法换算 suffix range,
+                        // 返回空会被回填误判为"无尾部标签"而静默丢标签, 应抛错。
+                        if let total = (attrs[.fileSizeKey] as? Int64)
+                            ?? (attrs[.fileSizeKey] as? Int).map({ Int64($0) }) {
+                            continuation.resume(returning: total)
+                        } else {
+                            continuation.resume(throwing: SourceError.fileNotFound(selection.relativePath))
+                        }
                     case .failure(let error):
                         continuation.resume(throwing: error)
                     }

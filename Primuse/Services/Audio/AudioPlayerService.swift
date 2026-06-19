@@ -754,6 +754,17 @@ final class AudioPlayerService {
      }
 
     func play(song: Song, from url: URL) async {
+        // 与主 play(song:) 一致的路由: 投屏时推远端、Apple Music 镜像时先停镜像。
+        // 否则本地 audioEngine 会与远端 renderer / 系统播放器同时出声, 且 mirror task
+        // 仍会把 currentSong 改回 Apple Music 那首。
+        if castingController != nil {
+            await castSong(song)
+            return
+        }
+        if isAppleMusicMode {
+            stopAppleMusicMirror()
+            AppServices.shared.appleMusic.stopAppleMusic()
+        }
         let id = UUID()
         playID = id
         clearPendingPlaybackRecovery()

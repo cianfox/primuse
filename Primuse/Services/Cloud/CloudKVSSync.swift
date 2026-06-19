@@ -81,13 +81,16 @@ final class CloudKVSSync {
             kvs.set(data, forKey: key)
         } else if let array = defaults.stringArray(forKey: key) {
             kvs.set(array, forKey: key)
-        } else if let s = defaults.string(forKey: key) {
-            kvs.set(s, forKey: key)
         } else if let raw = defaults.object(forKey: key) {
+            // 类型判定必须在 string(forKey:) 之前: 后者会把 NSNumber(Double/Int)
+            // 也字符串化(如 "1.2")提前吞掉, 数值就被当成 String 推到 KVS。
+            // Bool 经 CFBoolean 先于 NSNumber 判定。
             if CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID() {
                 kvs.set(defaults.bool(forKey: key), forKey: key)
             } else if raw is NSNumber {
                 kvs.set(defaults.double(forKey: key), forKey: key)
+            } else if let s = raw as? String {
+                kvs.set(s, forKey: key)
             } else {
                 kvs.set(raw, forKey: key)
             }

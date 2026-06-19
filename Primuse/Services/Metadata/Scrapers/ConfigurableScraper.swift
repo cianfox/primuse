@@ -391,8 +391,11 @@ actor ConfigurableScraper: MusicScraper {
         // 先处理带索引的：`{{key[N]}}`
         let indexedPattern = #"\{\{(\w+)\[(\d+)\]\}\}"#
         if let regex = try? NSRegularExpression(pattern: indexedPattern) {
-            // 多次扫描直到没有匹配
-            while true {
+            // 多次扫描直到没有匹配。加迭代上限: 替换值本身若含 `{{key[N]}}` 形式
+            // (如某源返回的 externalId = "{{id[0]}}")会不断重新引入匹配, 否则死循环。
+            var iterations = 0
+            while iterations < 256 {
+                iterations += 1
                 let nsResult = result as NSString
                 let range = NSRange(location: 0, length: nsResult.length)
                 guard let match = regex.firstMatch(in: result, range: range),

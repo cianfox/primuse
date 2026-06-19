@@ -80,12 +80,17 @@ final class StreamingDownloadDecoder: Sendable {
                     // 调试用: 如果 SFBDecoder 抱怨格式不对,多半是 DSM 返回了
                     // JSON/HTML 错误体而不是音频(SID 过期 / 路径错 / 权限不足
                     // 等)。打头 80 字节,看到 "{" / "<!DOCTYPE" 一眼就知道。
-                    if fileSize < 4096 || fileSize > 0,
-                       let head = try? FileHandle(forReadingFrom: tempURL).read(upToCount: 80) {
-                        let preview = String(data: head, encoding: .utf8)?
-                            .replacingOccurrences(of: "\n", with: "\\n")
-                            ?? head.map { String(format: "%02x", $0) }.joined()
-                        plog("🌊 StreamingDecoder: head80=\(preview.prefix(120))")
+                    // 仅在文件可疑过小(多半是错误 JSON/HTML 而非音频)时打印 head。
+                    // 原条件 `fileSize < 4096 || fileSize > 0` 对任意非负值恒真。
+                    if fileSize < 4096, let handle = try? FileHandle(forReadingFrom: tempURL) {
+                        let head = try? handle.read(upToCount: 80)
+                        try? handle.close()
+                        if let head {
+                            let preview = String(data: head, encoding: .utf8)?
+                                .replacingOccurrences(of: "\n", with: "\\n")
+                                ?? head.map { String(format: "%02x", $0) }.joined()
+                            plog("🌊 StreamingDecoder: head80=\(preview.prefix(120))")
+                        }
                     }
 
                     if Task.isCancelled { throw CancellationError() }
