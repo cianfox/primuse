@@ -128,15 +128,30 @@ actor WebDAVSource: MusicSourceConnector {
 
         let providerPath = providerRelativePath(path)
 
-        return try await withCheckedThrowingContinuation { continuation in
-            provider.copyItem(path: providerPath, toLocalURL: localPath) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: localPath)
+        // Download to a sibling temp path then atomically rename. FilesProvider's
+        // copyItem moves a (possibly truncated) temp file to the destination even
+        // on failure, so writing straight to localPath would leave a half-written
+        // file that future calls treat as a complete cache hit (and never self-heal).
+        let tempPath = cacheDirectory.appendingPathComponent(
+            "\(path.replacingOccurrences(of: "/", with: "_")).part-\(UUID().uuidString)"
+        )
+
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                provider.copyItem(path: providerPath, toLocalURL: tempPath) { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume(returning: ())
+                    }
                 }
             }
+            try FileManager.default.moveItem(at: tempPath, to: localPath)
+        } catch {
+            try? FileManager.default.removeItem(at: tempPath)
+            throw error
         }
+        return localPath
     }
 
     func deleteFile(at path: String) async throws {

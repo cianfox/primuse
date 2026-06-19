@@ -1897,8 +1897,16 @@ final class AudioPlayerService {
             return
         }
         if shuffleEnabled {
-            shufflePosition = max(0, shufflePosition - 1)
-            currentIndex = shuffledIndices.isEmpty ? 0 : shuffledIndices[shufflePosition]
+            if shuffledIndices.isEmpty {
+                currentIndex = 0
+            } else {
+                // 先把 shufflePosition 夹回合法区间再回退: 队列增删 / playFromQueue
+                // 未命中 firstIndex 等情况会让 shufflePosition 与 shuffledIndices 失同步,
+                // 直接下标可能越界崩溃。
+                let clamped = min(max(0, shufflePosition), shuffledIndices.count - 1)
+                shufflePosition = max(0, clamped - 1)
+                currentIndex = shuffledIndices[shufflePosition]
+            }
         } else {
             currentIndex = currentIndex > 0 ? currentIndex - 1 : queue.count - 1
         }
@@ -2844,9 +2852,12 @@ final class AudioPlayerService {
 
     // MARK: - Time Updates
 
+    /// 进度 timer 间隔 (秒)。同时作为 scrobble 的真实收听增量 —— 见下方 handleProgressTick。
+    private static let timeUpdateInterval: TimeInterval = 0.5
+
     private func startTimeUpdater() {
         stopTimeUpdater()
-        displayLink = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        displayLink = Timer.scheduledTimer(withTimeInterval: Self.timeUpdateInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 // crossfade 期间 audioEngine 报的还是旧曲 primary node 时间,
@@ -2866,9 +2877,10 @@ final class AudioPlayerService {
                     }
 
                     // Scrobble 进度判断 — 50% 或 4 分钟阈值由 service 内部决定。
-                    // 传 currentTime (已听到这个时间点), seek 后该首歌 elapsed 视为
-                    // 实际的当前 currentTime, Last.fm 协议本身允许这种近似。
-                    ScrobbleService.shared.handleProgressTick(elapsed: self.currentTime); PlayHistoryStore.shared.tick(elapsed: self.currentTime)
+                    // 传真实 tick 增量而非 currentTime: 否则用户拖进度条到歌曲后段
+                    // 一松手就立刻满足 50% 阈值, 一秒没真听就误上报到 Last.fm/Navidrome。
+                    // PlayHistoryStore.tick 维护的是 position high-water mark, 仍传 currentTime。
+                    ScrobbleService.shared.handleProgressTick(playedDelta: Self.timeUpdateInterval); PlayHistoryStore.shared.tick(elapsed: self.currentTime)
                 }
                 // Check if crossfade should start
                 self.checkCrossfade()

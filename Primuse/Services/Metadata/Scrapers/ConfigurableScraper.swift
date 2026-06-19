@@ -1032,6 +1032,13 @@ final class ScraperSessionManager: NSObject, @unchecked Sendable {
         _session = URLSession(configuration: config, delegate: sslDelegate, delegateQueue: nil)
     }
 
+    deinit {
+        // 带 delegate 的 URLSession 会强引用其 delegate 直到显式失效。downloadResource
+        // 每次刮削资源都新建一个本类实例, 不失效就会在整库刮削时累积泄漏 session +
+        // SmartSSLDelegate + 底层 socket。finishTasksAndInvalidate 让在途请求跑完再释放。
+        _session?.finishTasksAndInvalidate()
+    }
+
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         var mergedRequest = request
         mergedRequest.cachePolicy = .reloadIgnoringLocalCacheData

@@ -61,6 +61,9 @@ final class ScrobbleService {
         let startedAtMonotonic: TimeInterval
         var hasSentNowPlaying: Bool
         var hasScrobbled: Bool
+        /// 真实累计收听时长 (秒) —— 每个 tick 加固定增量, 跟 song.currentTime 解耦,
+        /// 这样 seek 到歌曲后段不会让一秒没听就触发 scrobble。新歌新建 session 自动归零。
+        var listenedSeconds: TimeInterval = 0
     }
 
     private init() {
@@ -106,16 +109,19 @@ final class ScrobbleService {
         }
     }
 
-    /// 播放进度更新 (AudioPlayerService 每秒级触发) — 判断是否到 scrobble 阈值。
-    /// elapsed: 用户实际听了多久 (real wallclock, 不是 song.currentTime, 避免
-    /// seek/jump 让累计虚高)。
-    func handleProgressTick(elapsed: TimeInterval) {
+    /// 播放进度更新 (AudioPlayerService 每个 tick 触发) — 判断是否到 scrobble 阈值。
+    /// playedDelta: 距上次 tick 实际经过的收听时长 (real wallclock 增量, 不是
+    /// song.currentTime)。service 内部累加, 避免用户 seek 到歌曲后段时一秒没听
+    /// 就被当成已收听 50% 而误上报 (污染 Last.fm/ListenBrainz/Navidrome 播放次数)。
+    func handleProgressTick(playedDelta: TimeInterval) {
         guard var session = currentSession, !session.hasScrobbled else { return }
+        session.listenedSeconds += max(0, playedDelta)
+        currentSession = session
         let durationSec = Double(session.entry.durationSec ?? 0)
         guard durationSec >= Self.minTrackDurationSec else { return }
         let half = durationSec * Self.listenedThresholdRatio
         let threshold = min(half, Self.listenedThresholdSeconds)
-        guard elapsed >= threshold else { return }
+        guard session.listenedSeconds >= threshold else { return }
 
         session.hasScrobbled = true
         currentSession = session

@@ -420,7 +420,16 @@ final class ScanService {
         // flush sets complete; genuine deletions are still reconciled at the
         // scanner's terminal yield after a full walk.
         let knownExisting = library.songs.filter { $0.sourceID == source.id }
-        let existingForScan = resumeSongs.isEmpty ? knownExisting : resumeSongs
+        // On resume, merge the known set in too (checkpoint entries win on id
+        // collision) — passing only resumeSongs would drop the rest on the
+        // first flush, exactly the stripping the comment above warns about.
+        let existingForScan: [Song]
+        if resumeSongs.isEmpty {
+            existingForScan = knownExisting
+        } else {
+            let resumeIDs = Set(resumeSongs.map(\.id))
+            existingForScan = resumeSongs + knownExisting.filter { !resumeIDs.contains($0.id) }
+        }
         let stream = await scanner.scan(
             directories: directories,
             existingSongs: existingForScan,
@@ -528,7 +537,17 @@ final class ScanService {
         // listFiles-stream level and `addedCount` tracks just the actual
         // delta.
         let knownExisting = library.songs.filter { $0.sourceID == source.id }
-        let existingForScan = resumeSongs.isEmpty ? knownExisting : resumeSongs
+        // On resume, the scanner must start from the *full* known set (seeded
+        // into the library above), not just the checkpoint slice — otherwise
+        // the first intermediate flush below drops every not-yet-rewalked song
+        // and cleanPlaylistEntries() permanently un-playlists them.
+        let existingForScan: [Song]
+        if resumeSongs.isEmpty {
+            existingForScan = knownExisting
+        } else {
+            let resumeIDs = Set(resumeSongs.map(\.id))
+            existingForScan = resumeSongs + knownExisting.filter { !resumeIDs.contains($0.id) }
+        }
         let stream = await scanner.scan(
             directories: directories,
             existingSongs: existingForScan,
