@@ -124,7 +124,7 @@ struct AlbumDetailView: View {
                     subtitle: albumSubtitle,
                     iconSystemName: "square.stack.fill",
                     coverSong: songs.first(where: { $0.coverArtFileName?.isEmpty == false }) ?? songs.first,
-                    onPlay: playAll,
+                    onPlay: { playAll() },
                     onShuffle: shuffleAll,
                     moreMenu: albumMoreMenu
                 )
@@ -176,7 +176,7 @@ struct AlbumDetailView: View {
 
         return AnyView(MacHeaderMoreMenu(sections: [
             [
-                .init(icon: "play.fill", title: "播放全部", enabled: !playable.isEmpty, action: playAll),
+                .init(icon: "play.fill", title: "播放全部", enabled: !playable.isEmpty) { playAll() },
                 .init(icon: "shuffle", title: "随机播放", enabled: !playable.isEmpty, action: shuffleAll),
                 .init(icon: "text.line.last.and.arrowtriangle.forward", title: "加入播放队列",
                       enabled: !playable.isEmpty) { player.appendToQueue(playable) },
@@ -344,16 +344,17 @@ struct AlbumDetailView: View {
     }
     #endif
 
-    private func playAll() {
-        let queue = songs.filteredPlayable()
+    private func playAll(shuffled: Bool = false) {
+        let playable = songs.filteredPlayable()
+        let queue = shuffled ? playable.shuffled() : playable
         guard let first = queue.first else { return }
+        if shuffled { player.shuffleEnabled = true }
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
     }
 
     private func shuffleAll() {
-        player.shuffleEnabled = true
-        playAll()
+        playAll(shuffled: true)
     }
 
     private func playSong(_ song: Song) {

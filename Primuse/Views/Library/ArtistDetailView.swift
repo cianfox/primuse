@@ -138,7 +138,7 @@ struct ArtistDetailView: View {
 
     private var macActionRow: some View {
         HStack(spacing: 8) {
-            Button(action: playAll) {
+            Button(action: { playAll() }) {
                 Label("play_all", systemImage: "play.fill")
                     .font(.system(size: 12.5, weight: .semibold))
                     .padding(.horizontal, 18)
@@ -298,7 +298,7 @@ struct ArtistDetailView: View {
                     MediaDetailActionBar(
                         canPlay: playableSongs.isEmpty == false,
                         canShuffle: playableSongs.count > 1,
-                        playAction: playAll,
+                        playAction: { playAll() },
                         shuffleAction: shuffleAll
                     )
                     #if os(macOS)
@@ -430,16 +430,16 @@ struct ArtistDetailView: View {
         .padding(.top, 20)
     }
 
-    private func playAll() {
-        let queue = playableSongs
+    private func playAll(shuffled: Bool = false) {
+        let queue = shuffled ? playableSongs.shuffled() : playableSongs
         guard let first = queue.first else { return }
+        if shuffled { player.shuffleEnabled = true }
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
     }
 
     private func shuffleAll() {
-        player.shuffleEnabled = true
-        playAll()
+        playAll(shuffled: true)
     }
 
     private func playSong(_ song: Song) {

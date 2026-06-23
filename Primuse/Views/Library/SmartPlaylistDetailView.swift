@@ -88,8 +88,7 @@ struct SmartPlaylistDetailView: View {
                             .disabled(matched.isEmpty)
 
                             Button {
-                                player.shuffleEnabled = true
-                                playAll()
+                                playAll(shuffled: true)
                             } label: {
                                 Label("shuffle", systemImage: "shuffle")
                                     .frame(maxWidth: .infinity)
@@ -211,10 +210,9 @@ struct SmartPlaylistDetailView: View {
             coverSong: matched.first(where: { $0.coverArtFileName?.isEmpty == false }) ?? matched.first,
             accent: Color(red: 0.62, green: 0.44, blue: 0.90),
             darkAccent: Color(red: 0.22, green: 0.24, blue: 0.42),
-            onPlay: playAll,
+            onPlay: { playAll() },
             onShuffle: {
-                player.shuffleEnabled = true
-                playAll()
+                playAll(shuffled: true)
             },
             moreMenu: smartMoreMenu(smart, matched: matched)
         )
@@ -227,11 +225,10 @@ struct SmartPlaylistDetailView: View {
         return AnyView(MacHeaderMoreMenu(sections: [
             [
                 .init(icon: "play.fill", title: String(localized: "play_all"),
-                      enabled: !playable.isEmpty, action: playAll),
+                      enabled: !playable.isEmpty) { playAll() },
                 .init(icon: "shuffle", title: String(localized: "shuffle"),
                       enabled: !playable.isEmpty) {
-                    player.shuffleEnabled = true
-                    playAll()
+                    playAll(shuffled: true)
                 },
                 .init(icon: "text.line.last.and.arrowtriangle.forward", title: String(localized: "add_to_queue"),
                       enabled: !playable.isEmpty) {
@@ -405,9 +402,11 @@ struct SmartPlaylistDetailView: View {
 
     // MARK: - Playback
 
-    private func playAll() {
-        let queue = matched.filteredPlayable()
+    private func playAll(shuffled: Bool = false) {
+        let playable = matched.filteredPlayable()
+        let queue = shuffled ? playable.shuffled() : playable
         guard let first = queue.first else { return }
+        if shuffled { player.shuffleEnabled = true }
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
     }

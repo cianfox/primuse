@@ -339,8 +339,7 @@ struct MacSidebar: View {
         .disabled(playable.isEmpty)
 
         Button {
-            player.shuffleEnabled = true
-            playPlaylist(playlist)
+            playPlaylist(playlist, shuffled: true)
         } label: {
             Label("shuffle", systemImage: "shuffle")
         }
@@ -396,8 +395,7 @@ struct MacSidebar: View {
         .disabled(playable.isEmpty)
 
         Button {
-            player.shuffleEnabled = true
-            playSmart(smart)
+            playSmart(smart, shuffled: true)
         } label: {
             Label("shuffle", systemImage: "shuffle")
         }
@@ -458,9 +456,11 @@ struct MacSidebar: View {
         }
     }
 
-    private func playPlaylist(_ playlist: Playlist) {
-        let queue = library.songs(forPlaylist: playlist.id).filteredPlayable()
+    private func playPlaylist(_ playlist: Playlist, shuffled: Bool = false) {
+        let playable = library.songs(forPlaylist: playlist.id).filteredPlayable()
+        let queue = shuffled ? playable.shuffled() : playable
         guard let first = queue.first else { return }
+        if shuffled { player.shuffleEnabled = true }
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
     }
@@ -497,10 +497,12 @@ struct MacSidebar: View {
         }
     }
 
-    private func playSmart(_ smart: SmartPlaylist) {
-        let queue = SmartPlaylistEngine.match(smart, in: library, history: PlayHistoryStore.shared)
+    private func playSmart(_ smart: SmartPlaylist, shuffled: Bool = false) {
+        let playable = SmartPlaylistEngine.match(smart, in: library, history: PlayHistoryStore.shared)
             .filteredPlayable()
+        let queue = shuffled ? playable.shuffled() : playable
         guard let first = queue.first else { return }
+        if shuffled { player.shuffleEnabled = true }
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
     }
