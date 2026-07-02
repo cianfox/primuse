@@ -907,12 +907,7 @@ final class TVStore {
         let shouldPlay = isPlaying
         isMusicVideoModeEnabled.toggle()
         guard let id = currentSongID, let song = song(id) else { return }
-        startPlaying(song)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            if resumeTime > 0 { engine.seek(to: resumeTime) }
-            if !shouldPlay { engine.pause() }
-        }
+        startPlaying(song, resumeTime: resumeTime, autoPlay: shouldPlay)
     }
 
     /// 睡眠定时:关→15→30→60→关 分钟。到点暂停播放。
@@ -967,17 +962,24 @@ final class TVStore {
     }
 
     /// 设置展示元数据 + 触发真实解析播放。
-    private func startPlaying(_ song: TVSong) {
+    private func startPlaying(_ song: TVSong, resumeTime: Double = 0, autoPlay: Bool = true) {
         let a = albumOf(song)
         nowPlaying = TVNowPlaying(
             title: song.title, artist: song.artist, album: a?.title ?? "",
             albumID: song.albumID, tint: a?.tint ?? TVColor.brand, tint2: a?.tint2 ?? .black,
-            glyph: a?.glyph ?? "♪", duration: song.duration, currentTime: 0,
+            glyph: a?.glyph ?? "♪", duration: song.duration, currentTime: resumeTime,
             format: song.format, bitrate: song.bitrate, sampleRate: song.sampleRate, sourcePath: "")
         hasNowPlaying = true
         lyrics = []
         refreshUpNext()
-        Task { await coordinator.play(songID: song.id, preferMusicVideo: isMusicVideoModeEnabled) }
+        Task {
+            await coordinator.play(
+                songID: song.id,
+                preferMusicVideo: isMusicVideoModeEnabled,
+                startAt: resumeTime,
+                autoPlay: autoPlay
+            )
+        }
     }
 
     /// 协调器加载完歌词后回填(本地缓存 / 从源读 .lrc)。仅当仍是这首歌时生效。

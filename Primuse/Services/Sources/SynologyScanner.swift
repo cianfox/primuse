@@ -129,8 +129,12 @@ actor SynologyScanner {
         try Task.checkCancellation()
         let items = try await api.listDirectory(path: path)
 
-        // Build a set of filenames for sidecar detection
+        // Build filename lookup tables for sidecar detection.
         let allNames = Set(items.map(\.name))
+        let nameByLowercase = Dictionary(
+            items.map { ($0.name.lowercased(), $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let coverNames = PrimuseConstants.folderCoverNames  // cover.jpg, folder.jpg, etc.
 
         // Detect folder-level cover sidecar (e.g., cover.jpg in this directory).
@@ -164,29 +168,6 @@ actor SynologyScanner {
                 let ext = (item.name as NSString).pathExtension.lowercased()
                 guard PrimuseConstants.supportedAudioExtensions.contains(ext) else { continue }
                 encounteredPaths.insert(item.path)
-                // 已知文件: size + mtime 都没变才跳过。变了(远端同名覆盖)就往下重新
-                // 解析并替换旧条目, 否则覆盖文件的新标签/封面/时长/大小永远刷不出来。
-                if let idx = existingByPath[item.path] {
-                    let existing = allSongs[idx]
-                    let sizeSame = existing.fileSize == item.size
-                    let mtimeSame: Bool
-                    if let a = existing.lastModified, let b = item.modifiedTime {
-                        mtimeSame = abs(a.timeIntervalSince1970 - b.timeIntervalSince1970) < 1
-                    } else {
-                        // 任一侧缺 mtime 时退化为只比 size。
-                        mtimeSame = true
-                    }
-                    if sizeSame && mtimeSame {
-                        // 旧库迁移: existing 缺 mtime 而远端有 —— 廉价回填 mtime(不重新解析
-                        // 元数据 / 不下载 header)。否则这首歌永远 lastModified=nil, 跳过路径也
-                        // 走不到下方写入, 未来同名同大小覆盖永远检测不到。回填后随 addSongs
-                        // 落库, 下次扫描即可做 size+mtime 指纹比对。
-                        if existing.lastModified == nil, let remoteMtime = item.modifiedTime {
-                            allSongs[idx].lastModified = remoteMtime
-                        }
-                        continue
-                    }
-                }
 
                 // Detect sidecar files by name (no download needed)
                 let baseName = (item.name as NSString).deletingPathExtension
@@ -215,6 +196,48 @@ actor SynologyScanner {
                 }
                 if coverRef == nil { coverRef = folderCoverPath }
 
+                let mvRef = Self.sameNameSidecarPath(
+                    baseName: baseName,
+                    extensions: PrimuseConstants.supportedMusicVideoExtensions,
+                    in: parentDir,
+                    nameByLowercase: nameByLowercase
+                )
+
+                // 已知文件: size + mtime 都没变才跳过。变了(远端同名覆盖)就往下重新
+                // 解析并替换旧条目, 否则覆盖文件的新标签/封面/时长/大小永远刷不出来。
+                if let idx = existingByPath[item.path] {
+                    let existing = allSongs[idx]
+                    let sizeSame = existing.fileSize == item.size
+                    let mtimeSame: Bool
+                    if let a = existing.lastModified, let b = item.modifiedTime {
+                        mtimeSame = abs(a.timeIntervalSince1970 - b.timeIntervalSince1970) < 1
+                    } else {
+                        // 任一侧缺 mtime 时退化为只比 size。
+                        mtimeSame = true
+                    }
+                    if sizeSame && mtimeSame {
+                        // 旧库迁移: existing 缺 mtime 而远端有 —— 廉价回填 mtime(不重新解析
+                        // 元数据 / 不下载 header)。否则这首歌永远 lastModified=nil, 跳过路径也
+                        // 走不到下方写入, 未来同名同大小覆盖永远检测不到。回填后随 addSongs
+                        // 落库, 下次扫描即可做 size+mtime 指纹比对。
+                        if existing.lastModified == nil, let remoteMtime = item.modifiedTime {
+                            allSongs[idx].lastModified = remoteMtime
+                        }
+                        if let coverRef, allSongs[idx].coverArtFileName != coverRef {
+                            allSongs[idx].coverArtFileName = coverRef
+                        }
+                        if let lyricsRef, allSongs[idx].lyricsFileName != lyricsRef {
+                            allSongs[idx].lyricsFileName = lyricsRef
+                        }
+                        if let mvRef {
+                            allSongs[idx].mvPath = mvRef
+                        } else if Self.isSameNameMusicVideoSidecar(existing.mvPath, baseName: baseName, in: parentDir) {
+                            allSongs[idx].mvPath = nil
+                        }
+                        continue
+                    }
+                }
+
                 count += 1
                 continuation.yield(ScanUpdate(
                     scannedCount: count, totalCount: totalCount, currentFile: item.name, songs: allSongs
@@ -228,6 +251,12 @@ actor SynologyScanner {
                 // 重扫后检测不到变化(mtime/revision 两侧都 nil)而保留旧元数据。
                 if let coverRef { song.coverArtFileName = coverRef }
                 if let lyricsRef { song.lyricsFileName = lyricsRef }
+                if let mvRef {
+                    song.mvPath = mvRef
+                } else if let idx = existingByPath[item.path],
+                          !Self.isSameNameMusicVideoSidecar(allSongs[idx].mvPath, baseName: baseName, in: parentDir) {
+                    song.mvPath = allSongs[idx].mvPath
+                }
                 // 记录 mtime 供下次重扫指纹比对; 保留原 dateAdded 不因重扫刷新排序。
                 song.lastModified = item.modifiedTime
                 if let idx = existingByPath[item.path] {
@@ -246,6 +275,32 @@ actor SynologyScanner {
                 }
             }
         }
+    }
+
+    private static func sameNameSidecarPath(
+        baseName: String,
+        extensions: [String],
+        in parentDir: String,
+        nameByLowercase: [String: String]
+    ) -> String? {
+        for ext in extensions {
+            let key = "\(baseName).\(ext)".lowercased()
+            if let actualName = nameByLowercase[key] {
+                return (parentDir as NSString).appendingPathComponent(actualName)
+            }
+        }
+        return nil
+    }
+
+    private static func isSameNameMusicVideoSidecar(_ path: String?, baseName: String, in parentDir: String) -> Bool {
+        guard let path, path.contains("://") == false else { return false }
+        let nsPath = path as NSString
+        guard nsPath.deletingLastPathComponent == parentDir else { return false }
+        let fileName = nsPath.lastPathComponent as NSString
+        let existingBase = fileName.deletingPathExtension
+        let existingExt = fileName.pathExtension.lowercased()
+        return existingBase.caseInsensitiveCompare(baseName) == .orderedSame
+            && PrimuseConstants.supportedMusicVideoExtensions.contains(existingExt)
     }
 
     /// Download file header and extract metadata using AVFoundation

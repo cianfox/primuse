@@ -723,7 +723,7 @@ struct NowPlayingView: View {
             }
             .disabled(player.currentSong == nil || player.isLoading)
             .padding(.trailing, trailing)
-            .accessibilityLabel(Text(player.isMusicVideoModeEnabled ? "MV" : "MV"))
+            .accessibilityLabel(Text(player.isMusicVideoModeEnabled ? "Disable MV" : "Enable MV"))
         }
     }
 
@@ -1211,17 +1211,19 @@ private struct PlatformMusicVideoSurface: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MusicVideoLayerView {
         let view = MusicVideoLayerView()
-        view.playerLayer.player = player
+        view.setPlayer(player)
         return view
     }
 
     func updateUIView(_ uiView: MusicVideoLayerView, context: Context) {
-        uiView.playerLayer.player = player
+        uiView.setPlayer(player)
     }
 }
 
 private final class MusicVideoLayerView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
+
+    private var currentPlayer: AVPlayer?
 
     var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
@@ -1231,10 +1233,44 @@ private final class MusicVideoLayerView: UIView {
         super.init(frame: frame)
         playerLayer.videoGravity = .resizeAspect
         backgroundColor = .black
+        observeApplicationState()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func setPlayer(_ player: AVPlayer) {
+        currentPlayer = player
+        playerLayer.player = UIApplication.shared.applicationState == .background ? nil : player
+    }
+
+    private func observeApplicationState() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
+
+    @objc private func applicationDidEnterBackground() {
+        playerLayer.player = nil
+    }
+
+    @objc private func applicationWillEnterForeground() {
+        playerLayer.player = currentPlayer
     }
 }
 #elseif os(macOS)

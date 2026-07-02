@@ -80,6 +80,7 @@ extension CarPlaySceneDelegate: CPTemplateApplicationSceneDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             carplayLog.notice("📱 CarPlay scene didConnect — beginning template setup")
+            NotificationCenter.default.post(name: .primuseCarPlaySceneDidConnect, object: nil)
             self.interfaceController = interfaceController
             let root = self.makeRootTabBar()
             carplayLog.notice("📱 root tab bar built, setting as root template")
@@ -98,6 +99,7 @@ extension CarPlaySceneDelegate: CPTemplateApplicationSceneDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             carplayLog.notice("📱 CarPlay scene didDisconnect")
+            NotificationCenter.default.post(name: .primuseCarPlaySceneDidDisconnect, object: nil)
             CPNowPlayingTemplate.shared.remove(self)
             self.interfaceController = nil
             self.recentTemplate = nil

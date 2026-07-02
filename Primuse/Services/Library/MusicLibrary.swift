@@ -998,6 +998,24 @@ final class MusicLibrary {
         persistSnapshot()
     }
 
+    /// Update the optional MV reference without rebuilding album, artist,
+    /// playlist, and history indexes. `nil` is meaningful here: it clears a
+    /// stale video sidecar discovered during playback or scanning.
+    func updateMusicVideoReference(songID: String, mvPath: String?) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }),
+              songs[index].mvPath != mvPath else { return }
+
+        songs[index].mvPath = mvPath
+        if let visibleIndex = visibleSongs.firstIndex(where: { $0.id == songID }) {
+            visibleSongs[visibleIndex] = songs[index]
+        }
+        visibleSongByID[songID] = songs[index]
+        lastReplacedSong = songs[index]
+        lastReplacedSongIDs = [songID]
+        songReplacementToken = UUID()
+        persistSnapshot()
+    }
+
     /// Add songs from a scan result and rebuild albums/artists.
     ///
     /// `notifyRemovals` 控制是否在发现"affected source 里有歌不在 incoming 里"

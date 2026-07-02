@@ -98,8 +98,7 @@ actor MetadataService {
             result.lyrics = try? LyricsParser.parse(from: lyricsURL)
         }
 
-        if let mvURL = SidecarMetadataLoader.findMusicVideo(for: url),
-           VideoFormat.from(fileExtension: mvURL.pathExtension)?.isNativelyPlayable == true {
+        if let mvURL = SidecarMetadataLoader.findMusicVideo(for: url) {
             result.mvPath = mvURL.lastPathComponent
         }
 

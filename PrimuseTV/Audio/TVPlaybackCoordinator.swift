@@ -32,7 +32,12 @@ final class TVPlaybackCoordinator {
         self.engine = engine
     }
 
-    func play(songID: String, preferMusicVideo: Bool = false) async {
+    func play(
+        songID: String,
+        preferMusicVideo: Bool = false,
+        startAt: Double = 0,
+        autoPlay: Bool = true
+    ) async {
         store.playbackIssue = nil
         guard let song = store.library.song(id: songID) else {
             plog("🎬 TV play: song not found id=\(songID)")
@@ -53,7 +58,14 @@ final class TVPlaybackCoordinator {
         let ext = asset.fileExtension
         if !asset.isVideo, !(ext.isEmpty || Self.nativeFormats.contains(ext)) {
             plog("🎬 TV play: non-native '\(ext)' → SFBAudioEngine decode")
-            await playNonNative(song: song, source: source, credential: credential, ext: ext)
+            await playNonNative(
+                song: song,
+                source: source,
+                credential: credential,
+                ext: ext,
+                startAt: startAt,
+                autoPlay: autoPlay
+            )
             return
         }
         if let directURL = asset.directURL {
@@ -65,8 +77,7 @@ final class TVPlaybackCoordinator {
                         album: song.albumTitle ?? "",
                         duration: song.duration,
                         isVideo: asset.isVideo)
-            engine.play()
-            loadLyrics(song: song, source: source, credential: credential)
+            finishLoadedPlayback(song: song, source: source, credential: credential, startAt: startAt, autoPlay: autoPlay)
             return
         }
         // 协议直连(SMB/NFS/FTP/SFTP):用原生协议库按 range 读字节直接喂 AVPlayer,不经 iPhone
@@ -77,8 +88,7 @@ final class TVPlaybackCoordinator {
                         title: song.title, artist: song.artistName ?? "",
                         album: song.albumTitle ?? "", duration: song.duration,
                         isVideo: asset.isVideo)
-            engine.play()
-            loadLyrics(song: song, source: source, credential: credential)
+            finishLoadedPlayback(song: song, source: source, credential: credential, startAt: startAt, autoPlay: autoPlay)
             return
         }
         do {
@@ -92,8 +102,7 @@ final class TVPlaybackCoordinator {
                         album: song.albumTitle ?? "",
                         duration: song.duration,
                         isVideo: asset.isVideo)
-            engine.play()
-            loadLyrics(song: song, source: source, credential: credential)
+            finishLoadedPlayback(song: song, source: source, credential: credential, startAt: startAt, autoPlay: autoPlay)
         } catch let error as StreamResolveError {
             plog("🎬 TV play: resolve FAILED — \(error)")
             store.playbackIssue = issue(for: error, source: source)
@@ -145,13 +154,38 @@ final class TVPlaybackCoordinator {
     }
 
     /// 非原生格式:下载整文件到临时路径,交给 SFBAudioEngine 本机解码播放。
-    private func playNonNative(song: Song, source: MusicSource,
-                              credential: SourceCredential?, ext: String) async {
+    private func finishLoadedPlayback(
+        song: Song,
+        source: MusicSource,
+        credential: SourceCredential?,
+        startAt: Double,
+        autoPlay: Bool
+    ) {
+        if autoPlay {
+            engine.play()
+        }
+        if startAt > 0 {
+            engine.seek(to: startAt)
+        }
+        if !autoPlay {
+            engine.pause()
+        }
+        loadLyrics(song: song, source: source, credential: credential)
+    }
+
+    private func playNonNative(
+        song: Song,
+        source: MusicSource,
+        credential: SourceCredential?,
+        ext: String,
+        startAt: Double,
+        autoPlay: Bool
+    ) async {
         do {
             let tempURL = try await downloadToTemp(song: song, source: source, credential: credential, ext: ext)
             engine.loadDecoded(fileURL: tempURL, title: song.title, artist: song.artistName ?? "",
                                album: song.albumTitle ?? "", duration: song.duration)
-            loadLyrics(song: song, source: source, credential: credential)
+            finishLoadedPlayback(song: song, source: source, credential: credential, startAt: startAt, autoPlay: autoPlay)
         } catch let e as StreamResolveError {
             plog("🎬 TV play: non-native resolve FAILED — \(e)")
             store.playbackIssue = issue(for: e, source: source)

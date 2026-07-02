@@ -12,6 +12,13 @@ import AppKit
 import WidgetKit
 #endif
 
+#if os(iOS)
+extension Notification.Name {
+    static let primuseCarPlaySceneDidConnect = Notification.Name("primuse.carPlaySceneDidConnect")
+    static let primuseCarPlaySceneDidDisconnect = Notification.Name("primuse.carPlaySceneDidDisconnect")
+}
+#endif
+
 /// Mutable counter that can be captured by @Sendable closures (e.g. Timer callbacks wrapped in Task).
 private final class StepCounter: @unchecked Sendable {
     var value = 0
@@ -254,14 +261,36 @@ final class AudioPlayerService {
     private var appleMusicMirrorTask: Task<Void, Never>?
     private var musicVideoTimeObserver: Any?
     private var musicVideoEndObserver: NSObjectProtocol?
+    #if os(iOS)
+    private var isCarPlaySceneActive = false
+    private var carPlayConnectObserver: NSObjectProtocol?
+    private var carPlayDisconnectObserver: NSObjectProtocol?
+    private var carAudioRouteObserver: NSObjectProtocol?
+    #endif
 
     var canPlayMusicVideo: Bool {
         guard let song = currentSong,
               song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             return false
         }
-        return !isAppleMusicMode && !isCastingMode
+        return !isAppleMusicMode && !isCastingMode && !shouldForceAudioOnly
     }
+
+    private var shouldForceAudioOnly: Bool {
+        #if os(iOS)
+        return isCarPlaySceneActive || Self.isCarAudioRouteActive()
+        #else
+        return false
+        #endif
+    }
+
+    #if os(iOS)
+    private static func isCarAudioRouteActive() -> Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { output in
+            output.portType == .carAudio
+        }
+    }
+    #endif
 
     // MARK: - Shuffle Order
     private var shuffledIndices: [Int] = []
@@ -376,6 +405,9 @@ final class AudioPlayerService {
         applyPlaybackRate()
         observeSpatialAudioSettings()
         observePlaybackRate()
+        #if os(iOS)
+        observeCarAudioRouteState()
+        #endif
 
         // 服务端曲库源(Subsonic/Navidrome)回报回调 —— 把 ScrobbleService 的播放
         // 事件按源路由到对应 connector 的 /rest/scrobble。非服务端源 no-op。
@@ -524,6 +556,50 @@ final class AudioPlayerService {
         }
     }
 
+    #if os(iOS)
+    private func observeCarAudioRouteState() {
+        guard carPlayConnectObserver == nil else { return }
+        let center = NotificationCenter.default
+
+        carPlayConnectObserver = center.addObserver(
+            forName: .primuseCarPlaySceneDidConnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isCarPlaySceneActive = true
+                self.forceAudioOnlyIfNeeded()
+            }
+        }
+
+        carPlayDisconnectObserver = center.addObserver(
+            forName: .primuseCarPlaySceneDidDisconnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.isCarPlaySceneActive = false
+            }
+        }
+
+        carAudioRouteObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.forceAudioOnlyIfNeeded()
+            }
+        }
+    }
+
+    private func forceAudioOnlyIfNeeded() {
+        guard shouldForceAudioOnly, isMusicVideoPlaybackActive else { return }
+        Task { await replayCurrentSongAsAudio(restoreMusicVideoModeAfterPlay: true) }
+    }
+    #endif
+
     private func clearPendingPlaybackRecovery() {
         shouldResumeAfterInterruption = false
         needsPlaybackRecovery = false
@@ -570,10 +646,31 @@ final class AudioPlayerService {
         }
     }
 
+    private func replayCurrentSongAsAudio(restoreMusicVideoModeAfterPlay: Bool) async {
+        guard let song = currentSong else { return }
+        let resumeTime = currentTime
+        let shouldPlay = isPlaying || isLoading
+        let previousMode = isMusicVideoModeEnabled
+
+        isMusicVideoModeEnabled = false
+        await play(song: song)
+        if restoreMusicVideoModeAfterPlay {
+            isMusicVideoModeEnabled = previousMode
+        }
+        if resumeTime > 0 {
+            try? await Task.sleep(for: .milliseconds(250))
+            seek(to: resumeTime, startPlaying: shouldPlay)
+        }
+        if !shouldPlay {
+            pause()
+        }
+    }
+
     private func startMusicVideoPlaybackIfAvailable(for song: Song, playID id: UUID) async -> Bool {
         guard isMusicVideoModeEnabled,
               !isAppleMusicMode,
               !isCastingMode,
+              !shouldForceAudioOnly,
               let sourceManager,
               song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             return false
@@ -616,6 +713,9 @@ final class AudioPlayerService {
         } catch {
             guard playID == id else { return true }
             plog("🎞️ MV resolve failed for '\(song.title)': \(error.localizedDescription)")
+            if isMissingMusicVideoFileError(error) {
+                clearStaleMusicVideoReference(for: song)
+            }
             return false
         }
     }
@@ -637,11 +737,7 @@ final class AudioPlayerService {
                         self.duration = itemDuration.sanitizedDuration
                     }
                     if item.status == .failed {
-                        self.showPlaybackError(String(localized: "playback_error_decode"))
-                        self.isPlaying = false
-                        self.isLoading = false
-                        self.updateNowPlayingInfo()
-                        self.updatePlaybackState()
+                        await self.handleMusicVideoPlaybackFailure(playID: id, error: item.error)
                     }
                 }
             }
@@ -657,6 +753,42 @@ final class AudioPlayerService {
                 self.currentTime = self.duration
                 await self.handleTrackEnd()
             }
+        }
+    }
+
+    private func handleMusicVideoPlaybackFailure(playID id: UUID, error: Error?) async {
+        guard playID == id, isMusicVideoPlaybackActive else { return }
+        if let song = currentSong {
+            plog("🎞️ MV playback failed for '\(song.title)': \(error?.localizedDescription ?? "-")")
+        }
+        showPlaybackError(String(localized: "playback_error_decode"))
+        isMusicVideoModeEnabled = false
+        await replayCurrentSongAsAudio(restoreMusicVideoModeAfterPlay: false)
+    }
+
+    private func isMissingMusicVideoFileError(_ error: Error) -> Bool {
+        if case SourceError.fileNotFound = error { return true }
+        if case SourceError.pathNotFound = error { return true }
+
+        let ns = error as NSError
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOENT) {
+            return true
+        }
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileNoSuchFileError {
+            return true
+        }
+
+        let message = error.localizedDescription.lowercased()
+        return message.contains("not found")
+            || message.contains("no such file")
+            || message.contains("不存在")
+    }
+
+    private func clearStaleMusicVideoReference(for song: Song) {
+        guard song.mvPath != nil else { return }
+        library?.updateMusicVideoReference(songID: song.id, mvPath: nil)
+        if currentSong?.id == song.id {
+            currentSong?.mvPath = nil
         }
     }
 
@@ -1721,12 +1853,25 @@ final class AudioPlayerService {
               !settings.crossfadeEnabled,
               repeatMode != .one else { return false }
 
+        if shouldBypassContinuousAudioTransition(for: nextSongInQueue()) {
+            return false
+        }
+
         switch activeDecoderKind {
         case .native, .httpStream, .cloudStream:
             return true
         case .streaming, .assetReader:
             return false
         }
+    }
+
+    private func shouldBypassContinuousAudioTransition(for song: Song?) -> Bool {
+        guard isMusicVideoModeEnabled,
+              let song,
+              song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return false
+        }
+        return true
     }
 
     /// Schedule the final buffer of a track with the appropriate completion callback
@@ -2838,7 +2983,8 @@ final class AudioPlayerService {
         // `currentIndex < queue.count - 1` was always false in the
         // single-song repeat-one case so crossfade was never enabled;
         // preserve that.
-        guard repeatMode != .one, nextSongInQueue() != nil else { return }
+        guard repeatMode != .one, let nextSong = nextSongInQueue() else { return }
+        guard shouldBypassContinuousAudioTransition(for: nextSong) == false else { return }
 
         crossfadeTriggered = true
         Task { await startCrossfade(duration: settings.crossfadeDuration) }
@@ -2846,6 +2992,10 @@ final class AudioPlayerService {
 
     private func startCrossfade(duration crossfadeDuration: Double) async {
         guard let nextSong = nextSongInQueue() else {
+            crossfadeTriggered = false; isCrossfading = false
+            return
+        }
+        guard shouldBypassContinuousAudioTransition(for: nextSong) == false else {
             crossfadeTriggered = false; isCrossfading = false
             return
         }
