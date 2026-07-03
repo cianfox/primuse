@@ -265,6 +265,7 @@ final class SourceManager {
     private(set) var offlineAudioSnapshots: [String: OfflineAudioCacheSnapshot] = [:]
     private var offlineDownloadTasks: [String: OfflineDownloadTaskRecord] = [:]
     private var musicVideoCacheTasks: [String: Task<URL, Error>] = [:]
+    private var musicVideoCacheTargets: [String: URL] = [:]
 
     init(database: LibraryDatabase) {
         self.sourcesProvider = {
@@ -1056,16 +1057,25 @@ final class SourceManager {
             return try await task.value
         }
 
+        let target = videoCacheURL(sourceID: source.id, path: path)
         let task = Task { @MainActor [self] in
-            defer { self.musicVideoCacheTasks[cacheKey] = nil }
-            return try await self.materializeCachedMusicVideoURL(for: path, source: source, connector: connector)
+            defer {
+                self.musicVideoCacheTasks[cacheKey] = nil
+                self.musicVideoCacheTargets[cacheKey] = nil
+            }
+            return try await self.materializeCachedMusicVideoURL(for: path, source: source, connector: connector, target: target)
         }
         musicVideoCacheTasks[cacheKey] = task
+        musicVideoCacheTargets[cacheKey] = target
         return try await task.value
     }
 
-    private func materializeCachedMusicVideoURL(for path: String, source: MusicSource, connector: any MusicSourceConnector) async throws -> URL {
-        let target = videoCacheURL(sourceID: source.id, path: path)
+    private func materializeCachedMusicVideoURL(
+        for path: String,
+        source: MusicSource,
+        connector: any MusicSourceConnector,
+        target: URL
+    ) async throws -> URL {
         let expectedSize = try? await musicVideoFileSize(path: path, connector: connector)
         if FileManager.default.fileExists(atPath: target.path) {
             if let expectedSize, expectedSize > 0, byteSize(at: target) != expectedSize {
@@ -1088,11 +1098,6 @@ final class SourceManager {
                 recordVideoCacheAccess(target)
                 return target
             }
-        }
-
-        if FileManager.default.fileExists(atPath: target.path) {
-            recordVideoCacheAccess(target)
-            return target
         }
 
         try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1222,6 +1227,10 @@ final class SourceManager {
         if let protectedURL {
             protectedPaths.insert(protectedURL.standardizedFileURL.path)
             protectedPaths.insert(URL(fileURLWithPath: protectedURL.path + ".partial").standardizedFileURL.path)
+        }
+        for target in musicVideoCacheTargets.values {
+            protectedPaths.insert(target.standardizedFileURL.path)
+            protectedPaths.insert(URL(fileURLWithPath: target.path + ".partial").standardizedFileURL.path)
         }
         var total: Int64 = 0
         var entries: [(url: URL, modified: Date)] = []

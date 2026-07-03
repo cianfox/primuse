@@ -2,6 +2,7 @@
 import AVKit
 import SwiftUI
 import PrimuseKit
+import UIKit
 
 /// tvOS 正在播放 — 左列封面+元数据+进度+传输键,右列巨幅逐字歌词(对应 TVNowPlayingArtboard)。
 /// Menu 键返回;右上角可打开队列 / 选项。
@@ -62,7 +63,7 @@ struct TVNowPlayingView: View {
     private var musicVideoFullScreenPlayer: some View {
         let np = store.nowPlaying
         return ZStack {
-            VideoPlayer(player: store.engine.displayPlayer)
+            TVMusicVideoSurface(player: store.engine.displayPlayer)
                 .ignoresSafeArea()
                 .background(.black)
 
@@ -115,7 +116,7 @@ struct TVNowPlayingView: View {
         return VStack(alignment: .leading, spacing: 0) {
             TVEyebrow(text: PMString("ext.tv.nowPlaying.eyebrow")).padding(.bottom, 16)
             if store.isMusicVideoPlaybackActive {
-                VideoPlayer(player: store.engine.displayPlayer)
+                TVMusicVideoSurface(player: store.engine.displayPlayer)
                     .frame(width: 560, height: 315)
                     .background(.black)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -307,6 +308,45 @@ struct TVKaraokeLine: View {
             acc += s.d
         }
         return (syllables.count, 0)
+    }
+}
+
+// MARK: - MV Surface
+
+private struct TVMusicVideoSurface: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> TVMusicVideoLayerView {
+        let view = TVMusicVideoLayerView()
+        view.setPlayer(player)
+        return view
+    }
+
+    func updateUIView(_ uiView: TVMusicVideoLayerView, context: Context) {
+        uiView.setPlayer(player)
+    }
+}
+
+private final class TVMusicVideoLayerView: UIView {
+    override static var layerClass: AnyClass { AVPlayerLayer.self }
+
+    private var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        playerLayer.videoGravity = .resizeAspect
+        backgroundColor = .black
+        isUserInteractionEnabled = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setPlayer(_ player: AVPlayer) {
+        playerLayer.player = player
     }
 }
 

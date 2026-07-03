@@ -40,6 +40,7 @@ struct NowPlayingView: View {
     @State private var showTagEditor = false
     @State private var showSimilarSongs = false
     @State private var showMusicVideoFullScreen = false
+    @State private var fullScreenMusicVideoPlayer: AVPlayer?
     @Environment(ThemeService.self) private var theme
 
     // 父持有 @AppStorage 仅为了 onChange 触发 CloudKVS 同步;实际渲染字号由
@@ -154,18 +155,32 @@ struct NowPlayingView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: $showMusicVideoFullScreen) {
-            if let videoPlayer = player.musicVideoPlayer {
+            if let videoPlayer = fullScreenMusicVideoPlayer ?? player.musicVideoPlayer {
                 MusicVideoFullScreenView(player: videoPlayer) {
+                    fullScreenMusicVideoPlayer = nil
                     showMusicVideoFullScreen = false
                 }
             } else {
                 Color.black
                     .ignoresSafeArea()
-                    .onAppear { showMusicVideoFullScreen = false }
             }
         }
         .onChange(of: player.isMusicVideoPlaybackActive) { _, active in
-            if !active { showMusicVideoFullScreen = false }
+            if active, let videoPlayer = player.musicVideoPlayer {
+                fullScreenMusicVideoPlayer = videoPlayer
+            } else {
+                dismissMusicVideoFullScreenIfNeeded()
+            }
+        }
+        .onChange(of: player.currentSong?.id) { _, _ in
+            if player.isMusicVideoPlaybackActive, let videoPlayer = player.musicVideoPlayer {
+                fullScreenMusicVideoPlayer = videoPlayer
+            } else {
+                dismissMusicVideoFullScreenIfNeeded()
+            }
+        }
+        .onChange(of: player.isMusicVideoModeEnabled) { _, enabled in
+            if !enabled { dismissMusicVideoFullScreen() }
         }
         #endif
         .confirmationDialog(String(localized: "sleep_timer"), isPresented: $showSleepTimer) {
@@ -716,7 +731,7 @@ struct NowPlayingView: View {
 
                 #if os(iOS)
                 Button {
-                    showMusicVideoFullScreen = true
+                    presentMusicVideoFullScreen(videoPlayer)
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 14, weight: .semibold))
@@ -730,7 +745,7 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(10)
-                .accessibilityLabel(Text("Enter full screen"))
+                .accessibilityLabel(Text("full_screen_player"))
                 #endif
             }
             .frame(width: size, height: size * 9 / 16)
@@ -801,6 +816,31 @@ struct NowPlayingView: View {
             sourcesStore.updateLocal(song.sourceID) { $0.songCount = remaining }
         }
     }
+
+    #if os(iOS)
+    private func presentMusicVideoFullScreen(_ videoPlayer: AVPlayer) {
+        fullScreenMusicVideoPlayer = videoPlayer
+        showMusicVideoFullScreen = true
+    }
+
+    private func dismissMusicVideoFullScreenIfNeeded() {
+        guard showMusicVideoFullScreen else {
+            fullScreenMusicVideoPlayer = nil
+            return
+        }
+        guard player.isMusicVideoModeEnabled,
+              player.currentSong != nil,
+              player.currentSong?.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            dismissMusicVideoFullScreen()
+            return
+        }
+    }
+
+    private func dismissMusicVideoFullScreen() {
+        fullScreenMusicVideoPlayer = nil
+        showMusicVideoFullScreen = false
+    }
+    #endif
 
     // MARK: - More Menu
 
@@ -1262,7 +1302,7 @@ struct MusicVideoFullScreenView: View {
             .buttonStyle(.plain)
             .padding(.top, 24)
             .padding(.trailing, 24)
-            .accessibilityLabel(Text("Close"))
+            .accessibilityLabel(Text("close"))
         }
         #if os(iOS)
         .statusBarHidden(true)
