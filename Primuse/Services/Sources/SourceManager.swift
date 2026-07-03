@@ -264,6 +264,7 @@ final class SourceManager {
     private let sourcesProvider: @Sendable () async throws -> [MusicSource]
     private(set) var offlineAudioSnapshots: [String: OfflineAudioCacheSnapshot] = [:]
     private var offlineDownloadTasks: [String: OfflineDownloadTaskRecord] = [:]
+    private var musicVideoCacheTasks: [String: Task<URL, Error>] = [:]
 
     init(database: LibraryDatabase) {
         self.sourcesProvider = {
@@ -1050,13 +1051,50 @@ final class SourceManager {
     }
 
     private func cachedMusicVideoURL(for path: String, source: MusicSource, connector: any MusicSourceConnector) async throws -> URL {
+        let cacheKey = "\(source.id):\(path)"
+        if let task = musicVideoCacheTasks[cacheKey] {
+            return try await task.value
+        }
+
+        let task = Task { @MainActor [self] in
+            defer { self.musicVideoCacheTasks[cacheKey] = nil }
+            return try await self.materializeCachedMusicVideoURL(for: path, source: source, connector: connector)
+        }
+        musicVideoCacheTasks[cacheKey] = task
+        return try await task.value
+    }
+
+    private func materializeCachedMusicVideoURL(for path: String, source: MusicSource, connector: any MusicSourceConnector) async throws -> URL {
         let target = videoCacheURL(sourceID: source.id, path: path)
+        let expectedSize = try? await musicVideoFileSize(path: path, connector: connector)
+        if FileManager.default.fileExists(atPath: target.path) {
+            if let expectedSize, expectedSize > 0, byteSize(at: target) != expectedSize {
+                plog("🗑 MV cache: stale/incomplete cached video source=\(source.id.prefix(8)) path=\((path as NSString).lastPathComponent) actual=\(byteSize(at: target) / 1024)KB expected=\(expectedSize / 1024)KB")
+                removeCacheFileFamily(at: target)
+            } else {
+                recordVideoCacheAccess(target)
+                return target
+            }
+        }
+
+        if let expectedSize, expectedSize > 0 {
+            let partial = URL(fileURLWithPath: target.path + ".partial")
+            let partialSize = byteSize(at: partial)
+            if partialSize > expectedSize {
+                try? FileManager.default.removeItem(at: partial)
+            } else if partialSize == expectedSize {
+                try? FileManager.default.removeItem(at: target)
+                try FileManager.default.moveItem(at: partial, to: target)
+                recordVideoCacheAccess(target)
+                return target
+            }
+        }
+
         if FileManager.default.fileExists(atPath: target.path) {
             recordVideoCacheAccess(target)
             return target
         }
 
-        let expectedSize = try? await musicVideoFileSize(path: path, connector: connector)
         try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         evictVideoCacheIfNeeded(reserveBytes: expectedSize ?? 0, protecting: target)
 
@@ -1180,26 +1218,39 @@ final class SourceManager {
             options: [.skipsHiddenFiles]
         ) else { return }
 
-        let protectedPath = protectedURL?.standardizedFileURL.path
+        var protectedPaths: Set<String> = []
+        if let protectedURL {
+            protectedPaths.insert(protectedURL.standardizedFileURL.path)
+            protectedPaths.insert(URL(fileURLWithPath: protectedURL.path + ".partial").standardizedFileURL.path)
+        }
         var total: Int64 = 0
-        var entries: [(url: URL, size: Int64, modified: Date)] = []
+        var entries: [(url: URL, modified: Date)] = []
         while let url = enumerator.nextObject() as? URL {
-            guard url.lastPathComponent.hasSuffix(".partial") == false,
-                  let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey]),
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey]),
                   values.isRegularFile == true else { continue }
             let size = Int64(values.totalFileAllocatedSize ?? 0)
             total += size
-            if url.standardizedFileURL.path != protectedPath {
-                entries.append((url, size, values.contentModificationDate ?? .distantPast))
+            if protectedPaths.contains(url.standardizedFileURL.path) == false {
+                entries.append((url, values.contentModificationDate ?? .distantPast))
             }
         }
 
         var bytesToFree = total + reserveBytes - Self.videoCacheLimitBytes
         guard bytesToFree > 0 else { return }
+        var removedPaths: Set<String> = []
         for entry in entries.sorted(by: { $0.modified < $1.modified }) {
-            try? FileManager.default.removeItem(at: entry.url)
-            try? FileManager.default.removeItem(at: URL(fileURLWithPath: entry.url.path + ".partial"))
-            bytesToFree -= entry.size
+            let candidates = entry.url.lastPathComponent.hasSuffix(".partial")
+                ? [entry.url]
+                : [entry.url, URL(fileURLWithPath: entry.url.path + ".partial")]
+            for candidate in candidates {
+                let path = candidate.standardizedFileURL.path
+                guard protectedPaths.contains(path) == false, removedPaths.contains(path) == false else { continue }
+                let size = fileSize(at: candidate) ?? byteSize(at: candidate)
+                if (try? FileManager.default.removeItem(at: candidate)) != nil {
+                    removedPaths.insert(path)
+                    bytesToFree -= size
+                }
+            }
             if bytesToFree <= 0 { break }
         }
     }
