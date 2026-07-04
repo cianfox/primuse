@@ -182,6 +182,9 @@ struct NowPlayingView: View {
         .onChange(of: player.isMusicVideoModeEnabled) { _, enabled in
             if !enabled { dismissMusicVideoFullScreen() }
         }
+        .onChange(of: player.musicVideoAudioFallbackToken) { _, _ in
+            dismissMusicVideoFullScreen()
+        }
         #endif
         .confirmationDialog(String(localized: "sleep_timer"), isPresented: $showSleepTimer) {
             Button("5 " + String(localized: "minutes")) { player.scheduleSleep(minutes: 5) }

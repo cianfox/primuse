@@ -184,6 +184,7 @@ final class AudioPlayerService {
     private(set) var musicVideoPlayer: AVPlayer?
     private(set) var isMusicVideoModeEnabled = false
     private(set) var isMusicVideoPlaybackActive = false
+    private(set) var musicVideoAudioFallbackToken = UUID()
 
     private(set) var currentTimeAnchor: Date = Date()
 
@@ -666,24 +667,30 @@ final class AudioPlayerService {
         }
     }
 
-    private func startMusicVideoPlaybackIfAvailable(for song: Song, playID id: UUID) async -> Bool {
+    private enum MusicVideoStartResult {
+        case started
+        case skipped
+        case needsAudioFallback
+    }
+
+    private func startMusicVideoPlaybackIfAvailable(for song: Song, playID id: UUID) async -> MusicVideoStartResult {
         guard isMusicVideoModeEnabled,
               !isAppleMusicMode,
               !isCastingMode,
               !shouldForceAudioOnly,
               let sourceManager,
               song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return false
+            return .skipped
         }
 
         do {
-            guard let url = try await sourceManager.resolveVideoURL(for: song) else { return false }
-            guard playID == id else { return true }
+            guard let url = try await sourceManager.resolveVideoURL(for: song) else { return .needsAudioFallback }
+            guard playID == id else { return .started }
 
             if let format = VideoFormat.from(fileExtension: url.pathExtension),
                format.isNativelyPlayable == false {
                 plog("🎞️ MV unsupported format \(format.rawValue) for '\(song.title)'")
-                return false
+                return .needsAudioFallback
             }
 
             _ = AudioSessionManager.shared.activatePlaybackSession()
@@ -709,15 +716,27 @@ final class AudioPlayerService {
             updateNowPlayingArtworkIfNeeded()
             updatePlaybackState()
             plog("🎞️ MV playback started for '\(song.title)' → \(redactedURL(url))")
-            return true
+            return .started
         } catch {
-            guard playID == id else { return true }
+            guard playID == id else { return .started }
             plog("🎞️ MV resolve failed for '\(song.title)': \(error.localizedDescription)")
             if isMissingMusicVideoFileError(error) {
                 clearStaleMusicVideoReference(for: song)
             }
-            return false
+            return .needsAudioFallback
         }
+    }
+
+    private func markMusicVideoAudioFallbackIfNeeded(playID id: UUID) {
+        guard playID == id,
+              isPlaying,
+              !isLoading,
+              isMusicVideoModeEnabled,
+              !isMusicVideoPlaybackActive,
+              currentSong?.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return
+        }
+        musicVideoAudioFallbackToken = UUID()
     }
 
     private func configureMusicVideoObservers(for player: AVPlayer, playID id: UUID) {
@@ -931,7 +950,8 @@ final class AudioPlayerService {
         isAtTrackEnd = false
         plog("▶️ currentSong set to: \(song.title)")
 
-        if await startMusicVideoPlaybackIfAvailable(for: song, playID: id) {
+        let musicVideoStartResult = await startMusicVideoPlaybackIfAvailable(for: song, playID: id)
+        if case .started = musicVideoStartResult {
             return
         }
 
@@ -940,6 +960,9 @@ final class AudioPlayerService {
             // Check if another play was initiated while downloading
             guard playID == id else { return }
             await playFromURL(song: song, url: url, playID: id)
+            if case .needsAudioFallback = musicVideoStartResult {
+                markMusicVideoAudioFallbackIfNeeded(playID: id)
+            }
         } catch {
             guard playID == id else { return }
             plog("Playback URL resolution error: \(error)")

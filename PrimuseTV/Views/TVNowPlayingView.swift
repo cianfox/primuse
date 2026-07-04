@@ -115,21 +115,9 @@ struct TVNowPlayingView: View {
         let np = store.nowPlaying
         return VStack(alignment: .leading, spacing: 0) {
             TVEyebrow(text: PMString("ext.tv.nowPlaying.eyebrow")).padding(.bottom, 16)
-            if store.isMusicVideoPlaybackActive {
-                TVMusicVideoSurface(player: store.engine.displayPlayer)
-                    .frame(width: 560, height: 315)
-                    .background(.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .strokeBorder(.white.opacity(0.14), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
-            } else {
-                TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
-                              tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 420, radius: 20)
-                    .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
-            }
+            TVArtworkView(coverKey: np.albumID, artist: np.artist, album: np.album,
+                          tint: np.tint, tint2: np.tint2, glyph: np.glyph, size: 420, radius: 20)
+                .shadow(color: .black.opacity(0.5), radius: 36, y: 18)
             Text(np.title).font(.system(size: 48, weight: .bold)).tracking(-0.8)
                 .foregroundStyle(.white).lineLimit(2).padding(.top, 26)
             Text(np.artist).font(.system(size: 26)).foregroundStyle(.white.opacity(0.72)).padding(.top, 8)
