@@ -386,6 +386,11 @@ targets:
   PrimuseMac:
     type: application
     platform: macOS
+    # 与 settings.PRODUCT_NAME 保持一致(Universal Purchase 跟 iOS 共用
+    # Primuse.app)。不声明的话 xcodegen 会按 target 名生成 scheme 的
+    # buildableName=PrimuseMac.app, 与实际产物 Primuse.app 不符, Xcode 每次
+    # 打开都改写 shared scheme 造成 git 噪音。
+    productName: Primuse
     configFiles:
       Debug: Config/Debug.xcconfig
       Release: Config/Release.xcconfig

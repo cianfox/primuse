@@ -30,7 +30,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A421DEB7AD07C5D9B09C3FDE"
-               BuildableName = "PrimuseMac.app"
+               BuildableName = "Primuse.app"
                BlueprintName = "PrimuseMac"
                ReferencedContainer = "container:Primuse.xcodeproj">
             </BuildableReference>
@@ -47,7 +47,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A421DEB7AD07C5D9B09C3FDE"
-            BuildableName = "PrimuseMac.app"
+            BuildableName = "Primuse.app"
             BlueprintName = "PrimuseMac"
             ReferencedContainer = "container:Primuse.xcodeproj">
          </BuildableReference>
@@ -70,7 +70,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A421DEB7AD07C5D9B09C3FDE"
-            BuildableName = "PrimuseMac.app"
+            BuildableName = "Primuse.app"
             BlueprintName = "PrimuseMac"
             ReferencedContainer = "container:Primuse.xcodeproj">
          </BuildableReference>
@@ -89,7 +89,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A421DEB7AD07C5D9B09C3FDE"
-            BuildableName = "PrimuseMac.app"
+            BuildableName = "Primuse.app"
             BlueprintName = "PrimuseMac"
             ReferencedContainer = "container:Primuse.xcodeproj">
          </BuildableReference>

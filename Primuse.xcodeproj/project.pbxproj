@@ -926,7 +926,6 @@
 		3C221E974A2E6E831F7EAF27 /* SynologyStreamResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SynologyStreamResolver.swift; sourceTree = "<group>"; };
 		3C85D6EDF29DAED03773957A /* OAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthService.swift; sourceTree = "<group>"; };
 		3D6AA5670DB514ED0BF3B952 /* TVSourceScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVSourceScanner.swift; sourceTree = "<group>"; };
-		3DD5352FEE6C1D2AC0D4AA38 /* PrimuseMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PrimuseMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E648713A25DB3912120693A /* OneDriveSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneDriveSource.swift; sourceTree = "<group>"; };
 		3EAEEF509D406B281AA97EB5 /* TVServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = TVServices.framework; path = System/Library/Frameworks/TVServices.framework; sourceTree = SDKROOT; };
 		404526370F939D7D68BB9F6E /* UgreenSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UgreenSource.swift; sourceTree = "<group>"; };
@@ -936,6 +935,7 @@
 		43740BC5ACC88D24034B941C /* TVHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVHomeView.swift; sourceTree = "<group>"; };
 		4430B0204E343AF011F490F1 /* StreamResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamResolver.swift; sourceTree = "<group>"; };
 		44B4D0FC334BC388026F33AF /* NFSBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NFSBrowserView.swift; sourceTree = "<group>"; };
+		44E0FB1BC9956D86766A605B /* Primuse.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Primuse.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		455D2BB99BCD406F4DE671D6 /* TVArtwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVArtwork.swift; sourceTree = "<group>"; };
 		45727C23F384EA4681DAF4F3 /* AppUpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateChecker.swift; sourceTree = "<group>"; };
 		45C509411F7A302882D944E2 /* TVSourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVSourcesView.swift; sourceTree = "<group>"; };
@@ -2115,9 +2115,9 @@
 			isa = PBXGroup;
 			children = (
 				D895718972388CC203A15AC1 /* Primuse.app */,
+				44E0FB1BC9956D86766A605B /* Primuse.app */,
 				4A09B9F2F4A23C9EAF3DDBA3 /* PrimuseActivityExtension.appex */,
 				B1E36F2FECF46E724081F983 /* PrimuseKit.framework */,
-				3DD5352FEE6C1D2AC0D4AA38 /* PrimuseMac.app */,
 				5777C4BD5F21B1F077D01378 /* PrimuseTopShelf.appex */,
 				E77C291D51A0577AAC67C318 /* PrimuseTV.app */,
 				0C7964E39EEC2700BAB113F8 /* PrimuseWatchApp.app */,
@@ -2372,7 +2372,7 @@
 				55D70C047D426E7C59D8AE14 /* SFBAudioEngine */,
 			);
 			productName = PrimuseMac;
-			productReference = 3DD5352FEE6C1D2AC0D4AA38 /* PrimuseMac.app */;
+			productReference = 44E0FB1BC9956D86766A605B /* Primuse.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D78C07FFF7D4E14143E77E5A /* PrimuseWatchApp */ = {
