@@ -456,6 +456,7 @@
 "song_details_loading_message" = "再生時間、カバー、アーティストを抽出するため、この曲のタグヘッダ（約 256 KB）をクラウドからダウンロードしています。完了すると再生キューに追加できます。";
 "song_details_unavailable" = "曲の詳細を取得できません";
 "song_details_unavailable_message" = "タグは読み込めましたが、再生時間を抽出できませんでした。ファイルが破損しているか、サポートされていない形式の可能性があります。";
+"music_video_badge" = "ミュージックビデオ";
 "audio_effects" = "オーディオエフェクト";
 "reverb" = "リバーブ";
 "reverb_enabled" = "リバーブ";

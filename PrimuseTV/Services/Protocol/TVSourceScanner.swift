@@ -145,9 +145,26 @@ final class TVSourceScanner {
                 try await collect(lister: lister, path: e.path, source: source, into: &collected, seen: &seen)
             } else {
                 let ext = (e.name as NSString).pathExtension.lowercased()
-                guard PrimuseConstants.supportedAudioExtensions.contains(ext) else { continue }
-                guard seen.insert(e.path).inserted else { continue }
-                collected.append((Self.makeSong(entry: e, source: source), files))
+                if PrimuseConstants.supportedAudioExtensions.contains(ext) {
+                    guard seen.insert(e.path).inserted else { continue }
+                    collected.append((Self.makeSong(entry: e, source: source), files))
+                } else if PrimuseConstants.supportedMusicVideoExtensions.contains(ext) {
+                    // 独立 MV: 同目录无同名音频的视频独立成曲, mvPath 指向自身;
+                    // 有同名音频时它是那首歌的 sidecar(enrich 阶段挂上), 不成曲。
+                    let stem = (e.name as NSString).deletingPathExtension.lowercased()
+                    let hasSameNameAudio = files.contains {
+                        let fExt = ($0.name as NSString).pathExtension.lowercased()
+                        return PrimuseConstants.supportedAudioExtensions.contains(fExt)
+                            && ($0.name as NSString).deletingPathExtension.lowercased() == stem
+                    }
+                    guard hasSameNameAudio == false else { continue }
+                    guard seen.insert(e.path).inserted else { continue }
+                    var song = Self.makeSong(entry: e, source: source)
+                    song.mvPath = e.path
+                    collected.append((song, files))
+                } else {
+                    continue
+                }
                 indexed = collected.count
                 currentFile = e.path
             }

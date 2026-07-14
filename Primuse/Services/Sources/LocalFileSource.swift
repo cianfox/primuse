@@ -122,7 +122,13 @@ actor LocalFileSource: SongScanningConnector {
 
                 while let url = enumerator?.nextObject() as? URL {
                     let ext = url.pathExtension.lowercased()
-                    guard PrimuseConstants.supportedAudioExtensions.contains(ext) else { continue }
+                    let isAudio = PrimuseConstants.supportedAudioExtensions.contains(ext)
+                    // 独立 MV: 无同名音频的视频文件也成曲目; 有同名音频时
+                    // 视频是那首歌的 sidecar, 不独立成曲。
+                    let isStandaloneVideo = !isAudio
+                        && PrimuseConstants.supportedMusicVideoExtensions.contains(ext)
+                        && Self.hasSameNameAudioSibling(url) == false
+                    guard isAudio || isStandaloneVideo else { continue }
 
                     // 扫描期间单个文件可能被删除/移动,或为 iCloud dataless
                     // 文件而无法读取属性 ── 跳过该文件继续枚举,不要让 resourceValues
@@ -184,12 +190,16 @@ actor LocalFileSource: SongScanningConnector {
             fallbackTitle: originalBaseName
         )
 
-        guard metadata.duration > 0 else {
+        // 独立 MV 允许 duration=0(播放时 AVPlayer 回填), 音频解析不出时长
+        // 才按不可读跳过。
+        let ext = (item.name as NSString).pathExtension
+        let isStandaloneVideo = PrimuseConstants.supportedMusicVideoExtensions.contains(ext.lowercased())
+        guard isStandaloneVideo || metadata.duration > 0 else {
             plog("📥 LocalFileSource: skipping unreadable local audio '\(item.name)' size=\(item.size)B")
             return nil
         }
 
-        let format = AudioFormat.from(fileExtension: (item.name as NSString).pathExtension) ?? .mp3
+        let format = AudioFormat.from(fileExtension: ext) ?? .mp3
         let song = Song(
             id: songID,
             title: metadata.title,
@@ -210,13 +220,26 @@ actor LocalFileSource: SongScanningConnector {
             lastModified: item.modifiedDate,
             coverArtFileName: metadata.coverArtFileName,
             lyricsFileName: metadata.lyricsFileName,
-            mvPath: sidecarPath(nextTo: item.path, named: metadata.mvPath),
+            mvPath: isStandaloneVideo
+                ? item.path
+                : sidecarPath(nextTo: item.path, named: metadata.mvPath),
             replayGainTrackGain: metadata.replayGainTrackGain,
             replayGainTrackPeak: metadata.replayGainTrackPeak,
             replayGainAlbumGain: metadata.replayGainAlbumGain,
             replayGainAlbumPeak: metadata.replayGainAlbumPeak
         )
         return ConnectorScannedSong(song: song, displayName: item.name)
+    }
+
+    /// 同目录存在任一同名音频文件时, 该视频是 sidecar 而非独立 MV。
+    private static func hasSameNameAudioSibling(_ url: URL) -> Bool {
+        let base = url.deletingPathExtension()
+        for ext in PrimuseConstants.supportedAudioExtensions {
+            if FileManager.default.fileExists(atPath: base.appendingPathExtension(ext).path) {
+                return true
+            }
+        }
+        return false
     }
 
     private func sidecarPath(nextTo filePath: String, named sidecarName: String?) -> String? {

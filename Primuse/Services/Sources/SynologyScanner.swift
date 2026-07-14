@@ -166,6 +166,18 @@ actor SynologyScanner {
                 )
             } else {
                 let ext = (item.name as NSString).pathExtension.lowercased()
+                if PrimuseConstants.supportedMusicVideoExtensions.contains(ext) {
+                    scanStandaloneVideo(
+                        item: item, ext: ext,
+                        allNames: allNames, nameByLowercase: nameByLowercase,
+                        folderCoverPath: folderCoverPath,
+                        allSongs: &allSongs, count: &count, totalCount: totalCount,
+                        existingByPath: existingByPath,
+                        encounteredPaths: &encounteredPaths,
+                        continuation: continuation
+                    )
+                    continue
+                }
                 guard PrimuseConstants.supportedAudioExtensions.contains(ext) else { continue }
                 encounteredPaths.insert(item.path)
 
@@ -274,6 +286,98 @@ actor SynologyScanner {
                     ))
                 }
             }
+        }
+    }
+
+    /// 独立 MV: 同目录没有同名音频的视频文件独立成曲, mvPath 指向自身
+    /// (Song.isStandaloneMusicVideo)。不下载 header 解析 —— 视频的 moov
+    /// 常在文件尾, 4MB 头不可靠; 时长由 MetadataBackfillService / 播放时
+    /// AVPlayer 回填。
+    private func scanStandaloneVideo(
+        item: SynologyAPI.FileItem, ext: String,
+        allNames: Set<String>, nameByLowercase: [String: String],
+        folderCoverPath: String?,
+        allSongs: inout [Song], count: inout Int, totalCount: Int,
+        existingByPath: [String: Int],
+        encounteredPaths: inout Set<String>,
+        continuation: AsyncThrowingStream<ScanUpdate, Error>.Continuation
+    ) {
+        let baseName = (item.name as NSString).deletingPathExtension
+        let parentDir = (item.path as NSString).deletingLastPathComponent
+
+        // 有同名音频时它是那首歌的 sidecar, 不独立成曲。
+        let hasSameNameAudio = PrimuseConstants.supportedAudioExtensions.contains {
+            nameByLowercase["\(baseName).\($0)".lowercased()] != nil
+        }
+        guard hasSameNameAudio == false else { return }
+        encounteredPaths.insert(item.path)
+
+        var coverRef: String?
+        for coverExt in ["jpg", "jpeg", "png", "webp"] {
+            let songCover = baseName + ".\(coverExt)"
+            if allNames.contains(songCover) {
+                coverRef = (parentDir as NSString).appendingPathComponent(songCover)
+                break
+            }
+            let nameCover = baseName + "-cover.\(coverExt)"
+            if allNames.contains(nameCover) {
+                coverRef = (parentDir as NSString).appendingPathComponent(nameCover)
+                break
+            }
+        }
+        if coverRef == nil { coverRef = folderCoverPath }
+        let lrcName = baseName + ".lrc"
+        let hasLrc = allNames.contains(lrcName) || allNames.contains(baseName + ".LRC")
+        let lyricsRef = hasLrc ? (parentDir as NSString).appendingPathComponent(lrcName) : nil
+
+        if let idx = existingByPath[item.path] {
+            let existing = allSongs[idx]
+            let sizeSame = existing.fileSize == item.size
+            let mtimeSame: Bool
+            if let a = existing.lastModified, let b = item.modifiedTime {
+                mtimeSame = abs(a.timeIntervalSince1970 - b.timeIntervalSince1970) < 1
+            } else {
+                mtimeSame = true
+            }
+            if sizeSame && mtimeSame {
+                if existing.lastModified == nil, let remoteMtime = item.modifiedTime {
+                    allSongs[idx].lastModified = remoteMtime
+                }
+                if let coverRef, allSongs[idx].coverArtFileName != coverRef {
+                    allSongs[idx].coverArtFileName = coverRef
+                }
+                if let lyricsRef, allSongs[idx].lyricsFileName != lyricsRef {
+                    allSongs[idx].lyricsFileName = lyricsRef
+                }
+                return
+            }
+        }
+
+        count += 1
+        continuation.yield(ScanUpdate(
+            scannedCount: count, totalCount: totalCount, currentFile: item.name, songs: allSongs
+        ))
+
+        let (_, parsedArtist) = parseFilename(baseName)
+        var song = Song(
+            id: generateID(sourceID: sourceID, path: item.path),
+            title: baseName,
+            artistName: parsedArtist,
+            duration: 0,
+            fileFormat: AudioFormat.from(fileExtension: ext) ?? .mp4,
+            filePath: item.path,
+            sourceID: sourceID,
+            fileSize: item.size,
+            lastModified: item.modifiedTime,
+            coverArtFileName: coverRef,
+            lyricsFileName: lyricsRef,
+            mvPath: item.path
+        )
+        if let idx = existingByPath[item.path] {
+            song.dateAdded = allSongs[idx].dateAdded
+            allSongs[idx] = song
+        } else {
+            allSongs.append(song)
         }
     }
 

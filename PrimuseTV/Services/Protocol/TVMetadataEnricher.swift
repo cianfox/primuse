@@ -16,7 +16,7 @@ enum TVMetadataEnricher {
     static let defaultMP3Bitrate = 192
 
     /// 容器格式的元数据(尤其 duration)可能在文件尾部,需 head+tail 拼读。
-    private static let tailFormats: Set<String> = ["m4a", "mp4", "m4b", "alac", "aac"]
+    private static let tailFormats: Set<String> = ["m4a", "mp4", "m4b", "alac", "aac", "m4v", "mov"]
 
     /// 读真实 tag 并合并进 `song`,带单文件超时(默认 25s)。任何失败 / 超时都原样返回
     /// 路径骨架,绝不让某个卡死的文件(SMB 读挂起 / AVAsset 解析卡住)拖死整次扫描。

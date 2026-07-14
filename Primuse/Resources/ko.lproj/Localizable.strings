@@ -455,6 +455,7 @@
 "song_details_loading_message" = "클라우드에서 이 곡의 태그 헤더(약 256KB)를 다운로드하여 길이, 커버, 아티스트를 추출하는 중입니다. 완료되면 재생 대기열에 추가할 수 있습니다.";
 "song_details_unavailable" = "곡 세부 정보를 사용할 수 없음";
 "song_details_unavailable_message" = "태그는 읽었지만 길이를 추출할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다.";
+"music_video_badge" = "뮤직비디오";
 "audio_effects" = "오디오 효과";
 "reverb" = "리버브";
 "reverb_enabled" = "리버브";

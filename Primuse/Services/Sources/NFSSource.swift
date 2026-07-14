@@ -326,9 +326,8 @@ actor NFSSource: MusicSourceConnector {
                 continue
             }
 
-            let ext = (item.name as NSString).pathExtension.lowercased()
-            if PrimuseConstants.supportedAudioExtensions.contains(ext) {
-                continuation.yield(SidecarHintResolver.decoratedAudioItem(item, siblings: items))
+            if let scannable = SidecarHintResolver.scannableItem(item, siblings: items) {
+                continuation.yield(scannable)
             }
         }
     }

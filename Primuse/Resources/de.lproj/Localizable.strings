@@ -455,6 +455,7 @@
 "song_details_loading_message" = "Der Tag-Header dieses Titels (~256 KB) wird aus der Cloud geladen, um Dauer, Cover und Künstler zu ermitteln. Danach kann der Titel zur Wiedergabeliste hinzugefügt werden.";
 "song_details_unavailable" = "Titeldetails nicht verfügbar";
 "song_details_unavailable_message" = "Die Tags wurden gelesen, aber es konnte keine Dauer ermittelt werden. Die Datei ist möglicherweise beschädigt oder hat ein nicht unterstütztes Format.";
+"music_video_badge" = "Musikvideo";
 "audio_effects" = "Audioeffekte";
 "reverb" = "Hall";
 "reverb_enabled" = "Hall";

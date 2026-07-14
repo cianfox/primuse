@@ -455,6 +455,7 @@
 "song_details_loading_message" = "Téléchargement de l'en-tête de tags de ce morceau (~256 Ko) depuis le cloud pour en extraire la durée, la pochette et l'artiste. Une fois terminé, il peut être ajouté à la file de lecture.";
 "song_details_unavailable" = "Informations du morceau indisponibles";
 "song_details_unavailable_message" = "Les tags ont été lus, mais aucune durée n'a pu être extraite. Le fichier est peut-être corrompu ou dans un format non pris en charge.";
+"music_video_badge" = "Clip vidéo";
 "audio_effects" = "Effets audio";
 "reverb" = "Réverbération";
 "reverb_enabled" = "Réverbération";

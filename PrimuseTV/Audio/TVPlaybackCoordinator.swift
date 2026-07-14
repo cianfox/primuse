@@ -115,6 +115,7 @@ final class TVPlaybackCoordinator {
     /// AVPlayer / AVFoundation 在 tvOS 原生可解码的格式;其余走 SFBAudioEngine。
     static let nativeFormats: Set<String> = [
         "mp3", "aac", "m4a", "alac", "wav", "aiff", "aif", "flac", "opus", "caf", "mp4",
+        "m4v", "mov",
     ]
 
     private struct PlaybackAsset {
@@ -125,7 +126,8 @@ final class TVPlaybackCoordinator {
     }
 
     private func playbackAsset(for song: Song, preferMusicVideo: Bool) -> PlaybackAsset {
-        guard preferMusicVideo,
+        // 独立 MV(媒体本体是视频)不看 preferMusicVideo —— 没有独立音频可回落。
+        guard preferMusicVideo || song.isStandaloneMusicVideo,
               let path = normalizedMusicVideoPath(for: song) else {
             return PlaybackAsset(song: song, fileExtension: song.fileFormat.rawValue.lowercased(), isVideo: false)
         }
@@ -137,7 +139,9 @@ final class TVPlaybackCoordinator {
         var videoSong = song
         videoSong.filePath = path
         videoSong.fileFormat = AudioFormat.from(fileExtension: ext) ?? song.fileFormat
-        videoSong.fileSize = 0
+        // sidecar MV 的 size 未知(目录列举给的是音频的), 置 0 让下游自己探;
+        // 独立 MV 的 fileSize 就是视频本身, 保留供 range 读取用。
+        videoSong.fileSize = song.isStandaloneMusicVideo ? song.fileSize : 0
         let directURL = URL(string: path).flatMap { $0.scheme == nil ? nil : $0 }
         return PlaybackAsset(song: videoSong, fileExtension: ext, isVideo: true, directURL: directURL)
     }

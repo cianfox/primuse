@@ -41,7 +41,9 @@ struct SongRowView: View {
     /// usually cover/artist) hasn't been backfilled yet. Drives a soft dim +
     /// "loading / details unavailable" subtitle. These songs ARE playable now
     /// (the player resolves duration on play), so this no longer blocks taps.
-    private var isBare: Bool { song.duration <= 0 }
+    /// 独立 MV 不算 bare —— 时长常由播放时 AVPlayer 回填, 元数据本来就薄,
+    /// 不该顶着"读取中/详情不可用"的置灰样式。
+    private var isBare: Bool { song.duration <= 0 && !song.isStandaloneMusicVideo }
     private var offlineSnapshot: OfflineAudioCacheSnapshot {
         guard supportsOfflineAudioCache else { return .notCached }
         return sourceManager.offlineAudioSnapshot(for: song)
@@ -106,16 +108,25 @@ struct SongRowView: View {
                             Text("backfill_in_progress")
                         }
                     } else {
+                        if song.isStandaloneMusicVideo {
+                            Image(systemName: "play.rectangle.fill")
+                                .font(.caption2)
+                                .accessibilityLabel(Text("music_video_badge"))
+                        }
                         if let artist = song.artistName {
+                            if song.isStandaloneMusicVideo { Text("·") }
                             Text(artist)
                         }
                         if showAlbum, let album = song.albumTitle {
                             Text("·")
                             Text(album)
                         }
-                        Text("·")
-                        Text(formatDuration(song.duration))
-                            .monospacedDigit()
+                        // 独立 MV 时长可能尚未回填, 不显示 0:00
+                        if song.duration > 0 {
+                            Text("·")
+                            Text(formatDuration(song.duration))
+                                .monospacedDigit()
+                        }
                         if let sourceName {
                             Text("·")
                             if let sourceIconName {

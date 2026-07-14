@@ -12,6 +12,11 @@ public enum AudioFormat: String, Codable, Sendable, CaseIterable {
     case aiff
     case aif
 
+    // Video containers — used by standalone music-video songs
+    // (Song.isStandaloneMusicVideo), which play through AVPlayer.
+    case m4v
+    case mov
+
     // FFmpeg-required formats
     case ape
     case dsf
@@ -23,7 +28,7 @@ public enum AudioFormat: String, Codable, Sendable, CaseIterable {
 
     public var requiresFFmpeg: Bool {
         switch self {
-        case .mp3, .aac, .m4a, .mp4, .alac, .flac, .wav, .aiff, .aif:
+        case .mp3, .aac, .m4a, .mp4, .m4v, .mov, .alac, .flac, .wav, .aiff, .aif:
             return false
         case .ape, .dsf, .dff, .ogg, .opus, .wma, .wv:
             return true
@@ -36,6 +41,8 @@ public enum AudioFormat: String, Codable, Sendable, CaseIterable {
         case .aac: return "AAC"
         case .m4a: return "M4A"
         case .mp4: return "MP4"
+        case .m4v: return "M4V"
+        case .mov: return "MOV"
         case .alac: return "ALAC"
         case .flac: return "FLAC"
         case .wav: return "WAV"
@@ -54,7 +61,7 @@ public enum AudioFormat: String, Codable, Sendable, CaseIterable {
         switch self {
         case .flac, .alac, .wav, .aiff, .aif, .ape, .dsf, .dff, .wv:
             return true
-        case .mp3, .aac, .m4a, .mp4, .ogg, .opus, .wma:
+        case .mp3, .aac, .m4a, .mp4, .m4v, .mov, .ogg, .opus, .wma:
             return false
         }
     }
@@ -70,6 +77,8 @@ public enum AudioFormat: String, Codable, Sendable, CaseIterable {
         switch self {
         case .mp3: return "public.mp3"
         case .aac, .m4a, .mp4, .alac: return "public.mpeg-4-audio"
+        case .m4v: return "public.mpeg-4"
+        case .mov: return "com.apple.quicktime-movie"
         case .flac: return "org.xiph.flac"
         case .wav: return "com.microsoft.waveform-audio"
         case .aiff, .aif: return "public.aiff-audio"

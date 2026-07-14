@@ -996,6 +996,12 @@ final class SourceManager {
             return .url(url)
         }
 
+        // 独立 MV(mvPath == filePath): 文件本体已离线下载时直接本地播,
+        // 不再经视频缓存重复下载同一份字节。
+        if song.isStandaloneMusicVideo, let cached = cachedURL(for: song) {
+            return .url(cached)
+        }
+
         let sources = try await sourcesProvider()
         guard let source = sources.first(where: { $0.id == song.sourceID }) else {
             throw SourceError.fileNotFound("Source not found for song: \(song.title)")

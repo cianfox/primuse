@@ -330,6 +330,7 @@
 "song_details_loading_message" = "Downloading this song's tag header (~256 KB) from the cloud to extract duration, cover and artist. Once done it can be added to the play queue.";
 "song_details_unavailable" = "Song details unavailable";
 "song_details_unavailable_message" = "Tags were read but no duration could be extracted. The file may be corrupt or in an unsupported format.";
+"music_video_badge" = "Music video";
 
 // MARK: - Audio Effects
 "audio_effects" = "Audio Effects";

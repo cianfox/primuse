@@ -330,10 +330,12 @@ struct CloudDriveHelper: Sendable {
         let folderCover = isGenericMusicDirectory(path) ? nil : findFolderCover(in: nonAudio)
 
         // 先把当前目录的音频文件 yield 出去，避免 ConnectorScanner 等子树扫完才开始处理
+        var audioBasenames = Set<String>()
         for item in items where !item.isDirectory {
             let ext = (item.name as NSString).pathExtension.lowercased()
             if PrimuseConstants.supportedAudioExtensions.contains(ext) {
                 let basename = (item.name as NSString).deletingPathExtension
+                audioBasenames.insert(basename.lowercased())
                 let cover = findSameNameCover(basename: basename, in: nonAudio) ?? folderCover
                 let lyrics = findSameNameLyrics(basename: basename, in: nonAudio)
                 let mvPath = findSameNameMusicVideo(basename: basename, in: nonAudio)
@@ -356,6 +358,27 @@ struct CloudDriveHelper: Sendable {
                 )
                 continuation.yield(withHints)
             }
+        }
+
+        // 独立 MV: 无同名音频的视频文件也 yield 成曲目, mvPath 指向自身
+        // (Song.isStandaloneMusicVideo)。有同名音频的视频仍由上面的
+        // sidecar 逻辑挂到那首歌上, 不重复成曲。
+        for item in items where !item.isDirectory {
+            let ext = (item.name as NSString).pathExtension.lowercased()
+            guard PrimuseConstants.supportedMusicVideoExtensions.contains(ext) else { continue }
+            let basename = (item.name as NSString).deletingPathExtension
+            guard audioBasenames.contains(basename.lowercased()) == false else { continue }
+            let cover = findSameNameCover(basename: basename, in: nonAudio) ?? folderCover
+            let lyrics = findSameNameLyrics(basename: basename, in: nonAudio)
+            continuation.yield(RemoteFileItem(
+                name: item.name,
+                path: item.path,
+                isDirectory: false,
+                size: item.size,
+                modifiedDate: item.modifiedDate,
+                sidecarHints: SidecarHints(coverPath: cover, lyricsPath: lyrics, mvPath: item.path),
+                revision: item.revision
+            ))
         }
 
         let subdirs = items.filter { $0.isDirectory }

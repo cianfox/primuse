@@ -632,6 +632,11 @@ final class AudioPlayerService {
             isMusicVideoModeEnabled = enabled
             return
         }
+        // 独立 MV 不受模式开关影响(始终走视频管线), 只记开关不重启播放。
+        if song.isStandaloneMusicVideo {
+            isMusicVideoModeEnabled = enabled
+            return
+        }
         guard enabled == false || canPlayMusicVideo else {
             // UI 只在 canPlayMusicVideo 时展示开关, 走到这里说明状态刚变
             // (歌切走 / 进投屏), 静默忽略即可, 弹连接错误反而误导。
@@ -690,13 +695,15 @@ final class AudioPlayerService {
     }
 
     private func startMusicVideoPlaybackIfAvailable(for song: Song, playID id: UUID) async -> MusicVideoStartResult {
-        guard isMusicVideoModeEnabled,
-              !isAppleMusicMode,
+        // 独立 MV(媒体本体是视频)不受全局 MV 模式 / 车机强制音频约束 ——
+        // 它没有独立音频可回落; AVPlayer 播它的音轨在车机路由下同样出声,
+        // 强行走音频管线反而要 SFB 硬解视频容器(不可靠)。
+        guard !isAppleMusicMode,
               !isCastingMode,
-              !shouldForceAudioOnly,
               let sourceManager,
               let mvPath = song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              mvPath.isEmpty == false else {
+              mvPath.isEmpty == false,
+              song.isStandaloneMusicVideo || (isMusicVideoModeEnabled && !shouldForceAudioOnly) else {
             return .skipped
         }
 
@@ -844,6 +851,13 @@ final class AudioPlayerService {
             }
         }
         showPlaybackError(String(localized: "playback_error_decode"))
+        // 独立 MV 没有独立音频可回落, 单个文件坏也不该连坐关掉全局
+        // MV 模式 —— 停掉后跳下一首。
+        if currentSong?.isStandaloneMusicVideo == true {
+            stopMusicVideoPlayback(clearPlayer: true)
+            await autoAdvanceAfterFailure()
+            return
+        }
         isMusicVideoModeEnabled = false
         await replayCurrentSongAsAudio(restoreMusicVideoModeAfterPlay: false)
     }
@@ -877,6 +891,9 @@ final class AudioPlayerService {
 
     private func clearStaleMusicVideoReference(for song: Song) {
         guard song.mvPath != nil else { return }
+        // 独立 MV 的 mvPath 就是文件本身 —— 404 意味着整首歌已不存在,
+        // 清 mvPath 只会把它变成解不开的"音频", 留给下次扫描整体移除。
+        guard song.isStandaloneMusicVideo == false else { return }
         library?.updateMusicVideoReference(songID: song.id, mvPath: nil)
         if currentSong?.id == song.id {
             currentSong?.mvPath = nil
@@ -1973,13 +1990,13 @@ final class AudioPlayerService {
     }
 
     private func shouldBypassContinuousAudioTransition(for song: Song?) -> Bool {
-        guard isMusicVideoModeEnabled,
-              !shouldForceAudioOnly,
-              let song,
+        guard let song,
               song.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             return false
         }
-        return true
+        // 独立 MV 始终走视频管线, 无论模式开关 / 车机路由都不该做 gapless 预取。
+        if song.isStandaloneMusicVideo { return true }
+        return isMusicVideoModeEnabled && !shouldForceAudioOnly
     }
 
     /// Schedule the final buffer of a track with the appropriate completion callback

@@ -315,6 +315,7 @@
 "song_details_loading_message" = "正在從雲端硬碟下載這首歌的標籤頭（約 256 KB），用來解析時長、封面和演出者。讀完後即可加入播放佇列。";
 "song_details_unavailable" = "無法讀取歌曲詳情";
 "song_details_unavailable_message" = "已嘗試讀取該檔案的標籤，但無法解析出時長。檔案可能已損毀或格式不支援。";
+"music_video_badge" = "MV";
 "audio_effects" = "音效";
 "reverb" = "混響";
 "reverb_enabled" = "混響";

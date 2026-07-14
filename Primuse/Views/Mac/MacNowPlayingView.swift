@@ -493,7 +493,8 @@ struct MacNowPlayingView: View {
             .help(Text(isCurrentLiked ? "a11y_unlike" : "a11y_like"))
             .disabled(player.currentSong == nil)
 
-            if player.canPlayMusicVideo {
+            // 独立 MV 始终走视频管线, 模式开关对它无意义, 不显示
+            if player.canPlayMusicVideo, player.currentSong?.isStandaloneMusicVideo != true {
                 Button { player.toggleMusicVideoMode() } label: {
                     circleIcon(player.isMusicVideoModeEnabled ? "play.rectangle.fill" : "play.rectangle",
                                tint: player.isMusicVideoModeEnabled ? .white : Color.white.opacity(0.85),

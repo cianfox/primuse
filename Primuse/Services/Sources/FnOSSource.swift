@@ -188,9 +188,8 @@ actor FnOSSource: MusicSourceConnector {
         for item in items {
             try Task.checkCancellation()
             if item.isDirectory { try await scan(path: item.path, c: c) }
-            else if PrimuseConstants.supportedAudioExtensions.contains(
-                (item.name as NSString).pathExtension.lowercased()) {
-                c.yield(SidecarHintResolver.decoratedAudioItem(item, siblings: items))
+            else if let scannable = SidecarHintResolver.scannableItem(item, siblings: items) {
+                c.yield(scannable)
             }
         }
     }

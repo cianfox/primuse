@@ -73,7 +73,7 @@ enum DuplicateDetector {
         switch format {
         case .flac, .alac, .wav, .aiff, .aif, .ape, .wv, .dsf, .dff:
             return true
-        case .mp3, .aac, .m4a, .mp4, .ogg, .opus, .wma:
+        case .mp3, .aac, .m4a, .mp4, .m4v, .mov, .ogg, .opus, .wma:
             return false
         }
     }

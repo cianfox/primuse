@@ -61,6 +61,58 @@ struct ConnectorScannedSong: Sendable {
 }
 
 enum SidecarHintResolver {
+    /// 统一的扫描项判定: 音频文件返回带 sidecar hints 的 item; 无同名音频的
+    /// 视频文件(mp4/m4v/mov)返回 mvPath 指向自身的 item —— 上层把它当曲目
+    /// yield, 建出的 Song 即独立 MV(isStandaloneMusicVideo)。其余返回 nil。
+    static func scannableItem(_ item: RemoteFileItem, siblings: [RemoteFileItem]) -> RemoteFileItem? {
+        guard item.isDirectory == false else { return nil }
+        let ext = (item.name as NSString).pathExtension.lowercased()
+        if PrimuseConstants.supportedAudioExtensions.contains(ext) {
+            return decoratedAudioItem(item, siblings: siblings)
+        }
+        if PrimuseConstants.supportedMusicVideoExtensions.contains(ext) {
+            return standaloneVideoItem(item, siblings: siblings)
+        }
+        return nil
+    }
+
+    /// 无同名音频的视频文件独立成曲; 有同名音频时它是那首歌的 sidecar,
+    /// 返回 nil 以免同一文件既挂 mvPath 又重复成曲。
+    static func standaloneVideoItem(_ item: RemoteFileItem, siblings: [RemoteFileItem]) -> RemoteFileItem? {
+        let basename = (item.name as NSString).deletingPathExtension
+        let baseLower = basename.lowercased()
+        let hasSameNameAudio = siblings.contains {
+            guard $0.isDirectory == false else { return false }
+            let siblingExt = ($0.name as NSString).pathExtension.lowercased()
+            return PrimuseConstants.supportedAudioExtensions.contains(siblingExt)
+                && ($0.name as NSString).deletingPathExtension.lowercased() == baseLower
+        }
+        guard hasSameNameAudio == false else { return nil }
+
+        let nonAudio = siblings.filter {
+            guard $0.isDirectory == false else { return false }
+            let siblingExt = ($0.name as NSString).pathExtension.lowercased()
+            return PrimuseConstants.supportedAudioExtensions.contains(siblingExt) == false
+        }
+        let hints = SidecarHints(
+            coverPath: item.sidecarHints?.coverPath
+                ?? findSameNameCover(basename: basename, in: nonAudio)
+                ?? findFolderCover(in: nonAudio),
+            lyricsPath: item.sidecarHints?.lyricsPath
+                ?? findSameNameLyrics(basename: basename, in: nonAudio),
+            mvPath: item.path
+        )
+        return RemoteFileItem(
+            name: item.name,
+            path: item.path,
+            isDirectory: false,
+            size: item.size,
+            modifiedDate: item.modifiedDate,
+            sidecarHints: hints,
+            revision: item.revision
+        )
+    }
+
     static func decoratedAudioItem(_ item: RemoteFileItem, siblings: [RemoteFileItem]) -> RemoteFileItem {
         guard item.isDirectory == false else { return item }
 

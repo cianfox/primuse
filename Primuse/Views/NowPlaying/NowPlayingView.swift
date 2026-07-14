@@ -180,7 +180,10 @@ struct NowPlayingView: View {
             }
         }
         .onChange(of: player.isMusicVideoModeEnabled) { _, enabled in
-            if !enabled { dismissMusicVideoFullScreen() }
+            // 独立 MV 不受模式开关影响(始终播视频), 关模式不退全屏
+            if !enabled, player.currentSong?.isStandaloneMusicVideo != true {
+                dismissMusicVideoFullScreen()
+            }
         }
         .onChange(of: player.musicVideoAudioFallbackToken) { _, _ in
             dismissMusicVideoFullScreen()
@@ -772,7 +775,8 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private func musicVideoToggleButton(font: Font, trailing: CGFloat) -> some View {
-        if player.canPlayMusicVideo {
+        // 独立 MV 始终走视频管线, 模式开关对它无意义, 不显示
+        if player.canPlayMusicVideo, player.currentSong?.isStandaloneMusicVideo != true {
             Button { player.toggleMusicVideoMode() } label: {
                 Image(systemName: player.isMusicVideoModeEnabled ? "play.rectangle.fill" : "play.rectangle")
                     .font(font)
@@ -831,7 +835,7 @@ struct NowPlayingView: View {
             fullScreenMusicVideoPlayer = nil
             return
         }
-        guard player.isMusicVideoModeEnabled,
+        guard player.isMusicVideoModeEnabled || player.currentSong?.isStandaloneMusicVideo == true,
               player.currentSong != nil,
               player.currentSong?.mvPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             dismissMusicVideoFullScreen()

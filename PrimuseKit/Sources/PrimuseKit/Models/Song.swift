@@ -132,6 +132,15 @@ public extension Song {
     /// To detect "metadata still pending" for the bare-row UI, test
     /// `duration <= 0` directly, not `!isPlayable`.
     var isPlayable: Bool { duration > 0 || !filePath.isEmpty }
+
+    /// 独立 MV 曲目 —— 媒体本体就是视频文件, 扫描时把 `mvPath` 指向自身
+    /// (`mvPath == filePath`)。这类歌曲不受全局 MV 模式开关影响, 始终走
+    /// AVPlayer 视频管线; 普通歌曲的 MV 仍是"同名 sidecar"(mvPath 指向
+    /// 另一个文件)。
+    var isStandaloneMusicVideo: Bool {
+        guard let mvPath, !mvPath.isEmpty else { return false }
+        return mvPath == filePath
+    }
 }
 
 public extension Sequence where Element == Song {
