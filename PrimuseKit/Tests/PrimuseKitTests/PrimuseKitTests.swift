@@ -25,6 +25,28 @@ import Testing
     #expect(PrimuseConstants.supportedMusicVideoExtensions == ["mp4", "m4v", "mov"])
 }
 
+@Test func testStandaloneMusicVideoDetection() {
+    let standalone = Song(
+        id: "standalone-mv",
+        title: "Concert",
+        fileFormat: .m4v,
+        filePath: "/Music/Concert.m4v",
+        sourceID: "nas",
+        mvPath: "/Music/Concert.m4v"
+    )
+    let sidecar = Song(
+        id: "audio-with-mv",
+        title: "Song",
+        fileFormat: .flac,
+        filePath: "/Music/Song.flac",
+        sourceID: "nas",
+        mvPath: "/Music/Song.mp4"
+    )
+
+    #expect(standalone.isStandaloneMusicVideo)
+    #expect(sidecar.isStandaloneMusicVideo == false)
+}
+
 @Test func testEQPresets() {
     let flat = EQPreset.flat
     #expect(flat.bands.count == 10)

@@ -792,7 +792,7 @@ final class AudioPlayerService {
                 if let item = player.currentItem {
                     let itemDuration = item.duration.seconds
                     if itemDuration.isFinite, itemDuration > 0 {
-                        self.duration = itemDuration.sanitizedDuration
+                        self.applyResolvedMusicVideoDuration(itemDuration, playID: id)
                     }
                 }
             }
@@ -1750,6 +1750,40 @@ final class AudioPlayerService {
             persistOnComplete: cacheEnabled && sourceManager != nil,
             cacheRelativePath: cacheRelativePath
         )
+    }
+
+    /// Standalone music videos are commonly scanned before their container
+    /// duration is known. Persist AVPlayer's authoritative value once so the
+    /// library, queue, Now Playing state, and scrobble threshold agree.
+    private func applyResolvedMusicVideoDuration(_ resolved: TimeInterval, playID id: UUID) {
+        guard playID == id, resolved.isFinite, resolved > 0 else { return }
+        let sanitized = resolved.sanitizedDuration
+        duration = sanitized
+
+        guard var song = currentSong, song.isStandaloneMusicVideo else { return }
+        // The metadata backfill may have refreshed currentSong before this
+        // observer fires, while the already-created scrobble session still
+        // retains its original nil duration. Always offer the resolved value;
+        // ScrobbleService deduplicates unchanged updates.
+        ScrobbleService.shared.handlePlaybackDurationResolved(songID: song.id, duration: sanitized)
+        let stored = song.duration.sanitizedDuration
+        let needsRewrite = stored <= 0
+            || abs(stored - sanitized) / max(sanitized, 1) > 0.05
+        guard needsRewrite else { return }
+
+        song.duration = sanitized
+        currentSong = song
+        if let queueIndex = queueEntries.firstIndex(where: { $0.song.id == song.id }) {
+            queueEntries[queueIndex].song.duration = sanitized
+        }
+
+        if let library, var storedSong = library.songs.first(where: { $0.id == song.id }) {
+            storedSong.duration = sanitized
+            library.replaceSong(storedSong)
+        }
+        updateNowPlayingInfo()
+        updatePlaybackState()
+        plog(String(format: "🎞️ MV resolved real duration for '%@': %.1fs (was %.1fs)", song.title, sanitized, stored))
     }
 
     private func decoderKind(for song: Song, url: URL) -> DecoderKind {

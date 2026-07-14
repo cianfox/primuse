@@ -104,6 +104,10 @@ actor SynologyScanner {
     private func countAudioFiles(in path: String) async -> Int {
         if Task.isCancelled { return 0 }
         guard let items = try? await api.listDirectory(path: path) else { return 0 }
+        let nameByLowercase = Dictionary(
+            items.filter { $0.isDirectory == false }.map { ($0.name.lowercased(), $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var count = 0
         for item in items {
             if Task.isCancelled { return count }
@@ -113,6 +117,11 @@ actor SynologyScanner {
                 let ext = (item.name as NSString).pathExtension.lowercased()
                 if PrimuseConstants.supportedAudioExtensions.contains(ext) {
                     count += 1
+                } else if PrimuseConstants.supportedMusicVideoExtensions.contains(ext) {
+                    let baseName = (item.name as NSString).deletingPathExtension
+                    if Self.hasSameNameAudio(baseName: baseName, nameByLowercase: nameByLowercase) == false {
+                        count += 1
+                    }
                 }
             }
         }
@@ -306,9 +315,10 @@ actor SynologyScanner {
         let parentDir = (item.path as NSString).deletingLastPathComponent
 
         // 有同名音频时它是那首歌的 sidecar, 不独立成曲。
-        let hasSameNameAudio = PrimuseConstants.supportedAudioExtensions.contains {
-            nameByLowercase["\(baseName).\($0)".lowercased()] != nil
-        }
+        let hasSameNameAudio = Self.hasSameNameAudio(
+            baseName: baseName,
+            nameByLowercase: nameByLowercase
+        )
         guard hasSameNameAudio == false else { return }
         encounteredPaths.insert(item.path)
 
@@ -378,6 +388,15 @@ actor SynologyScanner {
             allSongs[idx] = song
         } else {
             allSongs.append(song)
+        }
+    }
+
+    private static func hasSameNameAudio(
+        baseName: String,
+        nameByLowercase: [String: String]
+    ) -> Bool {
+        PrimuseConstants.supportedAudioExtensions.contains {
+            nameByLowercase["\(baseName).\($0)".lowercased()] != nil
         }
     }
 

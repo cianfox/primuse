@@ -57,7 +57,7 @@ final class ScrobbleService {
 
     /// 当前播放的会话状态, 决定何时触发 scrobble。
     private struct PlaySession {
-        let entry: ScrobbleEntry
+        var entry: ScrobbleEntry
         let startedAtMonotonic: TimeInterval
         var hasSentNowPlaying: Bool
         var hasScrobbled: Bool
@@ -106,6 +106,36 @@ final class ScrobbleService {
         if settings.sendNowPlaying {
             currentSession?.hasSentNowPlaying = true
             sendNowPlayingAcrossProviders(entry: entry)
+        }
+    }
+
+    /// AVPlayer may only discover a standalone music video's duration after
+    /// playback has started. Refresh the active session so the normal
+    /// 50%/240s threshold can still trigger for that first play.
+    func handlePlaybackDurationResolved(songID: String, duration: TimeInterval) {
+        guard duration.isFinite, duration > 0,
+              var session = currentSession,
+              session.entry.songID == songID else { return }
+
+        let durationSec = Int(duration)
+        guard durationSec > 0, session.entry.durationSec != durationSec else { return }
+
+        let old = session.entry
+        session.entry = ScrobbleEntry(
+            songID: old.songID,
+            title: old.title,
+            artist: old.artist,
+            album: old.album,
+            albumArtist: old.albumArtist,
+            durationSec: durationSec,
+            trackNumber: old.trackNumber,
+            startedAt: old.startedAt
+        )
+        currentSession = session
+
+        if var song = currentSong, song.id == songID {
+            song.duration = duration
+            currentSong = song
         }
     }
 
