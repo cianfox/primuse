@@ -202,6 +202,18 @@ struct TVSourceFormView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onAppear(perform: prefill)
+        .onChange(of: useSsl) { oldValue, newValue in
+            updateDefaultPortForSSLChange(from: oldValue, to: newValue)
+        }
+    }
+
+    private func updateDefaultPortForSSLChange(from oldValue: Bool, to newValue: Bool) {
+        let oldDefault = type.defaultPort(useSsl: oldValue)
+        let newDefault = type.defaultPort(useSsl: newValue)
+        guard oldDefault != newDefault else { return }
+        let trimmed = portText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == String(oldDefault) else { return }
+        portText = String(newDefault)
     }
 
     private var leftFields: some View {

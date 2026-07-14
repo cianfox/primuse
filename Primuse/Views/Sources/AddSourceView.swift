@@ -87,11 +87,28 @@ struct AddSourceView: View {
     }
 
     var body: some View {
-        #if os(iOS)
-        iOSBody
-        #else
-        macOSBody
-        #endif
+        Group {
+            #if os(iOS)
+            iOSBody
+            #else
+            macOSBody
+            #endif
+        }
+        .onChange(of: useSsl) { oldValue, newValue in
+            updateDefaultPortForSSLChange(from: oldValue, to: newValue)
+        }
+    }
+
+    /// Follow HTTP's 80/443 defaults only while the field still contains the
+    /// previous automatic value. A user-entered custom port (for example
+    /// MinIO's 9000 or WebDAV 8443) must never be overwritten by the toggle.
+    private func updateDefaultPortForSSLChange(from oldValue: Bool, to newValue: Bool) {
+        let oldDefault = sourceType.defaultPort(useSsl: oldValue)
+        let newDefault = sourceType.defaultPort(useSsl: newValue)
+        guard oldDefault != newDefault else { return }
+        let trimmed = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == String(oldDefault) else { return }
+        port = String(newDefault)
     }
 
     #if os(iOS)

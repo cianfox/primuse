@@ -219,7 +219,7 @@ final class SourcesStore {
     }
 
     /// Apply a source pulled from CloudKit. Preserves device-local fields
-    /// (`lastScannedAt`, `songCount`) on the existing record if any.
+    /// (`lastScannedAt`, `songCount`, `deviceId`) on the existing record if any.
     ///
     /// Last-writer-wins on `modifiedAt`: if the local copy was edited
     /// MORE recently than the remote, we keep the local. Without this
@@ -256,6 +256,11 @@ final class SourcesStore {
             var merged = remote
             merged.lastScannedAt = existing.lastScannedAt
             merged.songCount = existing.songCount
+            // Synology's trusted-device token belongs to this physical
+            // device. A remote source edit must not erase it or replace it
+            // with another device's token, otherwise the next scan needlessly
+            // falls back to password + TOTP.
+            merged.deviceId = existing.deviceId
             if let index = allSources.firstIndex(where: { $0.id == merged.id }) {
                 allSources[index] = merged
             }
@@ -264,7 +269,9 @@ final class SourcesStore {
             // Stage 4's migration may push tombstones up; once the
             // 30-day prune sweeps them, they shouldn't reappear here.
             if remote.isDeleted { return }
-            allSources.append(remote)
+            var sanitized = remote
+            sanitized.deviceId = nil
+            allSources.append(sanitized)
             allSources.sort { $0.name.localizedCompare($1.name) == .orderedAscending }
         }
         persist()

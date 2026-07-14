@@ -6,8 +6,9 @@ import PrimuseKit
 struct ConnectionFlowView: View {
     let source: MusicSource
     @Binding var selectedDirectories: [String]
-    var onDeviceIdSaved: ((String) -> Void)?
+    var onDeviceTrustSaved: ((Bool, String?) -> Void)?
     var onSessionReady: ((SynologyAPI) -> Void)?
+    var onPasswordSaved: (() async -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     @State private var step: FlowStep = .connecting
@@ -304,7 +305,13 @@ struct ConnectionFlowView: View {
         errorMessage = ""
         passwordInput = ""
         step = .connecting
-        Task { await connectSynology(otpCode: nil, overridePassword: pwd) }
+        Task {
+            // SourceManager connectors capture credentials when they are
+            // created. Rebuild any connector that may still hold the rejected
+            // password before this corrected credential is used elsewhere.
+            await onPasswordSaved?()
+            await connectSynology(otpCode: nil, overridePassword: pwd)
+        }
     }
 
     // MARK: - Failed
@@ -358,13 +365,11 @@ struct ConnectionFlowView: View {
             password: password,
             otpCode: otpCode,
             deviceName: rememberDevice ? AppConstants.trustedDeviceName : nil,
-            deviceId: source.deviceId
+            deviceId: rememberDevice ? source.deviceId : nil
         )
 
         if result.success {
-            if let did = result.deviceId {
-                onDeviceIdSaved?(did)
-            }
+            onDeviceTrustSaved?(rememberDevice, result.deviceId)
             do {
                 let shares = try await api.listSharedFolders()
                 rootItems = shares

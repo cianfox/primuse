@@ -1482,7 +1482,11 @@ final class CloudKitSyncService {
     private func applySourceRecord(_ record: CKRecord) {
         guard let data = record["payload"] as? Data,
               let syncable = try? JSONDecoder().decode(SyncableSource.self, from: data) else { return }
-        sourcesStore.upsertFromRemote(syncable.source)
+        var source = syncable.source
+        // Older records may still contain a Synology trusted-device token.
+        // Never import it onto a different physical device.
+        source.deviceId = nil
+        sourcesStore.upsertFromRemote(source)
     }
 
     // MARK: - Cloud account mapping
@@ -1973,8 +1977,9 @@ extension CloudKitSyncService: CKSyncEngineDelegate {
 
 // MARK: - Sync payloads
 
-/// Sources are written to CloudKit minus their device-local fields (`lastScannedAt`,
-/// `songCount`) so a freshly-synced device doesn't inherit a stale scan state.
+/// Sources are written to CloudKit minus their device-local fields
+/// (`lastScannedAt`, `songCount`, `deviceId`) so a freshly-synced device
+/// doesn't inherit stale scan state or another device's NAS trust token.
 private struct SyncableSource: Codable {
     var source: MusicSource
 
@@ -1982,6 +1987,7 @@ private struct SyncableSource: Codable {
         var copy = source
         copy.lastScannedAt = nil
         copy.songCount = 0
+        copy.deviceId = nil
         self.source = copy
     }
 }

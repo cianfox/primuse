@@ -17,6 +17,15 @@ import Testing
     #expect(AudioFormat.from(fileExtension: "xyz") == nil)
 }
 
+@Test func testTransportAwareDefaultPorts() {
+    #expect(MusicSourceType.webdav.defaultPort(useSsl: true) == 443)
+    #expect(MusicSourceType.webdav.defaultPort(useSsl: false) == 80)
+    #expect(MusicSourceType.s3.defaultPort(useSsl: true) == 443)
+    #expect(MusicSourceType.s3.defaultPort(useSsl: false) == 80)
+    #expect(MusicSourceType.smb.defaultPort(useSsl: true) == 445)
+    #expect(MusicSourceType.smb.defaultPort(useSsl: false) == 445)
+}
+
 @Test func testVideoFormatRouting() {
     #expect(VideoFormat.from(fileExtension: "MP4") == .mp4)
     #expect(VideoFormat.mov.isNativelyPlayable == true)

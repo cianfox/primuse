@@ -67,7 +67,7 @@ final class LibrarySnapshotSync: Sendable {
         let libInfo = attachSnapshot(record, fileURL: libraryCacheURL, gzKey: "libraryGz", assetKey: "library")
         var srcInfo = "sources=skip"
         if fm.fileExists(atPath: sourcesURL.path) {
-            srcInfo = attachSnapshot(record, fileURL: sourcesURL, gzKey: "sourcesGz", assetKey: "sources")
+            srcInfo = attachSourcesSnapshot(record, gzKey: "sourcesGz", assetKey: "sources")
         }
         // 歌词:把本机已抓到的歌词(MetadataAssetStore 里的 .json)随快照传给 TV。
         if let blob = Self.gatherLyricsBlob(),
@@ -129,7 +129,7 @@ final class LibrarySnapshotSync: Sendable {
         // 先清掉两种旧的 sources 表示,再按当前文件大小择一写入,避免内联/资产并存。
         record["sourcesGz"] = nil
         record["sources"] = nil
-        let srcInfo = attachSnapshot(record, fileURL: sourcesURL, gzKey: "sourcesGz", assetKey: "sources")
+        let srcInfo = attachSourcesSnapshot(record, gzKey: "sourcesGz", assetKey: "sources")
         record["modifiedAt"] = Date() as CKRecordValue
         var ok = false
         do {
@@ -388,6 +388,43 @@ final class LibrarySnapshotSync: Sendable {
         }
     }
 
+    /// Sources contain a Synology trusted-device token used to skip TOTP on
+    /// this device. Keep that token in the local sources.json, but never put it
+    /// into the cross-device snapshot payload.
+    private func attachSourcesSnapshot(_ record: CKRecord, gzKey: String, assetKey: String) -> String {
+        guard let raw = try? Data(contentsOf: sourcesURL),
+              let sanitized = Self.sanitizedSourcesData(raw) else {
+            return "\(gzKey)=no-file"
+        }
+        if let gz = try? (sanitized as NSData).compressed(using: .zlib) as Data,
+           gz.count < Self.inlineGzLimit {
+            record[gzKey] = gz as CKRecordValue
+            return "\(gzKey)=inline \(gz.count)B"
+        }
+
+        let assetURL = directory.appendingPathComponent("sources-sync.json")
+        do {
+            try sanitized.write(to: assetURL, options: .atomic)
+            record[assetKey] = CKAsset(fileURL: assetURL)
+            return "\(assetKey)=asset"
+        } catch {
+            return "\(assetKey)=write-failed"
+        }
+    }
+
+    private static func sanitizedSourcesData(_ data: Data) -> Data? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard var sources = try? decoder.decode([MusicSource].self, from: data) else { return nil }
+        for index in sources.indices {
+            sources[index].deviceId = nil
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try? encoder.encode(sources)
+    }
+
     /// 从 record 还原快照写到 `dest`:先试内联 gzip,再回退 CKAsset。成功返回 true。
     private func extractSnapshot(_ record: CKRecord, gzKey: String, assetKey: String, to dest: URL, fm: FileManager) -> Bool {
         if let gzField = record[gzKey] as? Data {
@@ -469,8 +506,14 @@ final class LibrarySnapshotSync: Sendable {
     private static func mergeSourcesJSON(localData: Data?, incomingData: Data) -> SourcesMergeResult? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let incoming = try? decoder.decode([MusicSource].self, from: incomingData) else {
+        guard var incoming = try? decoder.decode([MusicSource].self, from: incomingData) else {
             return nil
+        }
+        // Snapshot records created by older releases may contain Synology's
+        // per-device trust token. Strip it before merging so another device's
+        // cloud payload cannot replace or seed local TOTP state.
+        for index in incoming.indices {
+            incoming[index].deviceId = nil
         }
         let local = localData.flatMap { try? decoder.decode([MusicSource].self, from: $0) } ?? []
 
@@ -525,6 +568,9 @@ final class LibrarySnapshotSync: Sendable {
         }
 
         if !winner.isDeleted {
+            // Device-local authentication state always comes from the local
+            // row, independent of which user-editable payload wins LWW.
+            winner.deviceId = local.deviceId
             if winner.lastScannedAt == nil {
                 winner.lastScannedAt = local.lastScannedAt
             }
@@ -616,7 +662,10 @@ final class LibrarySnapshotSync: Sendable {
     func buildLANPayload() async -> LANSyncPayload {
         var payload = LANSyncPayload()
         if let raw = try? Data(contentsOf: libraryCacheURL) { payload.libraryGz = Self.gzip(raw) }
-        if let raw = try? Data(contentsOf: sourcesURL) { payload.sourcesGz = Self.gzip(raw) }
+        if let raw = try? Data(contentsOf: sourcesURL),
+           let sanitized = Self.sanitizedSourcesData(raw) {
+            payload.sourcesGz = Self.gzip(sanitized)
+        }
         if let blob = Self.gatherLyricsBlob() { payload.lyricsGz = Self.gzip(blob) }
         payload.credentials = await gatherCredentialBundle(respectingChannel: false)
         return payload

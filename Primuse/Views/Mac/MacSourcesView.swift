@@ -528,8 +528,22 @@ struct MacSourcesView: View {
             ConnectionFlowView(
                 source: source,
                 selectedDirectories: selectedDirectories,
-                onDeviceIdSaved: { did in updateSource(source.id) { $0.deviceId = did } },
-                onSessionReady: { api in scanService.synologyAPIs[source.id] = api }
+                onDeviceTrustSaved: { remember, did in
+                    guard let current = sourceStore.source(id: source.id),
+                          current.rememberDevice != remember
+                            || (!remember && current.deviceId != nil)
+                            || (remember && did != nil && current.deviceId != did) else { return }
+                    sourceStore.update(source.id) {
+                        $0.rememberDevice = remember
+                        if remember {
+                            if let did { $0.deviceId = did }
+                        } else {
+                            $0.deviceId = nil
+                        }
+                    }
+                },
+                onSessionReady: { api in scanService.synologyAPIs[source.id] = api },
+                onPasswordSaved: { await sourceManager.refreshConnector(for: source.id) }
             )
         case .smb: SMBBrowserView(source: source, selectedDirectories: selectedDirectories)
         case .webdav: WebDAVBrowserView(source: source, selectedDirectories: selectedDirectories)

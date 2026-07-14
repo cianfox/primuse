@@ -98,7 +98,7 @@ actor SynologySource: MusicSourceConnector {
             let result = await api.login(
                 account: username, password: password,
                 deviceName: rememberDevice ? "Primuse-iOS" : nil,
-                deviceId: deviceId
+                deviceId: rememberDevice ? deviceId : nil
             )
             guard result.success else {
                 let msg = result.errorMessage ?? "Login failed"

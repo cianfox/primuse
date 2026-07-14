@@ -222,6 +222,18 @@ public enum MusicSourceType: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Returns the conventional port for the selected transport. WebDAV and
+    /// S3 follow HTTP(S), while protocol-specific services keep their fixed
+    /// default regardless of the SSL toggle shown by some UIs.
+    public func defaultPort(useSsl: Bool) -> Int {
+        switch self {
+        case .webdav, .s3:
+            return useSsl ? 443 : 80
+        default:
+            return defaultPort
+        }
+    }
+
     public var defaultSSL: Bool {
         switch self {
         case .synology, .webdav, .s3, .baiduPan, .aliyunDrive, .googleDrive, .oneDrive, .dropbox, .pan115, .pan123: return true

@@ -159,22 +159,30 @@ final class ScanService {
                 return
             }
 
-            let preflight = await sourceManager.diagnose(source: source, directories: normalizedDirs)
-            guard isCurrentScan(source.id, generation: generation),
-                  sourceCanContinue(source.id, sourceStore: sourceStore) else {
-                if isCurrentScan(source.id, generation: generation) {
-                    scanStates[source.id] = nil
+            // Synology has a dedicated authenticated scan path below and may
+            // already hold the exact API session established by the directory
+            // picker (including a just-completed TOTP challenge). Running the
+            // generic connector preflight first can reuse a connector created
+            // before the user corrected a bad password, falsely rejecting the
+            // scan before that valid session gets a chance to run.
+            if source.type != .synology {
+                let preflight = await sourceManager.diagnose(source: source, directories: normalizedDirs)
+                guard isCurrentScan(source.id, generation: generation),
+                      sourceCanContinue(source.id, sourceStore: sourceStore) else {
+                    if isCurrentScan(source.id, generation: generation) {
+                        scanStates[source.id] = nil
+                    }
+                    return
                 }
-                return
-            }
-            if preflight.blockingFailure != nil {
-                scanStates[source.id] = ScanState(
-                    isScanning: false,
-                    currentFile: sourceManager.scanFailureMessage(for: preflight),
-                    scannedCount: resumeCount,
-                    totalCount: resumeTotal
-                )
-                return
+                if preflight.blockingFailure != nil {
+                    scanStates[source.id] = ScanState(
+                        isScanning: false,
+                        currentFile: sourceManager.scanFailureMessage(for: preflight),
+                        scannedCount: resumeCount,
+                        totalCount: resumeTotal
+                    )
+                    return
+                }
             }
 
             scanStates[source.id]?.currentFile = checkpoint?.currentFile ?? ""
@@ -361,7 +369,7 @@ final class ScanService {
                 account: source.username ?? "",
                 password: password,
                 deviceName: source.rememberDevice ? AppConstants.trustedDeviceName : nil,
-                deviceId: source.deviceId
+                deviceId: source.rememberDevice ? source.deviceId : nil
             )
 
             guard isCurrentScan(source.id, generation: generation) else { return }
