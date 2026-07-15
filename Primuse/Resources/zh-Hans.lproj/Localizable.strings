@@ -408,6 +408,13 @@
 "config_url_placeholder" = "https://example.com/scraper.json";
 "paste_config_footer" = "粘贴刮削源的 JSON 配置内容。";
 "url_config_footer" = "输入 JSON 刮削源配置文件的 URL。";
+"scraper_import_auto_footer" = "粘贴刮削源 JSON 或 HTTPS 配置 URL，系统会自动识别。";
+"JSON or Manifest URL" = "JSON 或配置 URL";
+"Input recognized" = "已识别输入";
+"Paste JSON or an HTTPS URL" = "请粘贴 JSON 或 HTTPS URL";
+"Remote Manifest" = "远程配置";
+"URL recognized" = "已识别 URL";
+"The manifest will be downloaded over HTTPS and validated before it is imported." = "将通过 HTTPS 下载配置，并在导入前完成验证。";
 "import_action" = "导入";
 "import_mode" = "导入方式";
 "invalid_url" = "无效的 URL";

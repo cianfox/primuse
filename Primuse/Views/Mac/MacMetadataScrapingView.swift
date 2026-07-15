@@ -16,11 +16,9 @@ struct MacMetadataScrapingView: View {
     @State private var importText = ""
     @State private var importError: String?
     @State private var importPreview: ScraperImportSummary?
-    @State private var importMode: ImportMode = .paste
     @State private var editingConfigSource: ScraperSourceConfig?
     @State private var editingConfigJSON = ""
 
-    private enum ImportMode: Equatable { case paste, url }
 
     var body: some View {
         @Bindable var settings = scraperSettings
@@ -45,7 +43,6 @@ struct MacMetadataScrapingView: View {
                     importText = ""
                     importError = nil
                     importPreview = nil
-                    importMode = .paste
                     showImportSheet = true
                 } label: {
                     Label("import_scraper_source", systemImage: "square.and.arrow.down")
@@ -180,22 +177,12 @@ struct MacMetadataScrapingView: View {
             Form {
                 // review 阶段隐藏输入区, 只显示预览, 避免输入框与预览同屏混淆。
                 if importPreview == nil {
-                    Picker("import_mode", selection: $importMode) {
-                        Text("paste_config").tag(ImportMode.paste)
-                        Text("from_url").tag(ImportMode.url)
-                    }
-                    .pickerStyle(.segmented)
-
                     Section {
-                        if importMode == .paste {
-                            TextEditor(text: $importText)
-                                .font(.system(.caption, design: .monospaced))
-                                .frame(minHeight: 240)
-                        } else {
-                            TextField("config_url_placeholder", text: $importText)
-                        }
+                        TextEditor(text: $importText)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 240)
                     } footer: {
-                        Text(LocalizedStringKey(importMode == .paste ? "paste_config_footer" : "url_config_footer"))
+                        Text("scraper_import_auto_footer")
                     }
                 }
 
@@ -236,10 +223,6 @@ struct MacMetadataScrapingView: View {
         }
         .frame(minWidth: 560, minHeight: 500)
         .onChange(of: importText) { _, _ in
-            importPreview = nil
-            importError = nil
-        }
-        .onChange(of: importMode) { _, _ in
             importPreview = nil
             importError = nil
         }
@@ -293,31 +276,34 @@ struct MacMetadataScrapingView: View {
             return
         }
 
-        if importMode == .url {
-            guard let url = URL(string: text) else {
-                importError = String(localized: "invalid_url")
-                return
-            }
+        let input: ScraperImportInput
+        do {
+            input = try ScraperConfigStore.shared.classifyImportInput(text)
+        } catch {
+            importError = error.localizedDescription
+            return
+        }
+
+        switch input {
+        case .remoteURL(let url):
             let requestedText = text
             Task {
                 do {
                     let preview = try await ScraperConfigStore.shared.previewImportFromURL(url)
                     await MainActor.run {
-                        guard importMode == .url,
-                              importText.trimmingCharacters(in: .whitespacesAndNewlines) == requestedText else { return }
+                        guard importText.trimmingCharacters(in: .whitespacesAndNewlines) == requestedText else { return }
                         importPreview = preview
                     }
                 } catch {
                     await MainActor.run {
-                        guard importMode == .url,
-                              importText.trimmingCharacters(in: .whitespacesAndNewlines) == requestedText else { return }
+                        guard importText.trimmingCharacters(in: .whitespacesAndNewlines) == requestedText else { return }
                         importError = error.localizedDescription
                     }
                 }
             }
-        } else {
+        case .json(let json):
             do {
-                importPreview = try ScraperConfigStore.shared.previewImportFromJSON(text)
+                importPreview = try ScraperConfigStore.shared.previewImportFromJSON(json)
             } catch {
                 importError = error.localizedDescription
             }

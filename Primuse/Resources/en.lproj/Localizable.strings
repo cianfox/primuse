@@ -408,6 +408,13 @@
 "config_url_placeholder" = "https://example.com/scraper.json";
 "paste_config_footer" = "Paste the JSON configuration for a scraper source.";
 "url_config_footer" = "Enter the URL of a JSON scraper configuration file.";
+"scraper_import_auto_footer" = "Paste scraper JSON or an HTTPS configuration URL. The format is detected automatically.";
+"JSON or Manifest URL" = "JSON or Manifest URL";
+"Input recognized" = "Input recognized";
+"Paste JSON or an HTTPS URL" = "Paste JSON or an HTTPS URL";
+"Remote Manifest" = "Remote Manifest";
+"URL recognized" = "URL recognized";
+"The manifest will be downloaded over HTTPS and validated before it is imported." = "The manifest will be downloaded over HTTPS and validated before it is imported.";
 "import_action" = "Import";
 "import_mode" = "Import Mode";
 "invalid_url" = "Invalid URL";

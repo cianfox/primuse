@@ -13,7 +13,7 @@
 "src.subtitle.baiduPan" = "Baidu Pan OAuth";
 "src.subtitle.aliyunDrive" = "Aliyun Drive PDS";
 "src.subtitle.pan115" = "115 오픈 플랫폼 · 출시 예정";
-"src.subtitle.pan123" = "123 오픈 플랫폼 · 출시 예정";
+"src.subtitle.pan123" = "123 오픈 플랫폼 OAuth";
 
 // 위젯 및 제어 센터 확장
 "ext.widget.appName"                       = "Primuse";

@@ -10,7 +10,7 @@
 "src.subtitle.baiduPan" = "百度網盤 OAuth";
 "src.subtitle.aliyunDrive" = "阿里雲盤 PDS";
 "src.subtitle.pan115" = "115 開放平台 · 尚未開放";
-"src.subtitle.pan123" = "123 開放平台 · 尚未開放";
+"src.subtitle.pan123" = "123 開放平台 OAuth";
 
 // 小工具與控制中心擴充
 "ext.widget.appName"                       = "猿音";

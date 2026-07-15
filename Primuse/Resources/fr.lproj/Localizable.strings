@@ -519,6 +519,13 @@
 "config_url_placeholder" = "https://example.com/scraper.json";
 "paste_config_footer" = "Collez la configuration JSON d'une source de récupération.";
 "url_config_footer" = "Saisissez l'URL d'un fichier de configuration JSON de source de récupération.";
+"scraper_import_auto_footer" = "Collez le JSON de la source ou une URL de configuration HTTPS. Le format est détecté automatiquement.";
+"JSON or Manifest URL" = "JSON ou URL de configuration";
+"Input recognized" = "Entrée reconnue";
+"Paste JSON or an HTTPS URL" = "Collez du JSON ou une URL HTTPS";
+"Remote Manifest" = "Configuration distante";
+"URL recognized" = "URL reconnue";
+"The manifest will be downloaded over HTTPS and validated before it is imported." = "La configuration sera téléchargée via HTTPS et validée avant son importation.";
 "import_action" = "Importer";
 "import_mode" = "Mode d'importation";
 "invalid_url" = "URL non valide";

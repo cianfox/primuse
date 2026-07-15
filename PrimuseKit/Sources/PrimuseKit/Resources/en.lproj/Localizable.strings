@@ -11,7 +11,7 @@
 "src.subtitle.baiduPan"      = "Baidu Pan OAuth";
 "src.subtitle.aliyunDrive"   = "Aliyun Drive PDS";
 "src.subtitle.pan115"        = "115 Open Platform · Coming soon";
-"src.subtitle.pan123"        = "123 Open Platform · Coming soon";
+"src.subtitle.pan123"        = "123 Open Platform OAuth";
 
 // Widget & Control Center extensions
 "ext.widget.appName"                       = "Primuse";

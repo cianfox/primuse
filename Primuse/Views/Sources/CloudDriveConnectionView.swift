@@ -138,7 +138,7 @@ struct CloudDriveConnectionView: View {
             VStack(spacing: 24) {
                 Spacer().frame(height: 30)
 
-                if source.type == .pan115 || source.type == .pan123 {
+                if source.type == .pan115 {
                     pendingApprovalBanner
                 }
 
@@ -169,7 +169,7 @@ struct CloudDriveConnectionView: View {
         }
     }
 
-    /// 115 / 123 暂未对普通用户开放的说明横幅:告知正在申请官方接入资质。
+    /// 115 暂未对普通用户开放的说明横幅:告知正在申请官方接入资质。
     private var pendingApprovalBanner: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "clock.badge.exclamationmark")
@@ -483,10 +483,9 @@ struct CloudDriveConnectionView: View {
     }
 
     private func resolvedCredentials(using tokenManager: CloudTokenManager) async -> CloudTokenManager.AppCredentials? {
-        // Baidu is currently shipped with app-owned credentials, so always prefer
-        // the built-in pair over any stale per-source client_id the user may have
-        // entered before built-in support existed.
-        if source.type == .baiduPan,
+        // App-owned credentials must win over stale per-source values entered
+        // before built-in support existed. This applies to both Baidu and 123.
+        if source.type == .baiduPan || source.type == .pan123,
            let builtIn = BuiltInCloudCredentials.credentials(for: source.type) {
             return .init(clientId: builtIn.clientId, clientSecret: builtIn.clientSecret)
         }

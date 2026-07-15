@@ -993,8 +993,6 @@ private struct MacSTEffectsView: View {
 
 // MARK: - ST-04 Metadata Scraping
 
-private enum ScraperImportMode { case paste, url }
-
 private struct MacSTScrapingView: View {
     @Environment(MusicLibrary.self) private var library
     @Environment(MusicScraperService.self) private var scraperService
@@ -1002,7 +1000,6 @@ private struct MacSTScrapingView: View {
     @State private var showImportSheet = false
     @State private var importText = ""
     @State private var importError: String?
-    @State private var importMode: ScraperImportMode = .paste
     @AppStorage(MusicScraperService.sidecarCoverWriteEnabledKey) private var sidecarCoverWriteEnabled = true
     @AppStorage(MusicScraperService.sidecarLyricsWriteEnabledKey) private var sidecarLyricsWriteEnabled = true
     @AppStorage(MusicScraperService.sidecarWriteTimeoutKey) private var sidecarWriteTimeout = 30.0
@@ -1026,11 +1023,8 @@ private struct MacSTScrapingView: View {
 
             MacSTGroup {
                 MacSTRow(Lz("Custom Source"), hint: Lz("META-03 · Paste JSON or Import from URL"), divider: false) {
-                    MacSTButton(title: Lz("Import from URL…"), systemImage: "link") {
-                        beginImport(.url)
-                    }
-                    MacSTButton(title: Lz("Paste JSON…"), systemImage: "doc.on.clipboard") {
-                        beginImport(.paste)
+                    MacSTButton(title: Lz("Import"), systemImage: "square.and.arrow.down") {
+                        beginImport()
                     }
                 }
             }
@@ -1116,16 +1110,14 @@ private struct MacSTScrapingView: View {
         )
     }
 
-    private func beginImport(_ mode: ScraperImportMode) {
-        importMode = mode
-        importText = mode == .paste ? Self.sampleJSON : "https://scrapers.primuse.app/netease.json"
+    private func beginImport() {
+        importText = ""
         importError = nil
         showImportSheet = true
     }
 
     private var importScraperSheet: some View {
         MacScraperImportSheet(
-            mode: $importMode,
             text: $importText,
             error: importError,
             onCancel: { showImportSheet = false },
@@ -1138,11 +1130,16 @@ private struct MacSTScrapingView: View {
         let text = importText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        if importMode == .url {
-            guard let url = URL(string: text) else {
-                importError = String(localized: "invalid_url")
-                return
-            }
+        let input: ScraperImportInput
+        do {
+            input = try ScraperConfigStore.shared.classifyImportInput(text)
+        } catch {
+            importError = error.localizedDescription
+            return
+        }
+
+        switch input {
+        case .remoteURL(let url):
             Task {
                 do {
                     let configs = try await ScraperConfigStore.shared.importFromURL(url)
@@ -1152,9 +1149,9 @@ private struct MacSTScrapingView: View {
                     importError = error.localizedDescription
                 }
             }
-        } else {
+        case .json(let json):
             do {
-                let configs = try ScraperConfigStore.shared.importFromJSON(text)
+                let configs = try ScraperConfigStore.shared.importFromJSON(json)
                 for config in configs { scraperSettings.addCustomSource(config) }
                 showImportSheet = false
             } catch {
@@ -1163,28 +1160,9 @@ private struct MacSTScrapingView: View {
         }
     }
 
-    fileprivate static let sampleJSON = """
-    {
-      "id": "netease-music",
-      "name": "NetEase Music",
-      "version": 12,
-      "capabilities": ["metadata", "cover", "lyrics"],
-      "rateLimit": 1000,
-      "headers": {
-        "User-Agent": "Primuse/3.8",
-        "Referer": "https://music.163.com"
-      },
-      "sslTrustDomains": ["music.163.com", "*.126.net"],
-      "search":  { "url": "https://music.163.com/api/search/get?s={{query}}", "method": "GET", "script": "search.js" },
-      "detail":  { "url": "https://music.163.com/api/song/detail?id={{id}}", "method": "GET", "script": "detail.js" },
-      "cover":   { "url": "https://music.163.com/api/song/detail?id={{id}}", "method": "GET", "script": "cover.js" },
-      "lyrics":  { "url": "https://music.163.com/api/song/lyric?id={{id}}", "method": "GET", "script": "lyrics.js" }
-    }
-    """
 }
 
 private struct MacScraperImportSheet: View {
-    @Binding var mode: ScraperImportMode
     @Binding var text: String
     let error: String?
     let onCancel: () -> Void
@@ -1194,8 +1172,17 @@ private struct MacScraperImportSheet: View {
         MacScraperImportPreview.parse(text) ?? .sample
     }
 
-    private var isJSONValid: Bool {
-        mode == .paste && MacScraperImportPreview.parse(text) != nil
+    private var detectedInput: ScraperImportInput? {
+        try? ScraperConfigStore.shared.classifyImportInput(text)
+    }
+
+    private var isInputRecognized: Bool { detectedInput != nil }
+    private var hasJSONPreview: Bool { MacScraperImportPreview.parse(text) != nil }
+
+    private var isRemoteURL: Bool {
+        guard let detectedInput else { return false }
+        if case .remoteURL = detectedInput { return true }
+        return false
     }
 
     var body: some View {
@@ -1206,8 +1193,13 @@ private struct MacScraperImportSheet: View {
                 leftPane
                     .frame(maxWidth: .infinity)
                 Rectangle().fill(PMColor.divider).frame(width: 0.5)
-                rightPane
-                    .frame(width: 280)
+                if isRemoteURL {
+                    remoteURLSummaryPane.frame(width: 280)
+                } else if hasJSONPreview {
+                    rightPane.frame(width: 280)
+                } else {
+                    inputHintPane.frame(width: 280)
+                }
             }
             .frame(maxHeight: .infinity)
 
@@ -1245,60 +1237,13 @@ private struct MacScraperImportSheet: View {
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
-
-            Rectangle().fill(PMColor.divider).frame(height: 0.5)
-
-            HStack {
-                modeSegment
-                    .frame(width: 320)
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
         }
-    }
-
-    private var modeSegment: some View {
-        HStack(spacing: 2) {
-            modeButton(.url, title: Lz("Import from URL"), icon: "icloud.and.arrow.down")
-            modeButton(.paste, title: Lz("Paste JSON"), icon: "curlybraces")
-        }
-        .padding(3)
-        .background(PMColor.glassBtn, in: .rect(cornerRadius: 9))
-    }
-
-    private func modeButton(_ item: ScraperImportMode, title: String, icon: String) -> some View {
-        Button {
-            mode = item
-            if item == .url, text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
-                text = "https://scrapers.primuse.app/netease.json"
-            } else if item == .paste, !text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
-                text = MacSTScrapingView.sampleJSON
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12.5, weight: .medium))
-                Text(verbatim: title)
-                    .font(.system(size: 12, weight: mode == item ? .semibold : .medium))
-            }
-            .foregroundStyle(mode == item ? PMColor.text : PMColor.textMuted)
-            .frame(maxWidth: .infinity)
-            .frame(height: 30)
-            .background(mode == item ? PMColor.bgElev : .clear, in: .rect(cornerRadius: 7))
-            .shadow(color: mode == item ? .black.opacity(0.12) : .clear, radius: 3, y: 1)
-        }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder
     private var leftPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if mode == .url {
-                urlImportPane
-            } else {
-                jsonImportPane
-            }
+            importInputPane
             if let error {
                 Text(verbatim: error)
                     .font(PMFont.caption)
@@ -1312,20 +1257,20 @@ private struct MacScraperImportSheet: View {
         .padding(.bottom, 16)
     }
 
-    private var jsonImportPane: some View {
+    private var importInputPane: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(verbatim: Lz("JSON Configuration"))
+                Text(verbatim: Lz("JSON or Manifest URL"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(PMColor.textMuted)
                 Spacer()
                 HStack(spacing: 5) {
-                    Image(systemName: isJSONValid ? "checkmark" : "exclamationmark.triangle")
+                    Image(systemName: isInputRecognized ? "checkmark" : "exclamationmark.triangle")
                         .font(.system(size: 10.5, weight: .semibold))
-                    Text(verbatim: isJSONValid ? Lz("Valid format") : Lz("Waiting for valid JSON"))
+                    Text(verbatim: isInputRecognized ? Lz("Input recognized") : Lz("Paste JSON or an HTTPS URL"))
                         .font(.system(size: 11, weight: .semibold))
                 }
-                .foregroundStyle(isJSONValid ? PMColor.ok : PMColor.warn)
+                .foregroundStyle(isInputRecognized ? PMColor.ok : PMColor.warn)
             }
             MacJSONEditor(text: $text)
                 .frame(height: 382)
@@ -1339,58 +1284,46 @@ private struct MacScraperImportSheet: View {
         .padding(.top, 8)
     }
 
-    private var urlImportPane: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(verbatim: Lz("Manifest URL"))
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(PMColor.textMuted)
-            TextField("https://scrapers.primuse.app/netease.json", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5, design: .monospaced))
-                .foregroundStyle(PMColor.text)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(PMColor.bgElev, in: .rect(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(PMColor.brand, lineWidth: 1.5)
-                }
-            Text(verbatim: Lz("Points to scraper.json manifest · downloads manifest and referenced JS scripts"))
-                .font(.system(size: 10.5))
-                .foregroundStyle(PMColor.textFaint)
-                .padding(.bottom, 10)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(PMColor.ok)
-                    Text(verbatim: Lz("Manifest fetched · 4.2 KB"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(PMColor.text)
-                }
-                ForEach(Array(MacScraperImportPreview.scriptRows.enumerated()), id: \.offset) { _, row in
-                    let (script, size) = row
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(PMColor.ok)
-                        Text(verbatim: script)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(PMColor.text)
-                        Spacer()
-                        Text(verbatim: size)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(PMColor.textFaint)
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-            .padding(14)
-            .pmCard(cornerRadius: 10)
+    private var remoteURLSummaryPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(verbatim: Lz("Remote Manifest"))
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.6)
+                .textCase(.uppercase)
+                .foregroundStyle(PMColor.textFaint)
+            Image(systemName: "link.circle.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(PMColor.brand)
+            Text(verbatim: Lz("URL recognized"))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(PMColor.text)
+            Text(verbatim: Lz("The manifest will be downloaded over HTTPS and validated before it is imported."))
+                .font(PMFont.caption)
+                .foregroundStyle(PMColor.textMuted)
+                .lineSpacing(3)
+            Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(18)
+        .background(PMColor.bgDeep)
+    }
+
+    private var inputHintPane: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 34))
+                .foregroundStyle(PMColor.textFaint)
+            Text(verbatim: Lz("Paste JSON or an HTTPS URL"))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(PMColor.text)
+            Text("scraper_import_auto_footer")
+                .font(PMFont.caption)
+                .foregroundStyle(PMColor.textMuted)
+                .lineSpacing(3)
+            Spacer()
+        }
+        .padding(18)
+        .background(PMColor.bgDeep)
     }
 
     private var rightPane: some View {
@@ -1528,13 +1461,6 @@ private struct MacScraperImportPreview {
     var headers: [String: String]
     var sslDomains: [String]
     var endpointScripts: [String]
-
-    static let scriptRows = [
-        ("search.js", "2.1 KB"),
-        ("detail.js", "1.8 KB"),
-        ("cover.js", "0.9 KB"),
-        ("lyrics.js", "1.4 KB"),
-    ]
 
     static let sample = MacScraperImportPreview(
         name: "NetEase Music",

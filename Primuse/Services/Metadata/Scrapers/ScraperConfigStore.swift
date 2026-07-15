@@ -21,6 +21,14 @@ struct ScraperImportSummary: Sendable {
     }
 }
 
+/// User-facing scraper import accepts either inline JSON or a remote manifest
+/// URL in the same field. Keep classification here so every settings surface
+/// follows exactly the same rules.
+enum ScraperImportInput {
+    case json(String)
+    case remoteURL(URL)
+}
+
 /// Manages storage and retrieval of user-imported ScraperConfig JSON files.
 /// Configs are stored as individual .json files in Application Support/Primuse/ScraperConfigs/.
 final class ScraperConfigStore: @unchecked Sendable {
@@ -90,6 +98,35 @@ final class ScraperConfigStore: @unchecked Sendable {
     /// Parse and validate one or more configs without writing them to disk.
     func previewImportFromJSON(_ jsonString: String) throws -> ScraperImportSummary {
         try makeImportSummary(configs: parseConfigs(from: jsonString), sourceURL: nil)
+    }
+
+    /// Recognize inline JSON and HTTPS manifest URLs without requiring the
+    /// user to select an import mode first. JSON-looking input stays classified
+    /// as JSON even when malformed so the decoder can return the useful parse
+    /// error. Remote manifest URLs are HTTPS-only and cannot carry credentials.
+    func classifyImportInput(_ input: String) throws -> ScraperImportInput {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ScraperConfigError.invalidInput("Empty input")
+        }
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            return .json(trimmed)
+        }
+        if let components = URLComponents(string: trimmed),
+           let scheme = components.scheme?.lowercased(),
+           components.host?.isEmpty == false {
+            guard scheme == "https" else {
+                if scheme == "http" {
+                    throw ScraperConfigError.downloadFailed("Only HTTPS URLs are supported")
+                }
+                throw ScraperConfigError.invalidInput("Paste scraper JSON or an HTTPS manifest URL")
+            }
+            guard components.user == nil, components.password == nil, let url = components.url else {
+                throw ScraperConfigError.invalidInput("Manifest URLs cannot contain credentials")
+            }
+            return .remoteURL(url)
+        }
+        throw ScraperConfigError.invalidInput("Paste scraper JSON or an HTTPS manifest URL")
     }
 
     /// Persist configs that have already been parsed/reviewed.
@@ -611,12 +648,14 @@ final class ScraperConfigStore: @unchecked Sendable {
 }
 
 enum ScraperConfigError: Error, LocalizedError {
+    case invalidInput(String)
     case invalidJSON(String)
     case downloadFailed(String)
     case validationFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .invalidInput(let msg): "Invalid import input: \(msg)"
         case .invalidJSON(let msg): "Invalid JSON: \(msg)"
         case .downloadFailed(let msg): "Download failed: \(msg)"
         case .validationFailed(let msg): "Validation failed: \(msg)"

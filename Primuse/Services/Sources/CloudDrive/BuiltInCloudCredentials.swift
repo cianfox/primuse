@@ -19,7 +19,7 @@ enum BuiltInCloudCredentials {
     // 115 开放平台 App ID(开发者后台申请),构建期经 xcconfig/Info.plist 注入。
     private static let pan115ClientIdKey = "PrimuseU115ClientID"
     private static let pan115ClientSecretKey = "PrimuseU115ClientSecret"
-    // 123 开放平台 clientID / clientSecret(client-credentials)。
+    // 123 开放平台第三方挂载应用的 OAuth clientID / clientSecret。
     private static let pan123ClientIdKey = "PrimusePan123ClientID"
     private static let pan123ClientSecretKey = "PrimusePan123ClientSecret"
 

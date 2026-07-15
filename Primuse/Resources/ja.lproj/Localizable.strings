@@ -520,6 +520,13 @@
 "config_url_placeholder" = "https://example.com/scraper.json";
 "paste_config_footer" = "取得ソースの JSON 設定を貼り付けてください。";
 "url_config_footer" = "JSON 取得ソース設定ファイルの URL を入力してください。";
+"scraper_import_auto_footer" = "スクレイパーの JSON または HTTPS 設定 URL を貼り付けてください。形式は自動判定されます。";
+"JSON or Manifest URL" = "JSON または設定 URL";
+"Input recognized" = "入力を認識しました";
+"Paste JSON or an HTTPS URL" = "JSON または HTTPS URL を貼り付けてください";
+"Remote Manifest" = "リモート設定";
+"URL recognized" = "URL を認識しました";
+"The manifest will be downloaded over HTTPS and validated before it is imported." = "設定は HTTPS でダウンロードされ、読み込み前に検証されます。";
 "import_action" = "読み込む";
 "import_mode" = "読み込み方法";
 "invalid_url" = "無効な URL";

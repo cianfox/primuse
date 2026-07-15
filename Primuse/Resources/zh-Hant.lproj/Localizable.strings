@@ -379,6 +379,13 @@
 "config_url_placeholder" = "https://example.com/scraper.json";
 "paste_config_footer" = "貼上刮削來源的 JSON 設定內容。";
 "url_config_footer" = "輸入 JSON 刮削來源設定檔的 URL。";
+"scraper_import_auto_footer" = "貼上刮削來源 JSON 或 HTTPS 設定 URL，系統會自動辨識。";
+"JSON or Manifest URL" = "JSON 或設定 URL";
+"Input recognized" = "已辨識輸入";
+"Paste JSON or an HTTPS URL" = "請貼上 JSON 或 HTTPS URL";
+"Remote Manifest" = "遠端設定";
+"URL recognized" = "已辨識 URL";
+"The manifest will be downloaded over HTTPS and validated before it is imported." = "將透過 HTTPS 下載設定，並在匯入前完成驗證。";
 "import_action" = "匯入";
 "import_mode" = "匯入方式";
 "invalid_url" = "無效的 URL";

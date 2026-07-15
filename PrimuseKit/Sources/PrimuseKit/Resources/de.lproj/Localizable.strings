@@ -13,7 +13,7 @@
 "src.subtitle.baiduPan" = "Baidu Pan OAuth";
 "src.subtitle.aliyunDrive" = "Aliyun Drive PDS";
 "src.subtitle.pan115" = "115 Open Platform · Demnächst verfügbar";
-"src.subtitle.pan123" = "123 Open Platform · Demnächst verfügbar";
+"src.subtitle.pan123" = "123 Open Platform OAuth";
 
 // Widget- und Kontrollzentrum-Erweiterungen
 "ext.widget.appName"                       = "Primuse";
