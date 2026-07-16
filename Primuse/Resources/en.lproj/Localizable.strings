@@ -77,6 +77,10 @@
 "icon_theme_5" = "Spirit Charm";
 "icon_theme_6" = "Phoenix";
 "icon_theme_7" = "Twilight";
+"icon_theme_8" = "Soundflow";
+"icon_theme_9" = "Sonic Pulse";
+"icon_theme_10" = "Minimal Note";
+"icon_theme_11" = "P Note";
 "queue_title" = "Queue";
 "queue_empty" = "Queue Empty";
 "queue_empty_desc" = "Add songs to the queue";

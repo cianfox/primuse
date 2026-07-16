@@ -215,6 +215,10 @@
 "icon_theme_5" = "Spirit Charm";
 "icon_theme_6" = "Phoenix";
 "icon_theme_7" = "Twilight";
+"icon_theme_8" = "Klangfluss";
+"icon_theme_9" = "Klangpuls";
+"icon_theme_10" = "Minimalnote";
+"icon_theme_11" = "P-Note";
 "queue_title" = "Warteschlange";
 "queue_empty" = "Warteschlange leer";
 "queue_empty_desc" = "Füge Titel zur Warteschlange hinzu";

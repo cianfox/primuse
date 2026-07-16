@@ -37,7 +37,7 @@ final class AppIconService {
         let supportsAppearance: Bool
     }
 
-    static let themeCount = 7
+    static let themeCount = 11
 
     /// Themes that ship only a single visual variant (no dark counterpart in
     /// the asset catalog). Add a theme index here when no dark image exists.
@@ -54,6 +54,10 @@ final class AppIconService {
         "AppIcon5": Color(red: 0.95, green: 0.45, blue: 0.78),  // 5 — pastel magenta
         "AppIcon6": Color(red: 0.45, green: 0.55, blue: 0.95),  // 6 — pastel blue
         "AppIcon7": Color(red: 0.55, green: 0.50, blue: 0.92),  // 7 — pastel lavender
+        "AppIcon8": Color(red: 0.16, green: 0.64, blue: 0.88),  // 8 — soundflow blue
+        "AppIcon9": Color(red: 0.94, green: 0.27, blue: 0.53),  // 9 — sonic-pulse magenta
+        "AppIcon10": Color(red: 0.20, green: 0.75, blue: 0.68), // 10 — minimal-note mint
+        "AppIcon11": Color(red: 0.93, green: 0.22, blue: 0.56), // 11 — P-note magenta
     ]
 
     let options: [IconOption] = {

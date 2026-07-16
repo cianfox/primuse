@@ -216,6 +216,10 @@
 "icon_theme_5" = "Spirit Charm";
 "icon_theme_6" = "Phoenix";
 "icon_theme_7" = "Twilight";
+"icon_theme_8" = "サウンドフロー";
+"icon_theme_9" = "ソニックパルス";
+"icon_theme_10" = "ミニマルノート";
+"icon_theme_11" = "P 音符";
 "queue_title" = "再生キュー";
 "queue_empty" = "キューが空です";
 "queue_empty_desc" = "キューに曲を追加してください";

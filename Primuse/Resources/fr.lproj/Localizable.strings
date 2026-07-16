@@ -215,6 +215,10 @@
 "icon_theme_5" = "Spirit Charm";
 "icon_theme_6" = "Phoenix";
 "icon_theme_7" = "Twilight";
+"icon_theme_8" = "Flux sonore";
+"icon_theme_9" = "Pulsation sonore";
+"icon_theme_10" = "Note minimale";
+"icon_theme_11" = "Note P";
 "queue_title" = "File de lecture";
 "queue_empty" = "File vide";
 "queue_empty_desc" = "Ajoutez des morceaux à la file de lecture";

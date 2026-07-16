@@ -77,6 +77,10 @@
 "icon_theme_5" = "灵韵猿魂";
 "icon_theme_6" = "凤鸣音潮";
 "icon_theme_7" = "暮光剪影";
+"icon_theme_8" = "声流聚合";
+"icon_theme_9" = "节奏脉冲";
+"icon_theme_10" = "极简音符";
+"icon_theme_11" = "P 音符";
 "queue_title" = "播放队列";
 "queue_empty" = "队列为空";
 "queue_empty_desc" = "添加歌曲到队列";
