@@ -304,6 +304,30 @@ protocol SongScanningConnector: MusicSourceConnector {
 /// corrupted server fields may be refreshed without requiring file changes.
 protocol RefreshingMetadataSongConnector: SongScanningConnector {}
 
+struct MediaServerWritebackResult: Sendable {
+    var metadataWritten = false
+    var coverWritten = false
+    var lyricsWritten = false
+    var unsupported: [String] = []
+    var errors: [String] = []
+
+    var succeeded: Bool {
+        errors.isEmpty
+    }
+}
+
+/// Native metadata writeback for media-server libraries. This is separate
+/// from sidecar file writing because Jellyfin/Emby/Plex expose item APIs and
+/// opaque IDs rather than writable source-directory paths.
+protocol MediaServerWritebackConnector: MusicSourceConnector {
+    func writeScrapedMetadata(
+        original: Song,
+        updated: Song,
+        coverData: Data?,
+        lyricsLines: [LyricLine]?
+    ) async -> MediaServerWritebackResult
+}
+
 /// 服务端曲库源(Subsonic / Navidrome 等)向服务器回报播放的能力。
 /// Navidrome 不把单纯的 stream 视为一次播放, 必须显式 scrobble 才会更新
 /// 播放次数 / "最近播放" / 转发到服务端配置的 Last.fm·ListenBrainz。

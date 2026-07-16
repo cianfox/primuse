@@ -2689,6 +2689,43 @@ final class SourceManager {
         return Self.supportsSidecarWriting(sourceType: source.type)
     }
 
+    func supportsMediaServerWriteback(for song: Song) async -> Bool {
+        guard let sources = try? await sourcesProvider(),
+              let source = sources.first(where: { $0.id == song.sourceID }) else {
+            return false
+        }
+        switch source.type {
+        case .jellyfin, .emby, .plex:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func writeScrapedMetadataToMediaServer(
+        original: Song,
+        updated: Song,
+        coverData: Data?,
+        lyricsLines: [LyricLine]?
+    ) async -> MediaServerWritebackResult {
+        do {
+            let connector = try await connectorForSong(updated)
+            guard let writer = connector as? any MediaServerWritebackConnector else {
+                return MediaServerWritebackResult(
+                    unsupported: ["This media server connector does not support metadata writeback"]
+                )
+            }
+            return await writer.writeScrapedMetadata(
+                original: original,
+                updated: updated,
+                coverData: coverData,
+                lyricsLines: lyricsLines
+            )
+        } catch {
+            return MediaServerWritebackResult(errors: [error.localizedDescription])
+        }
+    }
+
     nonisolated static func supportsSidecarWriting(sourceType: MusicSourceType) -> Bool {
         switch sourceType {
         case .synology, .smb, .oneDrive, .dropbox, .googleDrive, .baiduPan, .aliyunDrive, .pan123:

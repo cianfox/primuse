@@ -205,6 +205,13 @@ final class MusicScraperService {
                     plog("📝 Sidecar: source does not support writing, keeping local metadata cache for '\(updatedSong.title)'")
                 }
             }
+
+            await writeBackToMediaServerIfSupported(
+                original: song,
+                updated: updatedSong,
+                coverData: result.coverData,
+                lyricsLines: result.lyricsLines
+            )
         }
         return (updatedSong, result.coverData, result.lyricsLines)
     }
@@ -442,6 +449,13 @@ final class MusicScraperService {
 
                         library.replaceSong(updatedSong)
                         updatedCount += 1
+
+                        await writeBackToMediaServerIfSupported(
+                            original: song,
+                            updated: updatedSong,
+                            coverData: coverData,
+                            lyricsLines: lyricsLines
+                        )
 
                         if sidecarCoverData != nil || sidecarLyricsLines != nil {
                             let songForWrite = updatedSong
@@ -770,6 +784,12 @@ final class MusicScraperService {
 
                     if enrichedSong != song {
                         library.replaceSong(enrichedSong)
+                        await writeBackToMediaServerIfSupported(
+                            original: song,
+                            updated: enrichedSong,
+                            coverData: result.coverData,
+                            lyricsLines: result.lyricsLines
+                        )
                     }
                 }
             } catch {
@@ -1042,6 +1062,29 @@ final class MusicScraperService {
                 throw CancellationError()
             }
             return result
+        }
+    }
+
+    private func writeBackToMediaServerIfSupported(
+        original: Song,
+        updated: Song,
+        coverData: Data?,
+        lyricsLines: [LyricLine]?
+    ) async {
+        guard await sourceManager.supportsMediaServerWriteback(for: updated) else {
+            return
+        }
+        let result = await sourceManager.writeScrapedMetadataToMediaServer(
+            original: original,
+            updated: updated,
+            coverData: coverData,
+            lyricsLines: lyricsLines
+        )
+        if !result.errors.isEmpty {
+            plog("⚠️ Media-server writeback errors for '\(updated.title)': \(result.errors)")
+        }
+        if !result.unsupported.isEmpty {
+            plog("ℹ️ Media-server writeback limitations for '\(updated.title)': \(result.unsupported)")
         }
     }
 

@@ -88,6 +88,7 @@ struct ScrapeOptionsView: View {
     @State private var macDidInitialLoad = false
     @State private var macDisplayTitle: String?
     @State private var macSidecarBaseNameOverride: String?
+    @State private var macUsesMediaServerWriteback = false
     /// 当前在左栏选中的候选 id, 用于高亮 + 取中栏封面对比的来源名。
     @State private var selectedItemID: String?
     #endif
@@ -620,15 +621,36 @@ struct ScrapeOptionsView: View {
     private var macSidecarPane: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 8) {
-                macSectionTitle("Sidecar 回写")
-                macSidecarRow(suffix: "-cover.jpg",
-                              enabled: applyCover && (previewResult?.hasCover ?? false))
-                macSidecarRow(suffix: ".lrc",
-                              enabled: applyLyrics && (previewResult?.hasLyrics ?? false))
-                Text("写入到源目录旁路文件 · 30s 超时 · 非主线程")
-                    .font(.system(size: 11))
-                    .foregroundStyle(PMColor.textFaint)
-                    .padding(.top, 4)
+                if macUsesMediaServerWriteback {
+                    macSectionTitle("媒体服务器写回")
+                    macServerWritebackRow(
+                        title: "歌曲元数据",
+                        enabled: applyTitle || applyArtist || applyAlbum
+                            || applyYear || applyTrack || applyGenre
+                    )
+                    macServerWritebackRow(
+                        title: "主封面图片",
+                        enabled: applyCover && (previewResult?.hasCover ?? false)
+                    )
+                    macServerWritebackRow(
+                        title: "同步歌词",
+                        enabled: applyLyrics && (previewResult?.hasLyrics ?? false)
+                    )
+                    Text("通过服务器 API 写回；Emby/Plex 歌词不支持 API 时保留在本地缓存")
+                        .font(.system(size: 11))
+                        .foregroundStyle(PMColor.textFaint)
+                        .padding(.top, 4)
+                } else {
+                    macSectionTitle("Sidecar 回写")
+                    macSidecarRow(suffix: "-cover.jpg",
+                                  enabled: applyCover && (previewResult?.hasCover ?? false))
+                    macSidecarRow(suffix: ".lrc",
+                                  enabled: applyLyrics && (previewResult?.hasLyrics ?? false))
+                    Text("写入到源目录旁路文件 · 30s 超时 · 非主线程")
+                        .font(.system(size: 11))
+                        .foregroundStyle(PMColor.textFaint)
+                        .padding(.top, 4)
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -672,6 +694,17 @@ struct ScrapeOptionsView: View {
                 .foregroundStyle(enabled ? PMColor.textMuted : PMColor.textFaint)
                 .lineLimit(1)
                 .truncationMode(.middle)
+        }
+    }
+
+    private func macServerWritebackRow(title: String, enabled: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(enabled ? PMColor.ok : PMColor.textFaint)
+            Text(verbatim: title)
+                .font(.system(size: 11.5))
+                .foregroundStyle(enabled ? PMColor.textMuted : PMColor.textFaint)
         }
     }
 
@@ -752,8 +785,10 @@ struct ScrapeOptionsView: View {
     private func macInitialLoad() async {
         let title = await scraperService.suggestedScrapeTitle(for: song)
         let sidecarBaseName = await scraperService.suggestedSidecarBaseName(for: song)
+        let usesMediaServerWriteback = await sourceManager.supportsMediaServerWriteback(for: song)
         macDisplayTitle = title
         macSidecarBaseNameOverride = sidecarBaseName
+        macUsesMediaServerWriteback = usesMediaServerWriteback
         manualSearchQuery = MusicScraperService.searchQuery(title: title, artist: song.artistName)
         await macRunSearch()
     }
@@ -1178,8 +1213,10 @@ struct ScrapeOptionsView: View {
         let title = await scraperService.suggestedScrapeTitle(for: song)
         #if os(macOS)
         let sidecarBaseName = await scraperService.suggestedSidecarBaseName(for: song)
+        let usesMediaServerWriteback = await sourceManager.supportsMediaServerWriteback(for: song)
         macDisplayTitle = title
         macSidecarBaseNameOverride = sidecarBaseName
+        macUsesMediaServerWriteback = usesMediaServerWriteback
         #endif
         manualSearchQuery = MusicScraperService.searchQuery(title: title, artist: song.artistName)
         mode = .manual
@@ -1444,6 +1481,26 @@ struct ScrapeOptionsView: View {
             NotificationCenter.default.post(name: .primuseLyricsDidChange, object: final.id)
             onCompleteRef?(final)
 
+            let usesMediaServerWriteback = await sm.supportsMediaServerWriteback(for: final)
+            if usesMediaServerWriteback {
+                let originalSnapshot = song
+                let finalSnapshot = final
+                Task.detached(priority: .utility) {
+                    let result = await sm.writeScrapedMetadataToMediaServer(
+                        original: originalSnapshot,
+                        updated: finalSnapshot,
+                        coverData: needsCover ? coverData : nil,
+                        lyricsLines: needsLyrics ? lyricsLines : nil
+                    )
+                    if !result.errors.isEmpty {
+                        plog("⚠️ Media-server writeback errors for '\(finalSnapshot.title)': \(result.errors)")
+                    }
+                    if !result.unsupported.isEmpty {
+                        plog("ℹ️ Media-server writeback limitations for '\(finalSnapshot.title)': \(result.unsupported)")
+                    }
+                }
+            }
+
             // Sidecar (cover.jpg / .lrc) 写回 NAS — fire and forget。
             //
             // 关键: detached + 30s 超时。之前的实现是 Task { @MainActor in ... },
@@ -1461,7 +1518,7 @@ struct ScrapeOptionsView: View {
             //
             // withTimeout 兜底: 30 秒后强制取消, 即使 NAS 端有 bug 也不会无限期
             // 占用 connector actor。
-            if needsCover || needsLyrics {
+            if !usesMediaServerWriteback && (needsCover || needsLyrics) {
                 let titleSnapshot = final.title
                 let finalSnapshot = final
                 Task.detached(priority: .utility) {

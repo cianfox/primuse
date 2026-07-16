@@ -127,7 +127,7 @@ public enum MediaMetadataTextRepair {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard !trimmed.contains("\u{FFFD}") else { return nil }
+        guard !containsUnrecoverableReplacement(in: trimmed) else { return nil }
 
         return legacyChineseCandidate(for: trimmed) ?? trimmed
     }
@@ -136,7 +136,8 @@ public enum MediaMetadataTextRepair {
         guard let value else { return false }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return trimmed.contains("\u{FFFD}") || legacyChineseCandidate(for: trimmed) != nil
+        return containsUnrecoverableReplacement(in: trimmed)
+            || legacyChineseCandidate(for: trimmed) != nil
     }
 
     public static func fileNameTitle(from path: String?) -> String? {
@@ -193,6 +194,19 @@ public enum MediaMetadataTextRepair {
             return nil
         }
         return decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func containsUnrecoverableReplacement(in value: String) -> Bool {
+        if value.contains("\u{FFFD}") {
+            return true
+        }
+
+        // Some media servers replace undecodable trailing Chinese bytes with
+        // literal ASCII question marks instead of U+FFFD. Requiring existing
+        // Han text plus a repeated "??" avoids rejecting ordinary Western
+        // titles that intentionally contain question marks.
+        return value.contains("??")
+            && value.unicodeScalars.contains(where: { isHan($0.value) })
     }
 
     private static func isHan(_ scalar: UInt32) -> Bool {

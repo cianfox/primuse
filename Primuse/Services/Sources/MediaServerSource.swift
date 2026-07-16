@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import PrimuseKit
 
-actor MediaServerSource: RefreshingMetadataSongConnector {
+actor MediaServerSource: RefreshingMetadataSongConnector, MediaServerWritebackConnector {
     enum Kind: Sendable {
         case jellyfin
         case emby
@@ -23,6 +23,8 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
     private var accessToken: String?
     private var userID: String?
     private var plexItems: [String: PlexAudioItem] = [:]
+    private var plexAPIVersion: String?
+    private var plexSigninState: String?
 
     init(
         sourceID: String,
@@ -71,7 +73,9 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
             }
 
             accessToken = secret
-            _ = try await fetchPlexServerInfo()
+            let serverInfo = try await fetchPlexServerInfo()
+            plexAPIVersion = serverInfo.apiVersion
+            plexSigninState = serverInfo.myPlexSigninState
             userID = "plex"
             return
         }
@@ -111,6 +115,8 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
         accessToken = nil
         userID = nil
         plexItems.removeAll()
+        plexAPIVersion = nil
+        plexSigninState = nil
     }
 
     func listFiles(at path: String) async throws -> [RemoteFileItem] {
@@ -325,6 +331,78 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
         }
     }
 
+    func writeScrapedMetadata(
+        original: Song,
+        updated: Song,
+        coverData: Data?,
+        lyricsLines: [LyricLine]?
+    ) async -> MediaServerWritebackResult {
+        var result = MediaServerWritebackResult()
+
+        do {
+            try await connect()
+        } catch {
+            result.errors.append("Connection: \(error.localizedDescription)")
+            return result
+        }
+
+        guard let itemID = itemID(from: updated.filePath) else {
+            result.errors.append("Invalid media-server item path: \(updated.filePath)")
+            return result
+        }
+
+        if metadataChanged(from: original, to: updated) {
+            do {
+                switch kind {
+                case .jellyfin, .emby:
+                    try await updateJellyfinOrEmbyItem(itemID: itemID, song: updated)
+                    result.metadataWritten = true
+                case .plex:
+                    let plexResult = try await updatePlexMetadata(
+                        ratingKey: itemID,
+                        original: original,
+                        updated: updated
+                    )
+                    result.metadataWritten = plexResult.written
+                    result.unsupported.append(contentsOf: plexResult.unsupported)
+                }
+            } catch {
+                result.errors.append("Metadata: \(error.localizedDescription)")
+            }
+        }
+
+        if let coverData, !coverData.isEmpty {
+            do {
+                try await uploadCover(itemID: itemID, data: coverData)
+                result.coverWritten = true
+            } catch {
+                result.errors.append("Cover: \(error.localizedDescription)")
+            }
+        }
+
+        if let lyricsLines, !lyricsLines.isEmpty {
+            switch kind {
+            case .jellyfin:
+                do {
+                    try await uploadJellyfinLyrics(
+                        itemID: itemID,
+                        title: updated.title,
+                        lines: lyricsLines
+                    )
+                    result.lyricsWritten = true
+                } catch {
+                    result.errors.append("Lyrics: \(error.localizedDescription)")
+                }
+            case .emby:
+                result.unsupported.append("Emby does not expose a lyrics upload API")
+            case .plex:
+                result.unsupported.append("Plex requires a same-name .lrc file in the media directory")
+            }
+        }
+
+        return result
+    }
+
     private func fetchLibraries() async throws -> [Library] {
         if kind == .plex {
             let data = try await performRequest(path: "/library/sections")
@@ -412,13 +490,15 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
         body: Data? = nil,
+        contentType: String = "application/json",
+        accept: String = "application/json",
         requiresAuth: Bool = true
     ) async throws -> Data {
         var request = URLRequest(url: buildURL(path: path, queryItems: queryItems))
         request.httpMethod = method
         request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
 
         for (header, value) in headers(requiresAuth: requiresAuth) {
             request.setValue(value, forHTTPHeaderField: header)
@@ -427,6 +507,237 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
         let (data, response) = try await session.data(for: request)
         try validate(response)
         return data
+    }
+
+    private func metadataChanged(from original: Song, to updated: Song) -> Bool {
+        original.title != updated.title
+            || original.albumTitle != updated.albumTitle
+            || original.artistName != updated.artistName
+            || original.trackNumber != updated.trackNumber
+            || original.discNumber != updated.discNumber
+            || original.genre != updated.genre
+            || original.year != updated.year
+    }
+
+    private func updateJellyfinOrEmbyItem(itemID: String, song: Song) async throws {
+        let itemPath: String
+        switch kind {
+        case .jellyfin:
+            itemPath = "/Items/\(itemID)"
+        case .emby:
+            guard let userID else { throw SourceError.authenticationFailed }
+            itemPath = "/Users/\(userID)/Items/\(itemID)"
+        case .plex:
+            throw SourceError.connectionFailed("Invalid media-server update route")
+        }
+        let existingData = try await performRequest(path: itemPath)
+        guard var item = try JSONSerialization.jsonObject(with: existingData) as? [String: Any] else {
+            throw SourceError.connectionFailed("Invalid item metadata response")
+        }
+
+        item["Name"] = song.title
+        if let artist = song.artistName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !artist.isEmpty {
+            item["AlbumArtist"] = artist
+            item["Artists"] = [artist]
+        }
+        if let album = song.albumTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !album.isEmpty {
+            item["Album"] = album
+        }
+        if let trackNumber = song.trackNumber { item["IndexNumber"] = trackNumber }
+        if let discNumber = song.discNumber { item["ParentIndexNumber"] = discNumber }
+        if let year = song.year { item["ProductionYear"] = year }
+        if let genre = song.genre?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !genre.isEmpty {
+            item["Genres"] = genre
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+
+        let body = try JSONSerialization.data(withJSONObject: item)
+        _ = try await performRequest(path: "/Items/\(itemID)", method: "POST", body: body)
+    }
+
+    private func updatePlexMetadata(
+        ratingKey: String,
+        original: Song,
+        updated: Song
+    ) async throws -> (written: Bool, unsupported: [String]) {
+        let item: PlexAudioItem
+        if let cached = plexItems[ratingKey] {
+            item = cached
+        } else {
+            item = try await fetchPlexTrack(ratingKey: ratingKey)
+        }
+
+        var didWrite = false
+        var unsupported: [String] = []
+        var trackFields: [URLQueryItem] = []
+        if original.title != updated.title {
+            trackFields += [
+                URLQueryItem(name: "title", value: updated.title),
+                URLQueryItem(name: "title.locked", value: "1")
+            ]
+        }
+        if original.trackNumber != updated.trackNumber, let track = updated.trackNumber {
+            trackFields += [
+                URLQueryItem(name: "index", value: String(track)),
+                URLQueryItem(name: "index.locked", value: "1")
+            ]
+        }
+        if original.discNumber != updated.discNumber, let disc = updated.discNumber {
+            trackFields += [
+                URLQueryItem(name: "parentIndex", value: String(disc)),
+                URLQueryItem(name: "parentIndex.locked", value: "1")
+            ]
+        }
+        if !trackFields.isEmpty {
+            _ = try await performRequest(
+                path: "/library/metadata/\(ratingKey)",
+                method: "PUT",
+                queryItems: trackFields,
+                contentType: "application/octet-stream",
+                accept: "*/*"
+            )
+            didWrite = true
+        }
+
+        var albumFields: [URLQueryItem] = []
+        if original.albumTitle != updated.albumTitle,
+           let album = updated.albumTitle, !album.isEmpty {
+            albumFields += [
+                URLQueryItem(name: "title", value: album),
+                URLQueryItem(name: "title.locked", value: "1")
+            ]
+        }
+        if original.year != updated.year, let year = updated.year {
+            albumFields += [
+                URLQueryItem(name: "year", value: String(year)),
+                URLQueryItem(name: "year.locked", value: "1")
+            ]
+        }
+        if !albumFields.isEmpty, let albumID = item.parentRatingKey {
+            _ = try await performRequest(
+                path: "/library/metadata/\(albumID)",
+                method: "PUT",
+                queryItems: albumFields,
+                contentType: "application/octet-stream",
+                accept: "*/*"
+            )
+            didWrite = true
+        }
+
+        if original.artistName != updated.artistName,
+           let artistID = item.grandparentRatingKey,
+           let artist = updated.artistName, !artist.isEmpty {
+            _ = try await performRequest(
+                path: "/library/metadata/\(artistID)",
+                method: "PUT",
+                queryItems: [
+                    URLQueryItem(name: "title", value: artist),
+                    URLQueryItem(name: "title.locked", value: "1")
+                ],
+                contentType: "application/octet-stream",
+                accept: "*/*"
+            )
+            didWrite = true
+        }
+
+        if original.genre != updated.genre {
+            unsupported.append("Plex music genre writeback is not available through the stable API")
+        }
+
+        return (didWrite, unsupported)
+    }
+
+    private func uploadCover(itemID: String, data: Data) async throws {
+        let contentType = Self.imageContentType(for: data)
+        let encodedData = Data(data.base64EncodedString().utf8)
+        switch kind {
+        case .jellyfin:
+            _ = try await performRequest(
+                path: "/Items/\(itemID)/Images/Primary",
+                method: "POST",
+                body: encodedData,
+                contentType: contentType
+            )
+        case .emby:
+            _ = try await performRequest(
+                path: "/Items/\(itemID)/Images/Primary",
+                method: "POST",
+                body: encodedData,
+                contentType: contentType
+            )
+        case .plex:
+            if plexSigninState?.lowercased() == "invalid" {
+                throw SourceError.connectionFailed(
+                    "Plex artwork upload requires a claimed server and an owner/admin token"
+                )
+            }
+            let item: PlexAudioItem
+            if let cached = plexItems[itemID] {
+                item = cached
+            } else {
+                item = try await fetchPlexTrack(ratingKey: itemID)
+            }
+            let artworkID = item.parentRatingKey ?? itemID
+            _ = try await performRequest(
+                path: "/library/metadata/\(artworkID)/thumb",
+                method: "POST",
+                body: data,
+                contentType: contentType,
+                accept: "*/*"
+            )
+        }
+    }
+
+    private static func imageContentType(for data: Data) -> String {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.count >= 3, bytes[0] == 0xFF, bytes[1] == 0xD8, bytes[2] == 0xFF {
+            return "image/jpeg"
+        }
+        if bytes.count >= 8,
+           bytes[0...7].elementsEqual([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        if bytes.count >= 12,
+           String(bytes: bytes[0...3], encoding: .ascii) == "RIFF",
+           String(bytes: bytes[8...11], encoding: .ascii) == "WEBP" {
+            return "image/webp"
+        }
+        return "image/jpeg"
+    }
+
+    private func uploadJellyfinLyrics(
+        itemID: String,
+        title: String,
+        lines: [LyricLine]
+    ) async throws {
+        let safeTitle = title
+            .replacingOccurrences(of: "/", with: " - ")
+            .replacingOccurrences(of: ":", with: " - ")
+        let content = Self.lyricsToLRC(lines)
+        guard let data = content.data(using: .utf8) else {
+            throw SourceError.connectionFailed("Unable to encode lyrics")
+        }
+        _ = try await performRequest(
+            path: "/Audio/\(itemID)/Lyrics",
+            method: "POST",
+            queryItems: [URLQueryItem(name: "fileName", value: "\(safeTitle).lrc")],
+            body: data,
+            contentType: "text/plain; charset=utf-8"
+        )
+    }
+
+    private static func lyricsToLRC(_ lines: [LyricLine]) -> String {
+        lines.map { line in
+            let minutes = Int(line.timestamp) / 60
+            let seconds = line.timestamp - Double(minutes * 60)
+            return String(format: "[%02d:%05.2f]%@", minutes, seconds, line.text)
+        }
+        .joined(separator: "\n") + "\n"
     }
 
     private func headers(requiresAuth: Bool) -> [String: String] {
@@ -453,7 +764,8 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
                 "X-Plex-Product": "Primuse",
                 "X-Plex-Version": "1.0.0",
                 "X-Plex-Platform": "iOS",
-                "X-Plex-Device": "iPhone"
+                "X-Plex-Device": "iPhone",
+                "X-Plex-Pms-Api-Version": plexAPIVersion ?? "1.0.0"
             ]
             if requiresAuth, let accessToken {
                 headers["X-Plex-Token"] = accessToken
@@ -608,12 +920,24 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
         let fileExtension = plexAudioFileExtension(for: item)
         let format = AudioFormat.from(fileExtension: fileExtension) ?? .mp3
         let relativePath = "/items/\(item.ratingKey).\(fileExtension)"
+        let title = MediaMetadataTextRepair.repaired(item.title)
+            ?? MediaMetadataTextRepair.fileNameTitle(from: part?.file)
+            ?? item.title
+        let artist = [item.originalTitle, item.grandparentTitle]
+            .lazy
+            .compactMap(MediaMetadataTextRepair.repaired)
+            .first
+            ?? MediaMetadataTextRepair.fileNameArtist(from: part?.file)
+        let album = MediaMetadataTextRepair.repaired(item.parentTitle)
+        let genres = item.genres?
+            .compactMap(MediaMetadataTextRepair.repaired)
+            .filter { !$0.isEmpty }
 
         return Song(
             id: hash("\(sourceID):\(relativePath)"),
-            title: item.title,
-            albumTitle: item.parentTitle,
-            artistName: item.grandparentTitle,
+            title: title,
+            albumTitle: album,
+            artistName: artist,
             trackNumber: item.index,
             discNumber: item.parentIndex,
             duration: Double(item.duration ?? 0) / 1000,
@@ -623,7 +947,7 @@ actor MediaServerSource: RefreshingMetadataSongConnector {
             fileSize: Int64(part?.size ?? 0),
             bitRate: item.media?.first?.bitrate,
             sampleRate: audioStream?.samplingRate,
-            genre: item.genres?.joined(separator: ", "),
+            genre: genres?.isEmpty == false ? genres?.joined(separator: ", ") : nil,
             year: item.year,
             coverArtFileName: coverArtURL(for: item)?.absoluteString
         )
@@ -971,6 +1295,8 @@ private struct PlexServerInfoPayload: Decodable {
     let friendlyName: String?
     let machineIdentifier: String?
     let version: String?
+    let apiVersion: String?
+    let myPlexSigninState: String?
 }
 
 private struct PlexLibraryResponse: Decodable {
@@ -1022,8 +1348,11 @@ private struct PlexTrackContainer: Decodable {
 private struct PlexAudioItem: Decodable {
     let ratingKey: String
     let title: String
+    let parentRatingKey: String?
+    let grandparentRatingKey: String?
     let parentTitle: String?
     let grandparentTitle: String?
+    let originalTitle: String?
     let index: Int?
     let parentIndex: Int?
     let year: Int?
@@ -1035,8 +1364,11 @@ private struct PlexAudioItem: Decodable {
     enum CodingKeys: String, CodingKey {
         case ratingKey
         case title
+        case parentRatingKey
+        case grandparentRatingKey
         case parentTitle
         case grandparentTitle
+        case originalTitle
         case index
         case parentIndex
         case year
@@ -1050,8 +1382,11 @@ private struct PlexAudioItem: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         ratingKey = try container.decode(String.self, forKey: .ratingKey)
         title = try container.decode(String.self, forKey: .title)
+        parentRatingKey = try container.decodeIfPresent(String.self, forKey: .parentRatingKey)
+        grandparentRatingKey = try container.decodeIfPresent(String.self, forKey: .grandparentRatingKey)
         parentTitle = try container.decodeIfPresent(String.self, forKey: .parentTitle)
         grandparentTitle = try container.decodeIfPresent(String.self, forKey: .grandparentTitle)
+        originalTitle = try container.decodeIfPresent(String.self, forKey: .originalTitle)
         index = try container.decodeIfPresent(Int.self, forKey: .index)
         parentIndex = try container.decodeIfPresent(Int.self, forKey: .parentIndex)
         year = try container.decodeIfPresent(Int.self, forKey: .year)
