@@ -237,7 +237,7 @@ final class ScanService {
     /// Scanner streams can yield much faster than the display refresh rate.
     /// Publishing progress four times a second is enough for smooth feedback
     /// without repeatedly invalidating the Sources hierarchy.
-    private static let progressPublishInterval: TimeInterval = 0.25
+    private static let progressPublishInterval: TimeInterval = 0.75
     /// 即便没攒够 batchSize, 距离上次 flush 超过这个间隔也强制 flush 一次
     /// 让用户看到 "scanned X" 数字仍在动 (别等到扫描结束才一次性更新)。
     private static let flushInterval: TimeInterval = 1.5

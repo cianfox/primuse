@@ -261,6 +261,12 @@ struct CachedArtworkView: View {
                 invalidatedTokens.append(token)
             }
         }
+        if let tokens = note.userInfo?["tokens"] as? [String] {
+            invalidatedTokens.append(contentsOf: tokens)
+        }
+        if let songIDs = note.userInfo?["songIDs"] as? [String] {
+            invalidatedTokens.append(contentsOf: songIDs)
+        }
         return invalidatedTokens.contains { localTokens.contains($0) }
     }
 

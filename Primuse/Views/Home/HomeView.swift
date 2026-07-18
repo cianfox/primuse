@@ -12,7 +12,7 @@ struct HomeView: View {
     @Environment(MusicLibrary.self) private var library
     @Environment(CoverTintProvider.self) private var tintProvider
 
-    private var hasContent: Bool { !library.visibleSongs.isEmpty }
+    private var hasContent: Bool { homeSnapshot.hasContent }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -31,7 +31,7 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     if hasContent {
                         contentView
                     } else {
@@ -39,6 +39,19 @@ struct HomeView: View {
                     }
                 }
                 .padding(.bottom, 100)
+            }
+            .task {
+                refreshHomeSnapshotIfNeeded()
+            }
+            .onChange(of: library.searchRevision) { _, _ in
+                scheduleDebouncedHomeRefresh()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
+                refreshHomeSnapshot(force: true)
+            }
+            .onDisappear {
+                homeRefreshDebounceTask?.cancel()
+                homeRefreshDebounceTask = nil
             }
             .navigationTitle("home_title")
             .toolbarTitleDisplayMode(.inlineLarge)
@@ -89,7 +102,11 @@ struct HomeView: View {
     // of times — each one a full main-thread resort/regroup/recommend.
     // Coalesce the storm and only recompute once it settles.
     @State private var homeRefreshDebounceTask: Task<Void, Never>?
-    private static let homeRefreshDebounce: Duration = .milliseconds(500)
+    // Backfill currently publishes at most once every two seconds. Keep this
+    // window longer than that interval so a continuous large-library job does
+    // not rebuild recommendations and album groupings on the main actor while
+    // the user is scrolling; the snapshot refreshes once the burst settles.
+    private static let homeRefreshDebounce: Duration = .seconds(3)
 
     private struct HomeSnapshotSignature: Equatable {
         let libraryRevision: Int
@@ -100,16 +117,6 @@ struct HomeView: View {
         let dayStamp: Int
     }
 
-    private struct HomeSnapshot {
-        var statsGlimpse: PlayHistoryStore.Summary?
-        var forYouResults: [MusicDiscoveryResult] = []
-        var recentSongs: [Song] = []
-        var heroCoverSongs: [Song] = []
-        var recentlyAddedAlbums: [HomeAlbumTile] = []
-        var topArtists: [Artist] = []
-        var topArtistsHasHistory = false
-    }
-
     private struct HomeAlbumTile: Identifiable {
         let album: Album
         let artworkSong: Song?
@@ -117,26 +124,48 @@ struct HomeView: View {
         var id: String { album.id }
     }
 
+    private struct HomePlaylistTile: Identifiable {
+        let playlist: Playlist
+        let artworkSong: Song?
+        let songCount: Int
+
+        var id: String { playlist.id }
+    }
+
+    private enum HomeQuickItem: Identifiable {
+        case album(Album)
+        case artist(Artist)
+        case playlist(HomePlaylistTile)
+
+        var id: String {
+            switch self {
+            case .album(let album): "album:\(album.id)"
+            case .artist(let artist): "artist:\(artist.id)"
+            case .playlist(let tile): "playlist:\(tile.id)"
+            }
+        }
+    }
+
+    private struct HomeSnapshot {
+        var hasContent = false
+        var statsGlimpse: PlayHistoryStore.Summary?
+        var forYouResults: [MusicDiscoveryResult] = []
+        var recentSongs: [Song] = []
+        var heroCoverSongs: [Song] = []
+        var recentlyAddedAlbums: [HomeAlbumTile] = []
+        var topArtists: [Artist] = []
+        var topArtistsHasHistory = false
+        var playlists: [HomePlaylistTile] = []
+        var quickItems: [HomeQuickItem] = []
+        var likedPlaylist: Playlist?
+    }
+
     private var homeSectionOrder: [HomeSectionKind] {
         HomeSectionConfiguration.decode(homeSectionOrderRawValue)
     }
 
-    private var regularPlaylists: [Playlist] {
-        library.playlists
-            .filter { $0.id != MusicLibrary.likedSongsPlaylistID }
-            .sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    private var homePlaylists: [Playlist] {
-        Array(regularPlaylists.prefix(sizeClass == .regular ? 10 : 8))
-    }
-
-    private var homeQuickPins: [LibraryPinReference] {
-        LibraryPinStorage.decode(quickAccessRawValue).filter(pinExists)
-    }
-
     private var likedPlaylist: Playlist {
-        library.playlists.first(where: { $0.id == MusicLibrary.likedSongsPlaylistID })
+        homeSnapshot.likedPlaylist
             ?? Playlist(
                 id: MusicLibrary.likedSongsPlaylistID,
                 name: String(localized: "playlist_liked_name")
@@ -144,25 +173,12 @@ struct HomeView: View {
     }
 
     private var contentView: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        LazyVStack(alignment: .leading, spacing: 24) {
             libraryHeroSection
 
             ForEach(homeSectionOrder) { section in
                 homeSectionContent(section)
             }
-        }
-        .task {
-            refreshHomeSnapshotIfNeeded()
-        }
-        .onChange(of: library.searchRevision) { _, _ in
-            scheduleDebouncedHomeRefresh()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
-            refreshHomeSnapshot(force: true)
-        }
-        .onDisappear {
-            homeRefreshDebounceTask?.cancel()
-            homeRefreshDebounceTask = nil
         }
     }
 
@@ -182,7 +198,7 @@ struct HomeView: View {
                 forYouSection
             }
         case .playlists:
-            if showPlaylists, !homePlaylists.isEmpty {
+            if showPlaylists, !homeSnapshot.playlists.isEmpty {
                 playlistsSection
             }
         case .topArtists:
@@ -262,16 +278,66 @@ struct HomeView: View {
         let recentSongs = makeRecentSongs()
         let summary = PlayHistoryStore.shared.summary(in: .week)
         let topArtistHistory = PlayHistoryStore.shared.topArtists(in: .month, limit: 8)
+        let allPlaylists = library.playlists
+        let likedPlaylist = allPlaylists.first {
+            $0.id == MusicLibrary.likedSongsPlaylistID
+        }
+        let regularPlaylists = allPlaylists
+            .filter { $0.id != MusicLibrary.likedSongsPlaylistID }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        let playlistTiles = regularPlaylists.prefix(10).map(makeHomePlaylistTile)
 
         return HomeSnapshot(
+            hasContent: !library.visibleSongs.isEmpty,
             statsGlimpse: summary.totalPlays > 0 ? summary : nil,
             forYouResults: makeForYouResults(),
             recentSongs: recentSongs,
             heroCoverSongs: makeHeroCoverSongs(recentSongs: recentSongs),
             recentlyAddedAlbums: makeRecentlyAddedAlbumTiles(limit: 12),
             topArtists: topArtistsForHome(history: topArtistHistory),
-            topArtistsHasHistory: !topArtistHistory.isEmpty
+            topArtistsHasHistory: !topArtistHistory.isEmpty,
+            playlists: playlistTiles,
+            quickItems: makeHomeQuickItems(regularPlaylists: regularPlaylists),
+            likedPlaylist: likedPlaylist
         )
+    }
+
+    private func makeHomePlaylistTile(_ playlist: Playlist) -> HomePlaylistTile {
+        let songs = library.songs(forPlaylist: playlist.id)
+        return HomePlaylistTile(
+            playlist: playlist,
+            artworkSong: songs.first,
+            songCount: songs.count
+        )
+    }
+
+    private func makeHomeQuickItems(
+        regularPlaylists: [Playlist]
+    ) -> [HomeQuickItem] {
+        let albumsByID = Dictionary(
+            library.visibleAlbums.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let artistsByID = Dictionary(
+            library.visibleArtists.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let playlistsByID = Dictionary(
+            regularPlaylists.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return LibraryPinStorage.decode(quickAccessRawValue).compactMap { pin in
+            switch pin.kind {
+            case .album:
+                return albumsByID[pin.itemID].map(HomeQuickItem.album)
+            case .artist:
+                return artistsByID[pin.itemID].map(HomeQuickItem.artist)
+            case .playlist:
+                return playlistsByID[pin.itemID]
+                    .map(makeHomePlaylistTile)
+                    .map(HomeQuickItem.playlist)
+            }
+        }
     }
 
     private func makeRecentlyAddedAlbumTiles(limit: Int) -> [HomeAlbumTile] {
@@ -620,8 +686,8 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
 
-                ForEach(homeQuickPins) { pin in
-                    homePinnedDockItem(pin)
+                ForEach(homeSnapshot.quickItems) { item in
+                    homeQuickDockItem(item)
                 }
             }
             .padding(14)
@@ -638,46 +704,40 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private func homePinnedDockItem(_ pin: LibraryPinReference) -> some View {
-        switch pin.kind {
-        case .album:
-            if let album = library.visibleAlbums.first(where: { $0.id == pin.itemID }) {
-                NavigationLink(value: album) {
-                    quickAccessDockLabel(title: album.title) {
-                        CachedArtworkView(
-                            albumID: album.id,
-                            albumTitle: album.title,
-                            artistName: album.artistName,
-                            size: 52,
-                            cornerRadius: 9
-                        )
-                    }
+    private func homeQuickDockItem(_ item: HomeQuickItem) -> some View {
+        switch item {
+        case .album(let album):
+            NavigationLink(value: album) {
+                quickAccessDockLabel(title: album.title) {
+                    CachedArtworkView(
+                        albumID: album.id,
+                        albumTitle: album.title,
+                        artistName: album.artistName,
+                        size: 52,
+                        cornerRadius: 9
+                    )
                 }
-                .buttonStyle(.plain)
             }
-        case .artist:
-            if let artist = library.visibleArtists.first(where: { $0.id == pin.itemID }) {
-                NavigationLink(value: artist) {
-                    quickAccessDockLabel(title: artist.name) {
-                        CachedArtworkView(
-                            artistID: artist.id,
-                            artistName: artist.name,
-                            size: 52,
-                            cornerRadius: 26
-                        )
-                    }
+            .buttonStyle(.plain)
+        case .artist(let artist):
+            NavigationLink(value: artist) {
+                quickAccessDockLabel(title: artist.name) {
+                    CachedArtworkView(
+                        artistID: artist.id,
+                        artistName: artist.name,
+                        size: 52,
+                        cornerRadius: 26
+                    )
                 }
-                .buttonStyle(.plain)
             }
-        case .playlist:
-            if let playlist = regularPlaylists.first(where: { $0.id == pin.itemID }) {
-                NavigationLink(value: playlist) {
-                    quickAccessDockLabel(title: playlist.name) {
-                        homePlaylistArtwork(playlist, size: 52, cornerRadius: 9)
-                    }
+            .buttonStyle(.plain)
+        case .playlist(let tile):
+            NavigationLink(value: tile.playlist) {
+                quickAccessDockLabel(title: tile.playlist.name) {
+                    homePlaylistArtwork(tile, size: 52, cornerRadius: 9)
                 }
-                .buttonStyle(.plain)
             }
+            .buttonStyle(.plain)
         }
     }
 
@@ -696,17 +756,6 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 76, alignment: .top)
         .contentShape(Rectangle())
-    }
-
-    private func pinExists(_ pin: LibraryPinReference) -> Bool {
-        switch pin.kind {
-        case .album:
-            return library.visibleAlbums.contains { $0.id == pin.itemID }
-        case .artist:
-            return library.visibleArtists.contains { $0.id == pin.itemID }
-        case .playlist:
-            return regularPlaylists.contains { $0.id == pin.itemID }
-        }
     }
 
     private func likedSongsArtwork(size: CGFloat) -> some View {
@@ -735,10 +784,10 @@ struct HomeView: View {
                 .padding(.horizontal, 20)
 
             VStack(spacing: 0) {
-                let displayed = Array(homePlaylists.prefix(sizeClass == .regular ? 5 : 4))
-                ForEach(Array(displayed.enumerated()), id: \.element.id) { index, playlist in
-                    NavigationLink(value: playlist) {
-                        playlistListRow(playlist)
+                let displayed = Array(homeSnapshot.playlists.prefix(sizeClass == .regular ? 5 : 4))
+                ForEach(Array(displayed.enumerated()), id: \.element.id) { index, tile in
+                    NavigationLink(value: tile.playlist) {
+                        playlistListRow(tile)
                     }
                     .buttonStyle(.plain)
 
@@ -754,11 +803,11 @@ struct HomeView: View {
 
     @ViewBuilder
     private func homePlaylistArtwork(
-        _ playlist: Playlist,
+        _ tile: HomePlaylistTile,
         size: CGFloat,
         cornerRadius: CGFloat
     ) -> some View {
-        if let song = library.songs(forPlaylist: playlist.id).first {
+        if let song = tile.artworkSong {
             CachedArtworkView(
                 coverRef: song.coverArtFileName,
                 songID: song.id,
@@ -770,16 +819,17 @@ struct HomeView: View {
             )
         } else {
             StoredCoverArtView(
-                fileName: playlist.coverArtPath,
+                fileName: tile.playlist.coverArtPath,
                 size: size,
                 cornerRadius: cornerRadius
             )
         }
     }
 
-    private func playlistListRow(_ playlist: Playlist) -> some View {
-        HStack(spacing: 12) {
-            homePlaylistArtwork(playlist, size: 54, cornerRadius: 9)
+    private func playlistListRow(_ tile: HomePlaylistTile) -> some View {
+        let playlist = tile.playlist
+        return HStack(spacing: 12) {
+            homePlaylistArtwork(tile, size: 54, cornerRadius: 9)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(playlist.name)
@@ -787,7 +837,7 @@ struct HomeView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(
-                    "\(library.songs(forPlaylist: playlist.id).count) "
+                    "\(tile.songCount) "
                         + String(localized: "songs_count")
                         + " · "
                         + playlist.updatedAt.formatted(.relative(presentation: .named))
@@ -885,7 +935,10 @@ struct HomeView: View {
                 )
             )
         } else {
-            shape.fill(.thinMaterial)
+            // Repeated live Material blurs create off-screen render passes
+            // while the horizontal row moves. A stable system surface keeps
+            // the same card hierarchy until the batched tint result arrives.
+            shape.fill(homeCardSurface)
         }
     }
 
@@ -956,9 +1009,17 @@ struct HomeView: View {
         .frame(width: sizeClass == .regular ? 300 : 250, height: 60)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.thinMaterial)
+                .fill(homeCardSurface)
         }
         .contentShape(Rectangle())
+    }
+
+    private var homeCardSurface: Color {
+        #if os(iOS)
+        Color(uiColor: .secondarySystemBackground)
+        #else
+        Color(nsColor: .controlBackgroundColor)
+        #endif
     }
 
     private func makeRecentSongs() -> [Song] {

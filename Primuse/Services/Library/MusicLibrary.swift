@@ -1983,8 +1983,8 @@ final class MusicLibrary {
         lastReplacedSong = lastApplied
         lastReplacedSongIDs = appliedIDs
         songReplacementToken = UUID()
-        for change in artworkChanges {
-            postArtworkInvalidation(songID: change.songID, oldRef: change.oldRef, newRef: change.newRef)
+        if !artworkChanges.isEmpty {
+            postArtworkInvalidations(artworkChanges)
         }
         invalidateSearchCaches()
         rebuildIndex()
@@ -2005,6 +2005,21 @@ final class MusicLibrary {
             name: .primuseArtworkDidInvalidate,
             object: songID,
             userInfo: userInfo
+        )
+    }
+
+    private func postArtworkInvalidations(
+        _ changes: [(songID: String, oldRef: String?, newRef: String?)]
+    ) {
+        let songIDs = changes.map(\.songID)
+        let refs = changes.flatMap { [$0.oldRef, $0.newRef].compactMap { $0 } }
+        NotificationCenter.default.post(
+            name: .primuseArtworkDidInvalidate,
+            object: nil,
+            userInfo: [
+                "songIDs": songIDs,
+                "tokens": refs,
+            ]
         )
     }
 

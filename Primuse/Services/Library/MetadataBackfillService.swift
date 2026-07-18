@@ -95,6 +95,13 @@ final class MetadataBackfillService {
     private(set) var pendingCount: Int = 0
     private(set) var processedCount: Int = 0
     private(set) var isRunning: Bool = false
+    /// Cached in one library pass and consumed by all source cards. The old
+    /// implementation filtered the complete song array once per card on every
+    /// SwiftUI body update, multiplying work by source count during scrolling.
+    private(set) var cachedRemainingCount: Int = 0
+    private(set) var remainingCountBySourceID: [String: Int] = [:]
+    private var lastRemainingCountRefreshAt = Date.distantPast
+    private static let remainingCountRefreshInterval: TimeInterval = 5
 
     private var worker: Task<Void, Never>?
     /// Exact session progress, kept non-observable so one completed network
@@ -348,6 +355,7 @@ final class MetadataBackfillService {
             plog("📥 Backfill: skip (worker already running, gen=\(workerGeneration))")
             return
         }
+        refreshRemainingCounts(force: true)
 
         // Cellular gate. Backfill on a 2200-song cloud library is ~550MB —
         // enough to be a problem on metered connections. Instead of silently
@@ -393,6 +401,7 @@ final class MetadataBackfillService {
                 self.worker = nil
                 self.isRunning = false
                 self.pendingCount = 0
+                self.refreshRemainingCounts(force: true)
                 self.endBackgroundTaskIfHeld()
                 // 完成通知 ── 处理 >= 5 首才发, 避免每次 worker 短跑都打扰用户。
                 // hasPendingWork == false 表示当前没遗留 ── 队列全清才算"完成"。
@@ -531,7 +540,7 @@ final class MetadataBackfillService {
     /// was a snapshot at start time so it could disagree with reality
     /// after Phase A added more bare songs mid-backfill.
     var remainingCount: Int {
-        remainingCount(forSource: nil)
+        cachedRemainingCount
     }
 
     /// True if backfill has given up on this song (extraction failed, or
@@ -549,14 +558,34 @@ final class MetadataBackfillService {
     /// number matches the global storage page rather than counting
     /// songs that backfill has given up on.
     func remainingCount(forSource sourceID: String?) -> Int {
+        guard let sourceID else { return cachedRemainingCount }
+        return remainingCountBySourceID[sourceID] ?? 0
+    }
+
+    private func refreshRemainingCounts(force: Bool = false) {
+        let now = Date()
+        guard force
+                || now.timeIntervalSince(lastRemainingCountRefreshAt)
+                    >= Self.remainingCountRefreshInterval else { return }
+        lastRemainingCountRefreshAt = now
         let sourceIDs = backfillableSourceIDs()
-        return library.songs.lazy.filter { song in
-            !self.failedSongIDs.contains(song.id) &&
-                !self.sessionGivenUpIDs.contains(song.id) &&
-                sourceIDs.contains(song.sourceID) &&
-                self.needsBackfill(song) &&
-                (sourceID == nil || song.sourceID == sourceID)
-        }.count
+        var bySource: [String: Int] = [:]
+        bySource.reserveCapacity(sourceIDs.count)
+        var total = 0
+        for song in library.songs {
+            guard !failedSongIDs.contains(song.id),
+                  !sessionGivenUpIDs.contains(song.id),
+                  sourceIDs.contains(song.sourceID),
+                  needsBackfill(song) else { continue }
+            bySource[song.sourceID, default: 0] += 1
+            total += 1
+        }
+        if remainingCountBySourceID != bySource {
+            remainingCountBySourceID = bySource
+        }
+        if cachedRemainingCount != total {
+            cachedRemainingCount = total
+        }
     }
 
     /// Number of songs backfill has given up on — persisted permanent
@@ -742,6 +771,7 @@ final class MetadataBackfillService {
                     if !batch.isEmpty {
                         library.replaceSongs(batch)
                         markTitlesChecked(in: batch)
+                        refreshRemainingCounts()
                         plog("📥 flushed \(batch.count) songs to library")
                     }
                 }
@@ -768,9 +798,13 @@ final class MetadataBackfillService {
             if !batch.isEmpty {
                 library.replaceSongs(batch)
                 markTitlesChecked(in: batch)
+                refreshRemainingCounts()
                 plog("📥 final flush: \(batch.count) songs to library")
             }
         }
+        // Also publish permanent/transient failures from a snapshot that had
+        // no successful songs to flush.
+        refreshRemainingCounts(force: true)
     }
 
     private func shouldBlockForCellular() -> Bool {

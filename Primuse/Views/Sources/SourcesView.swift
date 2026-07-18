@@ -220,10 +220,13 @@ struct SourcesContentView: View {
     }
 
     private var sourceList: some View {
-        List {
+        let downloadingIDs = downloadingSourceIDs
+        return List {
             ForEach(groupedSources, id: \.0) { category, items in
                 Section(category.displayName) {
-                    ForEach(items) { source in sourceCard(source) }
+                    ForEach(items) { source in
+                        sourceCard(source, downloadingIDs: downloadingIDs)
+                    }
                 }
             }
         }
@@ -242,7 +245,10 @@ struct SourcesContentView: View {
         }
     }
 
-    private func sourceCard(_ source: MusicSource) -> some View {
+    private func sourceCard(
+        _ source: MusicSource,
+        downloadingIDs: Set<String>
+    ) -> some View {
         let dirs = source.scannedDirectories
         let scanning = scanService.scanStates[source.id]
         let displayedSongCount = if let scanning, scanning.isScanning || scanning.canResume {
@@ -250,7 +256,6 @@ struct SourcesContentView: View {
         } else {
             source.songCount
         }
-        let sourcePlayableSongs = playableSongs(for: source)
         // A song can only ever be `.downloading` while it has an in-memory
         // snapshot entry (written by SourceManager.performOfflineDownload); the
         // disk-stat fallback in `offlineAudioSnapshot(for:)` never returns
@@ -260,7 +265,6 @@ struct SourcesContentView: View {
         // FileManager stat for every uncached song and, scanning the full
         // library per card per frame, makes the Sources page stutter during
         // scans / batch caching on large libraries.
-        let downloadingIDs = downloadingSourceIDs
         let hasSourceDownloads = downloadingIDs.contains(source.id)
         let hasOtherSourceDownloads = downloadingIDs.contains { $0 != source.id }
         let isSourceCaching = activeCacheRun?.sourceID == source.id || hasSourceDownloads
@@ -379,7 +383,6 @@ struct SourcesContentView: View {
 
             if let progress = sourceCacheProgress(
                 for: source,
-                songs: sourcePlayableSongs,
                 hasDownloads: hasSourceDownloads
             ) {
                 sourceCacheProgressView(progress)
@@ -447,9 +450,9 @@ struct SourcesContentView: View {
                         systemImage: "arrow.down.circle",
                         prominence: .accent,
                         isLoading: isSourceCaching,
-                        isDisabled: isSourceCaching || sourcePlayableSongs.isEmpty || isAnotherSourceCaching
+                        isDisabled: isSourceCaching || source.songCount == 0 || isAnotherSourceCaching
                     ) {
-                        presentCacheConfirmation(for: source, songs: sourcePlayableSongs)
+                        presentCacheConfirmation(for: source, songs: playableSongs(for: source))
                     }
 
                     sourceActionButton(
@@ -480,9 +483,9 @@ struct SourcesContentView: View {
                         systemImage: "arrow.down.circle",
                         prominence: .accent,
                         isLoading: isSourceCaching,
-                        isDisabled: isSourceCaching || sourcePlayableSongs.isEmpty || isAnotherSourceCaching
+                        isDisabled: isSourceCaching || source.songCount == 0 || isAnotherSourceCaching
                     ) {
-                        presentCacheConfirmation(for: source, songs: sourcePlayableSongs)
+                        presentCacheConfirmation(for: source, songs: playableSongs(for: source))
                     }
 
                     if !dirs.isEmpty {
@@ -958,7 +961,6 @@ struct SourcesContentView: View {
 
     private func sourceCacheProgress(
         for source: MusicSource,
-        songs: [Song],
         hasDownloads: Bool
     ) -> SourceCacheProgressState? {
         if let run = activeCacheRun, run.sourceID == source.id {
@@ -969,6 +971,7 @@ struct SourcesContentView: View {
         // download dictionary. Avoid scanning every song in the source again.
         guard hasDownloads else { return nil }
 
+        let songs = playableSongs(for: source)
         return sourceCacheProgress(songs: songs, estimate: sourceCacheEstimate(for: songs))
     }
 

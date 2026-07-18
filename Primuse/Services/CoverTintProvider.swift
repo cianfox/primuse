@@ -38,20 +38,36 @@ final class CoverTintProvider {
     /// Schedule background extraction for any songs not already
     /// cached. Idempotent — safe to call on every body re-eval.
     func prepare(_ songs: [Song]) {
-        for song in songs {
-            guard cache[song.id] == nil, !inFlight.contains(song.id) else { continue }
-            inFlight.insert(song.id)
-            let songID = song.id
-            let coverFileName = song.coverArtFileName
-            Task.detached(priority: .utility) {
-                let color = Self.computeTint(songID: songID, coverFileName: coverFileName)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    if let color {
-                        self.cache[songID] = color
-                    }
-                    self.inFlight.remove(songID)
+        let pending = songs.filter {
+            cache[$0.id] == nil && !inFlight.contains($0.id)
+        }
+        guard !pending.isEmpty else { return }
+
+        let pendingIDs = Set(pending.map(\.id))
+        inFlight.formUnion(pendingIDs)
+        Task.detached(priority: .utility) {
+            // Read/decode the small visible set serially on one utility task.
+            // Publishing one completed dictionary avoids re-evaluating the
+            // entire HomeView once for every individual cover tint.
+            var extracted: [String: Color] = [:]
+            extracted.reserveCapacity(pending.count)
+            for song in pending {
+                guard !Task.isCancelled else { break }
+                if let color = Self.computeTint(
+                    songID: song.id,
+                    coverFileName: song.coverArtFileName
+                ) {
+                    extracted[song.id] = color
                 }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if !extracted.isEmpty {
+                    var nextCache = self.cache
+                    nextCache.merge(extracted) { _, new in new }
+                    self.cache = nextCache
+                }
+                self.inFlight.subtract(pendingIDs)
             }
         }
     }
