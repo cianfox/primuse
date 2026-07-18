@@ -1,9 +1,10 @@
 import CoreSpotlight
 import Foundation
+import ImageIO
 import OSLog
 import PrimuseKit
 #if os(iOS)
-import UIKit
+import UniformTypeIdentifiers
 #endif
 
 private let spotlightLog = Logger(subsystem: "com.welape.yuanyin", category: "Spotlight")
@@ -203,18 +204,54 @@ final class SpotlightIndexService {
     /// 读封面 Data,压成 128x128 JPEG 缩略图喂给 Spotlight。
     /// `readCoverData(named:)` 是 nonisolated 的纯磁盘读,直接在当前(background)
     /// 线程调用,不要 hop 到 MainActor —— 万级歌曲的封面 IO 压主线程会卡 UI。
+    ///
+    /// 不要在 detached task 里走 `UIImage.draw` / `UIGraphicsImageRenderer`。
+    /// 刮削写入封面后会触发整库 Spotlight reindex,旧实现连续从后台调用 UIKit
+    /// 绘图，实机最终会在 CoreGraphics bitmap context 内以 SIGSEGV(0x28) 崩溃。
+    /// ImageIO 的 thumbnail API 专为后台解码/缩放设计，也能让损坏图片安全返回 nil。
     /// 没封面 / 失败时返回 nil — Spotlight 会显示通用 SF icon。
     private nonisolated static func thumbnailData(for coverArtFileName: String?) async -> Data? {
         guard let coverArtFileName, !coverArtFileName.isEmpty else { return nil }
         guard let raw = MetadataAssetStore.shared.readCoverData(named: coverArtFileName) else { return nil }
         #if os(iOS)
-        guard let image = UIImage(data: raw) else { return nil }
-        let target = CGSize(width: 128, height: 128)
-        let renderer = UIGraphicsImageRenderer(size: target)
-        let small = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: target))
+        return autoreleasepool {
+            let sourceOptions = [
+                kCGImageSourceShouldCache: false,
+            ] as CFDictionary
+            guard let source = CGImageSourceCreateWithData(raw as CFData, sourceOptions) else {
+                return nil
+            }
+
+            let thumbnailOptions = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: 128,
+            ] as CFDictionary
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                thumbnailOptions
+            ) else {
+                return nil
+            }
+
+            let output = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                output,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+            ) else {
+                return nil
+            }
+            let destinationOptions = [
+                kCGImageDestinationLossyCompressionQuality: 0.7,
+            ] as CFDictionary
+            CGImageDestinationAddImage(destination, thumbnail, destinationOptions)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            return output as Data
         }
-        return small.jpegData(compressionQuality: 0.7)
         #else
         // macOS 没有 Spotlight (CoreSpotlight 在 macOS 也可用, 但本服务 currently
         // 只在 iOS Spotlight 中露出); 直接返回原 JPEG, Spotlight 会自己裁切。
