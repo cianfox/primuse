@@ -124,7 +124,7 @@
 "sidebar_liked_songs" = "Liked Songs";
 "home_playable_count_short" = "Plays";
 "source" = "Source";
-"delete_forever" = "Delete forever";
+"delete_forever" = "Supprimer définitivement";
 "deleted_at_format" = "Deleted %@";
 
 "track_duration_short" = "Time";
@@ -1897,3 +1897,27 @@
 "onboarding_personalization_home" = "Affichez, masquez et réorganisez les sections de l’accueil";
 "onboarding_personalization_quick" = "Épinglez albums, artistes et playlists pour un accès rapide";
 "onboarding_personalization_footer" = "Vous pourrez modifier ces options à tout moment.";
+
+// MARK: - macOS settings i18n audit
+"Auto Add to Smart Playlists" = "Ajouter automatiquement aux playlists intelligentes";
+"Catalog Search" = "Recherche dans le catalogue";
+"Checks the App Store for new versions once a day." = "Recherche de nouvelles versions dans l’App Store une fois par jour.";
+"Cover Color Drives Ambient" = "La couleur de la pochette pilote l’ambiance";
+"Drag to Reorder" = "Faire glisser pour réorganiser";
+"Every 5 Minutes" = "Toutes les 5 minutes";
+"Every Minute" = "Toutes les minutes";
+"LIB-05 · SmartPlaylistEngine" = "LIB-05 · Moteur de playlists intelligentes";
+"Manual Only" = "Manuel uniquement";
+"No logs yet" = "Aucun journal pour le moment";
+"Room Size" = "Taille de la pièce";
+"SRC-29 · Apple Music Library" = "SRC-29 · Bibliothèque Apple Music";
+"ST-10 · Accept any certificate this domain presents" = "ST-10 · Accepter tout certificat présenté par ce domaine";
+"Small room → large hall" = "Petite pièce → grande salle";
+"Sync User Library" = "Synchroniser votre bibliothèque";
+"Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected." = "Faire confiance à un domaine accepte tous les certificats qu’il présente, y compris un certificat remplacé par un attaquant sur votre réseau. Préférez accorder votre confiance depuis l’alerte affichée lors d’une connexion réelle afin de pouvoir examiner le certificat.";
+"Use artwork palette for NowPlaying / Mini / Desktop Lyrics" = "Utiliser la palette de la pochette pour la lecture en cours, le mini-lecteur et les paroles du bureau";
+"Small / Medium / Large" = "Petit / Moyen / Grand";
+"Medium" = "Moyen";
+"Medium / Large" = "Moyen / Grand";
+"Small" = "Petit";
+"Wrapped" = "Rétrospective";

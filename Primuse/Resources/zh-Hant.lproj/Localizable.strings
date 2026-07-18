@@ -1227,7 +1227,7 @@
 "Add to the trust list during connection when you encounter a self-signed certificate source" = "遇到自簽憑證的來源時可在連線流程裡加入信任清單";
 "Add…" = "新增…";
 "All" = "全部";
-"Ambient Intensity" = "Ambient 強度";
+"Ambient Intensity" = "氛圍強度";
 "App Settings" = "App 設定";
 "Appearance" = "外觀";
 "Apple AirPods · Head Tracking" = "Apple AirPods · 頭部追蹤";
@@ -1873,3 +1873,27 @@
 "onboarding_personalization_home" = "顯示、隱藏並調整首頁模組的顯示順序";
 "onboarding_personalization_quick" = "編輯快速收藏，快速開啟專輯、藝人與播放清單";
 "onboarding_personalization_footer" = "這些選項之後都可以隨時修改。";
+
+// MARK: - macOS settings i18n audit
+"Auto Add to Smart Playlists" = "自動加入智慧型播放清單";
+"Catalog Search" = "音樂目錄搜尋";
+"Checks the App Store for new versions once a day." = "每天檢查一次 App Store 新版本。";
+"Cover Color Drives Ambient" = "封面色彩驅動氛圍背景";
+"Drag to Reorder" = "拖移調整順序";
+"Every 5 Minutes" = "每 5 分鐘";
+"Every Minute" = "每分鐘";
+"LIB-05 · SmartPlaylistEngine" = "LIB-05 · 智慧型播放清單引擎";
+"Manual Only" = "僅手動";
+"No logs yet" = "暫無日誌";
+"Room Size" = "空間大小";
+"SRC-29 · Apple Music Library" = "SRC-29 · Apple Music 資料庫";
+"ST-10 · Accept any certificate this domain presents" = "ST-10 · 接受此網域提供的任何憑證";
+"Small room → large hall" = "小房間 → 大廳堂";
+"Sync User Library" = "同步使用者資料庫";
+"Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected." = "信任網域會接受其提供的所有憑證，包括區域網路中的攻擊者替換的憑證。建議在實際連線時出現的提示中進行信任，以便先檢查憑證。";
+"Use artwork palette for NowPlaying / Mini / Desktop Lyrics" = "使用封面配色渲染正在播放、迷你播放器和桌面歌詞";
+"Small / Medium / Large" = "小型 / 中型 / 大型";
+"Medium" = "中型";
+"Medium / Large" = "中型 / 大型";
+"Small" = "小型";
+"Wrapped" = "年度回顧";

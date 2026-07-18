@@ -101,6 +101,7 @@
 "ext.watch.queue.truncationNotice"         = "%d premiers titres sur %d";
 
 // tvOS app
+"ext.tv.appName"                           = "Primuse";
 "ext.tv.unknownArtist"                     = "Artiste inconnu";
 "ext.tv.nav.home"                          = "Accueil";
 "ext.tv.nav.library"                       = "Bibliothèque";

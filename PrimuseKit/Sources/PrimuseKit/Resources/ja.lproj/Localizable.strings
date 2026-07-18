@@ -101,6 +101,7 @@
 "ext.watch.queue.truncationNotice"         = "全 %2$d 曲中、先頭の %1$d 曲を表示";
 
 // tvOS app
+"ext.tv.appName"                           = "Primuse";
 "ext.tv.unknownArtist"                     = "不明なアーティスト";
 "ext.tv.nav.home"                          = "ホーム";
 "ext.tv.nav.library"                       = "ライブラリ";

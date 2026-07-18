@@ -690,11 +690,19 @@ private struct LibraryQuickAccessEditor: View {
                     }
                 }
             }
+            #if os(macOS)
+            .searchable(
+                text: $searchText,
+                placement: .toolbar,
+                prompt: Text("library_quick_access_search_prompt")
+            )
+            #else
             .searchable(
                 text: $searchText,
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: Text("library_quick_access_search_prompt")
             )
+            #endif
             .navigationTitle("library_edit_quick_access")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -98,6 +98,7 @@
 "ext.watch.queue.truncationNotice"         = "仅显示前 %d 首，共 %d 首";
 
 // tvOS app
+"ext.tv.appName"                           = "猿音";
 "ext.tv.unknownArtist"                     = "未知艺术家";
 "ext.tv.nav.home"                          = "首页";
 "ext.tv.nav.library"                       = "资料库";

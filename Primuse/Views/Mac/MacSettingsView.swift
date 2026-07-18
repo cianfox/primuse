@@ -107,8 +107,7 @@ struct MacSettingsView: View {
 
     private var settingsTitleBar: some View {
         HStack(spacing: 0) {
-            // 设置窗口是弹框性质, 最小化/缩放没意义, 只留一个关闭灯。
-            PMWindowTrafficLights(closeOnly: true)
+            PMWindowTrafficLights()
 
             Text(verbatim: tab.title)
                 .font(.system(size: 13, weight: .semibold))
@@ -116,8 +115,8 @@ struct MacSettingsView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
 
-            // 跟左侧关闭灯等宽的占位, 让标题在窗口里居中。
-            Color.clear.frame(width: PMSize.trafficLight, height: 1)
+            // 跟左侧三色窗口按钮等宽的占位, 让标题在窗口里居中。
+            Color.clear.frame(width: 52, height: 1)
         }
         .padding(.horizontal, 14)
         .frame(height: PMSize.titlebar)
@@ -477,11 +476,11 @@ private struct MacSTPicker<T: Hashable>: View {
     var body: some View {
         Menu {
             ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
-                Button(opt.label) { selection = opt.value }
+                Button(PMLocalizedOrVerbatim(opt.label)) { selection = opt.value }
             }
         } label: {
             HStack(spacing: 6) {
-                Text(verbatim: currentLabel)
+                Text(verbatim: PMLocalizedOrVerbatim(currentLabel))
                     .font(.system(size: 12))
                     .foregroundStyle(PMColor.text)
                     .lineLimit(1)
@@ -527,7 +526,7 @@ private struct MacSTButton: View {
                     Image(systemName: systemImage)
                         .font(.system(size: 10.5, weight: .semibold))
                 }
-                Text(verbatim: title)
+                Text(verbatim: PMLocalizedOrVerbatim(title))
                     .font(.system(size: 11.5, weight: prominent ? .semibold : .medium))
                     .lineLimit(1)
             }
@@ -2096,34 +2095,34 @@ private struct MacSTWidgetView: View {
         MacSTSection(Lz("Available Widgets"), hint: Lz("WidgetKit still manages the system widget gallery; checked items control which data Primuse pushes.")) {
             MacSTGroup {
                 MacSTWidgetChecklistRow(
-                    title: "Now Playing",
-                    detail: "Small / Medium / Large",
+                    title: Lz("Now Playing"),
+                    detail: Lz("Small / Medium / Large"),
                     isOn: $nowPlayingWidgetEnabled,
                     divider: false
                 )
                 MacSTWidgetChecklistRow(
-                    title: "Lyrics",
-                    detail: "Medium",
+                    title: Lz("Lyrics"),
+                    detail: Lz("Medium"),
                     isOn: $lyricsWidgetEnabled
                 )
                 MacSTWidgetChecklistRow(
-                    title: "Listening Stats",
-                    detail: "Medium",
+                    title: Lz("Listening Stats"),
+                    detail: Lz("Medium"),
                     isOn: $statsWidgetEnabled
                 )
                 MacSTWidgetChecklistRow(
-                    title: "Recent",
-                    detail: "Medium / Large",
+                    title: String(localized: "carplay_tab_recent"),
+                    detail: Lz("Medium / Large"),
                     isOn: $recentWidgetEnabled
                 )
                 MacSTWidgetChecklistRow(
-                    title: "Sources",
-                    detail: "Small",
+                    title: String(localized: "sources_title"),
+                    detail: Lz("Small"),
                     isOn: $sourcesWidgetEnabled
                 )
                 MacSTWidgetChecklistRow(
-                    title: "Wrapped",
-                    detail: "Medium",
+                    title: Lz("Wrapped"),
+                    detail: Lz("Medium"),
                     isOn: $wrappedWidgetEnabled
                 )
             }
@@ -2861,7 +2860,7 @@ private struct MacSTCloudView: View {
     @State private var pendingShareURL: URL?
 
     var body: some View {
-        MacSTSection("iCloud Sync") {
+        MacSTSection(String(localized: "icloud_sync_title")) {
             MacSTGroup {
                 MacSTRow(Lz("Master Toggle"), hint: "primuse.iCloudSyncEnabled · CloudKitSyncService", divider: false) {
                     MacSTToggle(isOn: Binding(
@@ -3147,7 +3146,7 @@ private struct MacSTThemeView: View {
             }
         }
 
-        MacSTSection("App Icon", hint: Lz("THEME-04 · macOS swaps the runtime Dock icon; the Finder bundle icon stays the same")) {
+        MacSTSection(String(localized: "app_icon"), hint: Lz("THEME-04 · macOS swaps the runtime Dock icon; the Finder bundle icon stays the same")) {
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4),
                 spacing: 16

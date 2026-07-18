@@ -44,18 +44,10 @@ struct MacSidebar: View {
         HStack(spacing: 10) {
             BrandMonogram(slot: .sidebar)
 
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(verbatim: PMAppPrimaryDisplayName())
-                    .font(.system(size: 16, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundStyle(PMColor.text)
-                if let secondary = PMAppSecondaryDisplayName() {
-                    Text(verbatim: secondary)
-                        .font(.system(size: 13, weight: .medium))
-                        .tracking(-0.1)
-                        .foregroundStyle(PMColor.textMuted)
-                }
-            }
+            Text(verbatim: PMAppDisplayName())
+                .font(.system(size: 16, weight: .semibold))
+                .tracking(-0.3)
+                .foregroundStyle(PMColor.text)
             Spacer()
         }
     }

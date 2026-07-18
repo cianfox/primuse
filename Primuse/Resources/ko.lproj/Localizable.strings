@@ -124,7 +124,7 @@
 "sidebar_liked_songs" = "Liked Songs";
 "home_playable_count_short" = "Plays";
 "source" = "Source";
-"delete_forever" = "Delete forever";
+"delete_forever" = "영구 삭제";
 "deleted_at_format" = "Deleted %@";
 
 "track_duration_short" = "Time";
@@ -1897,3 +1897,27 @@
 "onboarding_personalization_home" = "홈 섹션을 표시하거나 숨기고 순서를 변경";
 "onboarding_personalization_quick" = "앨범, 아티스트 및 재생목록을 빠른 항목으로 지정";
 "onboarding_personalization_footer" = "이 옵션은 언제든지 다시 변경할 수 있습니다.";
+
+// MARK: - macOS settings i18n audit
+"Auto Add to Smart Playlists" = "스마트 재생목록에 자동 추가";
+"Catalog Search" = "카탈로그 검색";
+"Checks the App Store for new versions once a day." = "하루에 한 번 App Store에서 새 버전을 확인합니다.";
+"Cover Color Drives Ambient" = "앨범 표지 색상으로 앰비언트 배경 연출";
+"Drag to Reorder" = "드래그하여 순서 변경";
+"Every 5 Minutes" = "5분마다";
+"Every Minute" = "1분마다";
+"LIB-05 · SmartPlaylistEngine" = "LIB-05 · 스마트 재생목록 엔진";
+"Manual Only" = "수동만";
+"No logs yet" = "아직 로그가 없습니다";
+"Room Size" = "공간 크기";
+"SRC-29 · Apple Music Library" = "SRC-29 · Apple Music 보관함";
+"ST-10 · Accept any certificate this domain presents" = "ST-10 · 이 도메인이 제시하는 모든 인증서 허용";
+"Small room → large hall" = "작은 공간 → 큰 홀";
+"Sync User Library" = "사용자 보관함 동기화";
+"Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected." = "도메인을 신뢰하면 네트워크의 공격자가 바꿔치기한 인증서를 포함해 해당 도메인이 제시하는 모든 인증서를 허용합니다. 인증서를 확인할 수 있도록 실제 연결 중 표시되는 안내에서 신뢰하는 것을 권장합니다.";
+"Use artwork palette for NowPlaying / Mini / Desktop Lyrics" = "앨범 표지 팔레트를 지금 재생 중, 미니 플레이어 및 데스크톱 가사에 사용";
+"Small / Medium / Large" = "소형 / 중형 / 대형";
+"Medium" = "중형";
+"Medium / Large" = "중형 / 대형";
+"Small" = "소형";
+"Wrapped" = "연간 결산";

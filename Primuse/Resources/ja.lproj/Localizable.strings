@@ -125,7 +125,7 @@
 "sidebar_liked_songs" = "Liked Songs";
 "home_playable_count_short" = "Plays";
 "source" = "Source";
-"delete_forever" = "Delete forever";
+"delete_forever" = "完全に削除";
 "deleted_at_format" = "Deleted %@";
 
 "track_duration_short" = "Time";
@@ -1898,3 +1898,27 @@
 "onboarding_personalization_home" = "ホームのセクションを表示・非表示・並べ替え";
 "onboarding_personalization_quick" = "アルバム、アーティスト、プレイリストをすばやく登録";
 "onboarding_personalization_footer" = "これらの設定はいつでも変更できます。";
+
+// MARK: - macOS settings i18n audit
+"Auto Add to Smart Playlists" = "スマートプレイリストに自動追加";
+"Catalog Search" = "カタログ検索";
+"Checks the App Store for new versions once a day." = "App Store の新しいバージョンを1日1回確認します。";
+"Cover Color Drives Ambient" = "ジャケットカラーをアンビエント背景に反映";
+"Drag to Reorder" = "ドラッグして並べ替え";
+"Every 5 Minutes" = "5分ごと";
+"Every Minute" = "毎分";
+"LIB-05 · SmartPlaylistEngine" = "LIB-05 · スマートプレイリストエンジン";
+"Manual Only" = "手動のみ";
+"No logs yet" = "ログはまだありません";
+"Room Size" = "ルームサイズ";
+"SRC-29 · Apple Music Library" = "SRC-29 · Apple Music ライブラリ";
+"ST-10 · Accept any certificate this domain presents" = "ST-10 · このドメインが提示するすべての証明書を受け入れる";
+"Small room → large hall" = "小さい部屋 → 大ホール";
+"Sync User Library" = "ユーザーライブラリを同期";
+"Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected." = "ドメインを信頼すると、ネットワーク上の攻撃者によって差し替えられたものを含め、そのドメインが提示するすべての証明書を受け入れます。証明書を確認できるよう、実際の接続時に表示される案内から信頼することを推奨します。";
+"Use artwork palette for NowPlaying / Mini / Desktop Lyrics" = "アートワークの配色を再生中画面、ミニプレイヤー、デスクトップ歌詞に使用";
+"Small / Medium / Large" = "小 / 中 / 大";
+"Medium" = "中";
+"Medium / Large" = "中 / 大";
+"Small" = "小";
+"Wrapped" = "年間まとめ";

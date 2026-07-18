@@ -162,7 +162,9 @@ struct TVTabBar: View {
                     .frame(width: 56, height: 56)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .shadow(color: TVColor.brand.opacity(0.33), radius: 12, y: 6)
-                Text("Primuse").font(.system(size: 24, weight: .bold)).foregroundStyle(.white)
+                Text(verbatim: PMString("ext.tv.appName"))
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(.white)
             }
 
             HStack(spacing: 8) {

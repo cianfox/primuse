@@ -108,7 +108,9 @@ struct HomeSectionsSettingsView: View {
                 }
             }
         }
+        #if os(iOS)
         .environment(\.editMode, .constant(.active))
+        #endif
         .navigationTitle("home_settings_title")
     }
 

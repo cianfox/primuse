@@ -124,7 +124,7 @@
 "sidebar_liked_songs" = "Liked Songs";
 "home_playable_count_short" = "Plays";
 "source" = "Source";
-"delete_forever" = "Delete forever";
+"delete_forever" = "Dauerhaft löschen";
 "deleted_at_format" = "Deleted %@";
 
 "track_duration_short" = "Time";
@@ -1897,3 +1897,27 @@
 "onboarding_personalization_home" = "Bereiche der Startseite ein-/ausblenden und neu anordnen";
 "onboarding_personalization_quick" = "Alben, Künstler und Playlists für den Schnellzugriff anheften";
 "onboarding_personalization_footer" = "Diese Optionen kannst du jederzeit wieder ändern.";
+
+// MARK: - macOS settings i18n audit
+"Auto Add to Smart Playlists" = "Automatisch zu intelligenten Playlists hinzufügen";
+"Catalog Search" = "Katalogsuche";
+"Checks the App Store for new versions once a day." = "Sucht einmal täglich im App Store nach neuen Versionen.";
+"Cover Color Drives Ambient" = "Coverfarben steuern das Hintergrundambiente";
+"Drag to Reorder" = "Zum Neuanordnen ziehen";
+"Every 5 Minutes" = "Alle 5 Minuten";
+"Every Minute" = "Jede Minute";
+"LIB-05 · SmartPlaylistEngine" = "LIB-05 · Intelligente-Playlist-Engine";
+"Manual Only" = "Nur manuell";
+"No logs yet" = "Noch keine Protokolle";
+"Room Size" = "Raumgröße";
+"SRC-29 · Apple Music Library" = "SRC-29 · Apple Music-Mediathek";
+"ST-10 · Accept any certificate this domain presents" = "ST-10 · Jedes Zertifikat akzeptieren, das diese Domain bereitstellt";
+"Small room → large hall" = "Kleiner Raum → große Halle";
+"Sync User Library" = "Benutzermediathek synchronisieren";
+"Trusting a domain accepts every certificate it presents, including one swapped in by an attacker on your network. Prefer trusting from the prompt shown during an actual connection so the certificate can be inspected." = "Wenn du einer Domain vertraust, werden alle von ihr bereitgestellten Zertifikate akzeptiert – auch solche, die ein Angreifer in deinem Netzwerk ausgetauscht hat. Vertraue vorzugsweise über den Hinweis während einer tatsächlichen Verbindung, damit du das Zertifikat prüfen kannst.";
+"Use artwork palette for NowPlaying / Mini / Desktop Lyrics" = "Coverpalette für aktuelle Wiedergabe, Miniplayer und Schreibtischtexte verwenden";
+"Small / Medium / Large" = "Klein / Mittel / Groß";
+"Medium" = "Mittel";
+"Medium / Large" = "Mittel / Groß";
+"Small" = "Klein";
+"Wrapped" = "Jahresrückblick";

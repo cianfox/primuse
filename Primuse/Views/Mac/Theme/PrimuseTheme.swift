@@ -946,27 +946,23 @@ func Lz(_ english: String.LocalizationValue) -> String {
     String(localized: english)
 }
 
-func PMUsesChineseBranding() -> Bool {
-    Locale.preferredLanguages.first?.hasPrefix("zh") == true
-}
-
 func PMAppDisplayName() -> String {
-    PMUsesChineseBranding() ? "猿音 Primuse" : "Primuse"
+    String(localized: "app_name")
 }
 
-func PMAppPrimaryDisplayName() -> String {
-    PMUsesChineseBranding() ? "猿音" : "Primuse"
-}
-
-func PMAppSecondaryDisplayName() -> String? {
-    PMUsesChineseBranding() ? "Primuse" : nil
+/// Resolves dynamic localization keys used by reusable macOS components.
+/// Values that are already localized, user-provided, or intentionally
+/// technical fall back to themselves.
+func PMLocalizedOrVerbatim(_ text: String) -> String {
+    Bundle.main.localizedString(forKey: text, value: text, table: nil)
 }
 
 func PMTextWithoutDesignCodes(_ text: String) -> String {
     let codePattern = #"\b(?:STATS|THEME|SCROB|CAST|META|SRC|LIB|SYS|PL|FX|ST|P|S|C|L)-(?:\d{1,3}(?:/\d{1,3})?|\*)\b"#
-    var cleaned = text.replacingOccurrences(of: codePattern,
-                                             with: "",
-                                             options: .regularExpression)
+    var cleaned = PMLocalizedOrVerbatim(text)
+        .replacingOccurrences(of: codePattern,
+                              with: "",
+                              options: .regularExpression)
     let cleanupPatterns = [
         #"\s*[（(]\s*[)）]\s*"#,
         #"\s*[·•|/—–-]+\s*(?:Matches design\s+sizes|与设计稿\s*尺寸一致)\s*$"#,

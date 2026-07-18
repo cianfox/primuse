@@ -1404,7 +1404,9 @@ struct MusicVideoFullScreenView: View {
                 .ignoresSafeArea()
 
             Button {
+                #if os(iOS)
                 MusicVideoOrientationController.restorePreviousOrientation()
+                #endif
                 onDismiss()
             } label: {
                 Image(systemName: "xmark")
