@@ -426,9 +426,6 @@ actor ConnectorScanner {
 
         let format = AudioFormat.from(fileExtension: (item.name as NSString).pathExtension) ?? .mp3
 
-        // Title always from filename (more reliable than embedded metadata)
-        let fileBaseName = (item.name as NSString).deletingPathExtension
-
         // Priority: sidecar path > embedded/cached > nil
         let coverRef = sidecarRefs.coverPath ?? metadata.coverArtFileName
         let lyricsRef = sidecarRefs.lyricsPath ?? metadata.lyricsFileName
@@ -436,7 +433,7 @@ actor ConnectorScanner {
 
         return Song(
             id: songID,
-            title: fileBaseName,
+            title: metadata.title,
             albumID: albumID,
             artistID: artistID,
             albumTitle: metadata.albumTitle,

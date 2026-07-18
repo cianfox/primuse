@@ -21,9 +21,11 @@ struct TVLibraryView: View {
         }
     }
     @State private var filter: Filter = .all
+    @FocusState private var focusedFilter: Filter?
 
     private let cols = 5
     private let gap: CGFloat = 36
+    var focusRequest = 0
 
     var body: some View {
         ZStack {
@@ -40,6 +42,9 @@ struct TVLibraryView: View {
                 }
             }
         }
+        .onChange(of: focusRequest) {
+            focusedFilter = .all
+        }
     }
 
     private var title: String {
@@ -53,16 +58,16 @@ struct TVLibraryView: View {
     }
 
     private var filterStrip: some View {
-        HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 TVEyebrow(text: PMString("ext.tv.library.eyebrow"))
                 Text(title).font(TVFont.pageTitle).foregroundStyle(.white)
             }
-            Spacer(minLength: 0)
             HStack(spacing: 12) {
                 ForEach(Filter.allCases) { f in
-                    TVFocusButton(radius: 28, accent: .white, scale: 1.06, lift: 4,
-                                  action: { filter = f }) { _ in
+                    Button {
+                        filter = f
+                    } label: {
                         Text(f.display)
                             .font(.system(size: 18, weight: f == filter ? .bold : .medium))
                             .foregroundStyle(.white)
@@ -70,12 +75,23 @@ struct TVLibraryView: View {
                             .background(f == filter ? AnyShapeStyle(TVColor.brand)
                                                     : AnyShapeStyle(Color.white.opacity(0.12)),
                                         in: Capsule())
+                            .tvFocusRing(
+                                focusedFilter == f,
+                                radius: 28,
+                                accent: .white,
+                                scale: 1.06,
+                                lift: 4
+                            )
                     }
+                    .buttonStyle(TVBareButtonStyle())
+                    .focused($focusedFilter, equals: f)
+                    .focusEffectDisabled()
                 }
             }
             // 筛选条独立成焦点区:从右上角某个筛选项往下能跳到下方网格(否则横纵混在一起跳不下去)。
             .focusSection()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

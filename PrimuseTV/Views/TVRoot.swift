@@ -13,6 +13,9 @@ struct TVRoot: View {
     @State private var showSettings = false
     @State private var showQueue = false
     @State private var showOptions = false
+    @State private var libraryFocusRequest = 0
+    @State private var tabFocusRequest = 0
+    @State private var isTabBarFocused = true
 
     init() {
         #if DEBUG
@@ -28,6 +31,17 @@ struct TVRoot: View {
     }
 
     var body: some View {
+        rootContent
+            .modifier(TVReturnToTabsModifier(enabled: !isTabBarFocused) {
+                tabFocusRequest &+= 1
+            })
+            .onPlayPauseCommand {
+                guard store.hasNowPlaying else { return }
+                store.togglePlayPause()
+            }
+    }
+
+    private var rootContent: some View {
         ZStack {
             TVColor.bg.ignoresSafeArea()
 
@@ -35,7 +49,14 @@ struct TVRoot: View {
                 .transition(.opacity)
 
             VStack(spacing: 0) {
-                TVTabBar(active: tab, onSelect: { tab = $0 }, onSettings: { showSettings = true })
+                TVTabBar(
+                    active: tab,
+                    onSelect: { tab = $0 },
+                    onLibraryDown: { libraryFocusRequest &+= 1 },
+                    focusRequest: tabFocusRequest,
+                    onFocusChanged: { isTabBarFocused = $0 },
+                    onSettings: { showSettings = true }
+                )
                 Spacer(minLength: 0)
             }
 
@@ -87,7 +108,11 @@ struct TVRoot: View {
     private var content: some View {
         switch tab {
         case .home:      TVHomeView(openPlayer: { showNowPlaying = true })
-        case .library:   TVLibraryView(openPlayer: { showNowPlaying = true })
+        case .library:
+            TVLibraryView(
+                openPlayer: { showNowPlaying = true },
+                focusRequest: libraryFocusRequest
+            )
         case .playlists: TVPlaylistsView(openPlayer: { showNowPlaying = true })
         case .sources:   TVSourcesView()
         case .search:    TVSearchView(openPlayer: { showNowPlaying = true })
@@ -100,7 +125,11 @@ struct TVRoot: View {
 struct TVTabBar: View {
     let active: TVRoot.Tab
     var onSelect: (TVRoot.Tab) -> Void
+    var onLibraryDown: () -> Void
+    var focusRequest: Int
+    var onFocusChanged: (Bool) -> Void
     var onSettings: () -> Void
+    @FocusState private var focusedTab: TVRoot.Tab?
 
     private let tabs: [(TVRoot.Tab, String)] = [
         (.home, PMString("ext.tv.nav.home")), (.library, PMString("ext.tv.nav.library")),
@@ -138,11 +167,34 @@ struct TVTabBar: View {
 
             HStack(spacing: 8) {
                 ForEach(tabs, id: \.0) { item in
-                    TVTabItem(label: item.1, isActive: item.0 == active,
-                              forceFocus: item.0 == debugFocusTab) { onSelect(item.0) }
+                    TVTabItem(
+                        label: item.1,
+                        isActive: item.0 == active,
+                        isFocused: item.0 == focusedTab
+                    ) {
+                        onSelect(item.0)
+                    }
+                    .focused($focusedTab, equals: item.0)
                 }
             }
             .focusSection()
+            .onChange(of: focusedTab) { _, focused in
+                onFocusChanged(focused != nil)
+                if let focused, focused != active { onSelect(focused) }
+            }
+            .onChange(of: focusRequest) {
+                focusedTab = active
+            }
+            .onMoveCommand { direction in
+                if direction == .down, focusedTab == .library {
+                    onLibraryDown()
+                }
+            }
+            .onAppear {
+                #if DEBUG
+                if let debugFocusTab { focusedTab = debugFocusTab }
+                #endif
+            }
 
             Spacer(minLength: 0)
 
@@ -170,33 +222,35 @@ struct TVTabBar: View {
 private struct TVTabItem: View {
     let label: String
     let isActive: Bool
-    var forceFocus: Bool = false
+    let isFocused: Bool
     var action: () -> Void
-    @FocusState private var focused: Bool
 
     var body: some View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 26, weight: isActive ? .bold : .medium))
-                .foregroundStyle(isActive || focused ? .white : .white.opacity(0.62))
+                .foregroundStyle(isActive || isFocused ? .white : .white.opacity(0.62))
                 .padding(.horizontal, 24).padding(.vertical, 10)
-                .background(focused ? Color.white.opacity(0.18) : .clear,
+                .background(isFocused ? Color.white.opacity(0.18) : .clear,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.white, lineWidth: focused ? 3 : 0)
+                        .strokeBorder(.white, lineWidth: isFocused ? 3 : 0)
                 }
-                .scaleEffect(focused ? 1.08 : 1)
-                .animation(.easeOut(duration: 0.18), value: focused)
+                .scaleEffect(isFocused ? 1.08 : 1)
+                .animation(.easeOut(duration: 0.18), value: isFocused)
         }
         .buttonStyle(TVBareButtonStyle())
-        .focused($focused)
         .focusEffectDisabled()
-        .onAppear {
-            #if DEBUG
-            if forceFocus { Task { @MainActor in focused = true } }
-            #endif
-        }
+    }
+}
+
+private struct TVReturnToTabsModifier: ViewModifier {
+    let enabled: Bool
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onExitCommand(perform: enabled ? action : nil)
     }
 }
 

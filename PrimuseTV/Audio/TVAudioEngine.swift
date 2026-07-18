@@ -322,26 +322,36 @@ final class TVAudioEngine {
 
     private func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
+        c.playCommand.isEnabled = true
+        c.pauseCommand.isEnabled = true
+        c.togglePlayPauseCommand.isEnabled = true
         c.playCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.play() }; return .success
+            Task { @MainActor in self?.play() }
+            return .success
         }
         c.pauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.pause() }; return .success
+            Task { @MainActor in self?.pause() }
+            return .success
         }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.togglePlayPause() }; return .success
+            Task { @MainActor in self?.togglePlayPause() }
+            return .success
         }
         c.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            MainActor.assumeIsolated { self?.seek(to: e.positionTime) }; return .success
+            let position = e.positionTime
+            Task { @MainActor in self?.seek(to: position) }
+            return .success
         }
         c.skipForwardCommand.preferredIntervals = [10]
         c.skipForwardCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.skip(by: 10) }; return .success
+            Task { @MainActor in self?.skip(by: 10) }
+            return .success
         }
         c.skipBackwardCommand.preferredIntervals = [10]
         c.skipBackwardCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { self?.skip(by: -10) }; return .success
+            Task { @MainActor in self?.skip(by: -10) }
+            return .success
         }
     }
 

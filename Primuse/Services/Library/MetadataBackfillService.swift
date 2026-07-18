@@ -49,6 +49,13 @@ final class MetadataBackfillService {
     /// playable & recoverable; we only stop re-fetching them *for artwork*.
     private var artworkGivenUpIDs: Set<String> = []
 
+    /// Songs whose embedded title has been checked under the metadata-title
+    /// policy. Older builds intentionally kept the filename even after parsing
+    /// tags, so every backfillable remote song needs one successful pass after
+    /// upgrading. Persisting the IDs makes this a one-time repair rather than a
+    /// Range request on every launch.
+    private var titleCheckedIDs: Set<String> = []
+
     /// Consecutive *transient* failure count per song ID, this session only.
     /// Reset to 0 on a successful backfill. Not persisted — a throttle blip
     /// today must not disqualify the song on future launches.
@@ -82,6 +89,7 @@ final class MetadataBackfillService {
     private let metadataService = MetadataService()
     private let failedURL: URL
     private let artworkGivenUpURL: URL
+    private let titleCheckedURL: URL
 
     /// Songs currently being processed (for UI / cancellation).
     private(set) var pendingCount: Int = 0
@@ -118,8 +126,10 @@ final class MetadataBackfillService {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.failedURL = directory.appendingPathComponent("backfill-failed.json")
         self.artworkGivenUpURL = directory.appendingPathComponent("backfill-artwork-givenup.json")
+        self.titleCheckedURL = directory.appendingPathComponent("backfill-title-checked.json")
         loadFailed()
         loadArtworkGivenUp()
+        loadTitleChecked()
 
         // One-time migration. Earlier builds had an overly-aggressive
         // partial-merge rule that marked any song as failed when head
@@ -285,8 +295,10 @@ final class MetadataBackfillService {
                 let ids = Set(songs.map(\.id))
                 self.failedSongIDs.subtract(ids)
                 self.sessionGivenUpIDs.subtract(ids)
+                self.titleCheckedIDs.subtract(ids)
                 for id in ids { self.transientFailureCounts[id] = nil }
                 self.saveFailed()
+                self.saveTitleChecked()
                 self.start()
             }
         }
@@ -449,8 +461,10 @@ final class MetadataBackfillService {
         if !ids.isEmpty {
             failedSongIDs.subtract(ids)
             sessionGivenUpIDs.subtract(ids)
+            titleCheckedIDs.subtract(ids)
             for id in ids { transientFailureCounts[id] = nil }
             saveFailed()
+            saveTitleChecked()
         }
         stop()
     }
@@ -713,6 +727,7 @@ final class MetadataBackfillService {
                     lastFlushAt = Date()
                     if !batch.isEmpty {
                         library.replaceSongs(batch)
+                        markTitlesChecked(in: batch)
                         plog("📥 flushed \(batch.count) songs to library")
                     }
                 }
@@ -738,6 +753,7 @@ final class MetadataBackfillService {
             pendingFlush.removeAll()
             if !batch.isEmpty {
                 library.replaceSongs(batch)
+                markTitlesChecked(in: batch)
                 plog("📥 final flush: \(batch.count) songs to library")
             }
         }
@@ -1151,7 +1167,7 @@ final class MetadataBackfillService {
 
         return Song(
             id: bare.id,
-            title: bare.title,
+            title: metadata.title,
             albumID: albumID,
             artistID: artistID,
             albumTitle: metadata.albumTitle,
@@ -1215,6 +1231,7 @@ final class MetadataBackfillService {
     private func needsBackfill(_ song: Song) -> Bool {
         Self.isBareSong(song)
             || (Self.needsEmbeddedArtworkBackfill(song) && !artworkGivenUpIDs.contains(song.id))
+            || !titleCheckedIDs.contains(song.id)
     }
 
     private static func needsEmbeddedArtworkBackfill(_ song: Song) -> Bool {
@@ -1235,9 +1252,28 @@ final class MetadataBackfillService {
         artworkGivenUpIDs = Set(decoded)
     }
 
+    private func loadTitleChecked() {
+        guard let data = try? Data(contentsOf: titleCheckedURL),
+              let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
+        titleCheckedIDs = Set(decoded)
+    }
+
     private func saveArtworkGivenUp() {
         guard let data = try? JSONEncoder().encode(Array(artworkGivenUpIDs)) else { return }
         try? data.write(to: artworkGivenUpURL, options: .atomic)
+    }
+
+    private func saveTitleChecked() {
+        guard let data = try? JSONEncoder().encode(Array(titleCheckedIDs)) else { return }
+        try? data.write(to: titleCheckedURL, options: .atomic)
+    }
+
+    private func markTitlesChecked(in songs: [Song]) {
+        let previousCount = titleCheckedIDs.count
+        titleCheckedIDs.formUnion(songs.map(\.id))
+        if titleCheckedIDs.count != previousCount {
+            saveTitleChecked()
+        }
     }
 
     private func saveFailed() {
