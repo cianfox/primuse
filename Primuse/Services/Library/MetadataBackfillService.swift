@@ -97,6 +97,12 @@ final class MetadataBackfillService {
     private(set) var isRunning: Bool = false
 
     private var worker: Task<Void, Never>?
+    /// Exact session progress, kept non-observable so one completed network
+    /// request doesn't invalidate every view that observes this service.
+    private var processedTotal: Int = 0
+    /// Debounced writer for the three persisted ID sets. Encoding and atomic
+    /// file replacement run off the main actor.
+    private var statePersistenceTask: Task<Void, Never>?
     /// Bumped on every `start()` / `stop()`. The worker captures its own
     /// generation and uses it to decide whether the cleanup at end-of-Task
     /// should clear shared state — without this, a cancelled-but-still-
@@ -368,6 +374,7 @@ final class MetadataBackfillService {
             return
         }
         pendingCount = needsBackfill.count
+        processedTotal = 0
         processedCount = 0
         isRunning = true
         workerGeneration += 1
@@ -381,7 +388,8 @@ final class MetadataBackfillService {
             await self?.runWorker()
             await MainActor.run { [weak self] in
                 guard let self, self.workerGeneration == generation else { return }
-                let processed = self.processedCount
+                let processed = self.processedTotal
+                self.processedCount = processed
                 self.worker = nil
                 self.isRunning = false
                 self.pendingCount = 0
@@ -582,13 +590,13 @@ final class MetadataBackfillService {
 
     // MARK: - Worker
 
-    /// Songs to flush to the library at once. Smaller = UI updates feel
-    /// more incremental; larger = fewer SwiftUI invalidations and fewer
-    /// `rebuildIndex`/`persistSnapshot` runs. 10 strikes a good balance.
-    private static let flushBatchSize = 10
+    /// Large cloud libraries need far fewer whole-library cache/index rebuilds.
+    /// Network requests still complete continuously; only the observable
+    /// library publication is coalesced.
+    private static let flushBatchSize = 100
     /// Even with a partial batch, flush at least every N seconds so the
     /// user sees progress without having to wait for 10 songs.
-    private static let flushInterval: TimeInterval = 3
+    private static let flushInterval: TimeInterval = 2
     /// 并发处理 worker 数。百度网盘 actor 内的 throttle 把 callAPI 串行化
     /// (避免 errno 31034 限流), 但 Range fetch 走 actor 外 URLSession 能真
     /// 并发。3 个 worker 实测下吞吐量翻倍多, 再多会撞 throttle 等待 + 触发
@@ -686,7 +694,13 @@ final class MetadataBackfillService {
             while let result = await group.next() {
                 if Task.isCancelled { break }
 
-                processedCount += 1
+                processedTotal += 1
+                // UI progress does not need per-file granularity. Publishing
+                // every ten results prevents an Observable invalidation storm
+                // while retaining responsive feedback.
+                if processedTotal.isMultiple(of: 10) || processedTotal == pendingCount {
+                    processedCount = processedTotal
+                }
                 let songID = result.song.id
                 if result.outcome.markFailed, isStillEligible(result.song) {
                     failedSongIDs.insert(songID)
@@ -968,16 +982,11 @@ final class MetadataBackfillService {
         )
         let fetchElapsed = Date().timeIntervalSince(fetchStarted)
 
-        // Reuse the head bytes we just paid for to prewarm the cloud
-        // playback cache. CloudPlaybackSource will pick up `.partial`
-        // on the first SFB read, so the user's first-buffer latency for
-        // this song drops from "1 chunk + CDN HEAD" to "disk hit".
-        // Only worthwhile for cloud-stream sources — local/file paths
-        // never go through CloudPlaybackSource.
-        if song.fileSize >= Int64(Self.headBytes),
-           await sourceManager.songSupportsRangeStreaming(song) {
-            sourceManager.seedPrewarmCache(song: song, head: headData)
-        }
+        // Do not turn metadata backfill into a whole-library playback-cache
+        // prewarm. At 256 KB per song, a 10K-song source caused ~2.5 GB of
+        // unnecessary writes and sustained I/O pressure while the user was
+        // browsing. Playback already prewarms the current song and queue on
+        // demand through SourceManager.
 
         var metadata = await extractMetadata(
             from: headData,
@@ -1075,17 +1084,24 @@ final class MetadataBackfillService {
         let ext = song.fileFormat.rawValue
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("backfill-\(cacheKey).\(ext)")
-        try? data.write(to: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        // Data.write and removeItem are synchronous. Keep both away from the
+        // main actor; the metadata actor can read the completed temp file.
+        await Task.detached(priority: .utility) {
+            try? data.write(to: tempURL)
+        }.value
         // tempURL 是 backfill-<hash>.<ext> 形式, 没意义。caller 传 song 原始
         // 文件名当 fallbackTitle, 嵌入 title 缺失时显示得正常。
         let originalFileBaseName = song.title
-        return await metadataService.loadMetadata(
+        let metadata = await metadataService.loadMetadata(
             for: tempURL,
             cacheKey: cacheKey,
             allowOnlineFetch: false,
             fallbackTitle: originalFileBaseName
         )
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+        return metadata
     }
 
     /// Reverse-compute duration from `(fileSize × 8) / bitRate` when
@@ -1259,13 +1275,11 @@ final class MetadataBackfillService {
     }
 
     private func saveArtworkGivenUp() {
-        guard let data = try? JSONEncoder().encode(Array(artworkGivenUpIDs)) else { return }
-        try? data.write(to: artworkGivenUpURL, options: .atomic)
+        scheduleStatePersistence()
     }
 
     private func saveTitleChecked() {
-        guard let data = try? JSONEncoder().encode(Array(titleCheckedIDs)) else { return }
-        try? data.write(to: titleCheckedURL, options: .atomic)
+        scheduleStatePersistence()
     }
 
     private func markTitlesChecked(in songs: [Song]) {
@@ -1277,8 +1291,33 @@ final class MetadataBackfillService {
     }
 
     private func saveFailed() {
-        guard let data = try? JSONEncoder().encode(Array(failedSongIDs)) else { return }
-        try? data.write(to: failedURL, options: .atomic)
+        scheduleStatePersistence()
+    }
+
+    private func scheduleStatePersistence() {
+        // Set snapshots are copy-on-write, so capturing them here is cheap.
+        // Conversion to arrays, JSON encoding, and disk writes happen later on
+        // a utility executor. Repeated per-song updates collapse into one write.
+        let failed = failedSongIDs
+        let artworkGivenUp = artworkGivenUpIDs
+        let titleChecked = titleCheckedIDs
+        let failedURL = failedURL
+        let artworkURL = artworkGivenUpURL
+        let titleURL = titleCheckedURL
+
+        statePersistenceTask?.cancel()
+        statePersistenceTask = Task.detached(priority: .utility) {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            Self.writeIDSet(failed, to: failedURL)
+            Self.writeIDSet(artworkGivenUp, to: artworkURL)
+            Self.writeIDSet(titleChecked, to: titleURL)
+        }
+    }
+
+    private nonisolated static func writeIDSet(_ ids: Set<String>, to url: URL) {
+        guard let data = try? JSONEncoder().encode(Array(ids)) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func hash(_ input: String) -> String {

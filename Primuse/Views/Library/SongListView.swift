@@ -192,9 +192,6 @@ struct SongListView: View {
             }
         }
         .listStyle(.plain)
-        .searchable(text: $searchText,
-                    placement: .toolbar,
-                    prompt: Text("search_songs_prompt"))
         .toolbar { sortToolbarItem }
     }
 

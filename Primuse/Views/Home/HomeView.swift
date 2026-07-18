@@ -44,6 +44,7 @@ struct HomeView: View {
             .toolbarTitleDisplayMode(.inlineLarge)
             .navigationDestination(for: Album.self) { AlbumDetailView(album: $0) }
             .navigationDestination(for: Artist.self) { ArtistDetailView(artist: $0) }
+            .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlist: $0) }
             // 更新提示改成 sheet 弹框 ── 之前内嵌在首页顶部当 banner 用,
             // 用户更想要"弹框"的 modal 体感, 也避免占用首页空间。
             // checker.availableUpdate 从 nil 变非 nil 时自动弹出。
@@ -76,6 +77,10 @@ struct HomeView: View {
     @AppStorage("primuse.home.showTopArtists") private var showTopArtists: Bool = true
     @AppStorage("primuse.home.showRecentlyAdded") private var showRecentlyAdded: Bool = true
     @AppStorage("primuse.home.showContinueListening") private var showContinueListening: Bool = true
+    @AppStorage("primuse.home.showQuickAccess") private var showQuickAccess: Bool = true
+    @AppStorage("primuse.home.showPlaylists") private var showPlaylists: Bool = true
+    @AppStorage(HomeSectionConfiguration.orderKey) private var homeSectionOrderRawValue = ""
+    @AppStorage(LibraryPinStorage.defaultsKey) private var quickAccessRawValue = ""
     @State private var homeSnapshot = HomeSnapshot()
     @State private var lastHomeSnapshotSignature: HomeSnapshotSignature?
     // Debounce for `searchRevision`-driven refreshes. MusicLibrary bumps
@@ -112,44 +117,38 @@ struct HomeView: View {
         var id: String { album.id }
     }
 
+    private var homeSectionOrder: [HomeSectionKind] {
+        HomeSectionConfiguration.decode(homeSectionOrderRawValue)
+    }
+
+    private var regularPlaylists: [Playlist] {
+        library.playlists
+            .filter { $0.id != MusicLibrary.likedSongsPlaylistID }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var homePlaylists: [Playlist] {
+        Array(regularPlaylists.prefix(sizeClass == .regular ? 10 : 8))
+    }
+
+    private var homeQuickPins: [LibraryPinReference] {
+        LibraryPinStorage.decode(quickAccessRawValue).filter(pinExists)
+    }
+
+    private var likedPlaylist: Playlist {
+        library.playlists.first(where: { $0.id == MusicLibrary.likedSongsPlaylistID })
+            ?? Playlist(
+                id: MusicLibrary.likedSongsPlaylistID,
+                name: String(localized: "playlist_liked_name")
+            )
+    }
+
     private var contentView: some View {
         VStack(alignment: .leading, spacing: 24) {
             libraryHeroSection
 
-            // Stats glimpse — shows up only after the user has been
-            // listening for a bit. Tappable shortcut to the full
-            // stats page.
-            if showStatsGlimpse, let summary = homeSnapshot.statsGlimpse {
-                statsGlimpseSection(summary)
-            }
-
-            // For You — local recommendation engine fed by playback history
-            // and library metadata. Hidden only when the library has no
-            // playable discovery candidates.
-            if showForYou, !homeSnapshot.forYouResults.isEmpty {
-                forYouSection
-            }
-
-            // Top artists — replaces the alphabetical
-            // library.visibleArtists.prefix(8). When PlayHistoryStore has
-            // history we sort by play count; otherwise fall back to
-            // alphabetical so the section isn't empty.
-            if showTopArtists, !homeSnapshot.topArtists.isEmpty {
-                artistsSection
-            }
-
-            // Recently added albums — derived from the same home snapshot
-            // so returning to this tab does not rebuild album artwork rows.
-            if showRecentlyAdded, !homeSnapshot.recentlyAddedAlbums.isEmpty {
-                recentlyAddedAlbumsSection
-            }
-
-            // Continue listening — moved down + compacted. MiniPlayer
-            // already covers "what was I just listening to", so the
-            // home page only needs a quick re-entry list, not a hero
-            // block.
-            if showContinueListening, !homeSnapshot.recentSongs.isEmpty {
-                continueListeningSection
+            ForEach(homeSectionOrder) { section in
+                homeSectionContent(section)
             }
         }
         .task {
@@ -164,6 +163,40 @@ struct HomeView: View {
         .onDisappear {
             homeRefreshDebounceTask?.cancel()
             homeRefreshDebounceTask = nil
+        }
+    }
+
+    @ViewBuilder
+    private func homeSectionContent(_ section: HomeSectionKind) -> some View {
+        switch section {
+        case .continueListening:
+            if showContinueListening, !homeSnapshot.recentSongs.isEmpty {
+                continueListeningSection
+            }
+        case .quickAccess:
+            if showQuickAccess {
+                quickAccessSection
+            }
+        case .forYou:
+            if showForYou, !homeSnapshot.forYouResults.isEmpty {
+                forYouSection
+            }
+        case .playlists:
+            if showPlaylists, !homePlaylists.isEmpty {
+                playlistsSection
+            }
+        case .topArtists:
+            if showTopArtists, !homeSnapshot.topArtists.isEmpty {
+                artistsSection
+            }
+        case .recentlyAdded:
+            if showRecentlyAdded, !homeSnapshot.recentlyAddedAlbums.isEmpty {
+                recentlyAddedAlbumsSection
+            }
+        case .stats:
+            if showStatsGlimpse, let summary = homeSnapshot.statsGlimpse {
+                statsGlimpseSection(summary)
+            }
         }
     }
 
@@ -563,6 +596,217 @@ struct HomeView: View {
         return Array(withCover.shuffled().prefix(4))
     }
 
+    // MARK: - Quick Access
+
+    private var quickAccessSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("home_section_quick_access")
+                .font(.title3.weight(.bold))
+                .padding(.horizontal, 20)
+
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: 10),
+                    count: 3
+                ),
+                spacing: 14
+            ) {
+                NavigationLink(value: likedPlaylist) {
+                    quickAccessDockLabel(
+                        title: String(localized: "sidebar_liked_songs")
+                    ) {
+                        likedSongsArtwork(size: 52)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                ForEach(homeQuickPins) { pin in
+                    homePinnedDockItem(pin)
+                }
+            }
+            .padding(14)
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.thinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(.primary.opacity(0.06), lineWidth: 0.5)
+                    }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    @ViewBuilder
+    private func homePinnedDockItem(_ pin: LibraryPinReference) -> some View {
+        switch pin.kind {
+        case .album:
+            if let album = library.visibleAlbums.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: album) {
+                    quickAccessDockLabel(title: album.title) {
+                        CachedArtworkView(
+                            albumID: album.id,
+                            albumTitle: album.title,
+                            artistName: album.artistName,
+                            size: 52,
+                            cornerRadius: 9
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        case .artist:
+            if let artist = library.visibleArtists.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: artist) {
+                    quickAccessDockLabel(title: artist.name) {
+                        CachedArtworkView(
+                            artistID: artist.id,
+                            artistName: artist.name,
+                            size: 52,
+                            cornerRadius: 26
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        case .playlist:
+            if let playlist = regularPlaylists.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: playlist) {
+                    quickAccessDockLabel(title: playlist.name) {
+                        homePlaylistArtwork(playlist, size: 52, cornerRadius: 9)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func quickAccessDockLabel<Artwork: View>(
+        title: String,
+        @ViewBuilder artwork: () -> Artwork
+    ) -> some View {
+        VStack(spacing: 7) {
+            artwork()
+                .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .top)
+        .contentShape(Rectangle())
+    }
+
+    private func pinExists(_ pin: LibraryPinReference) -> Bool {
+        switch pin.kind {
+        case .album:
+            return library.visibleAlbums.contains { $0.id == pin.itemID }
+        case .artist:
+            return library.visibleArtists.contains { $0.id == pin.itemID }
+        case .playlist:
+            return regularPlaylists.contains { $0.id == pin.itemID }
+        }
+    }
+
+    private func likedSongsArtwork(size: CGFloat) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [.pink, Color.accentColor],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            Image(systemName: "heart.fill")
+                .font(.system(size: size * 0.32, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+    }
+
+    // MARK: - Playlists
+
+    private var playlistsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("home_section_playlists")
+                .font(.title3.weight(.bold))
+                .padding(.horizontal, 20)
+
+            VStack(spacing: 0) {
+                let displayed = Array(homePlaylists.prefix(sizeClass == .regular ? 5 : 4))
+                ForEach(Array(displayed.enumerated()), id: \.element.id) { index, playlist in
+                    NavigationLink(value: playlist) {
+                        playlistListRow(playlist)
+                    }
+                    .buttonStyle(.plain)
+
+                    if index < displayed.count - 1 {
+                        Divider()
+                            .padding(.leading, 66)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    @ViewBuilder
+    private func homePlaylistArtwork(
+        _ playlist: Playlist,
+        size: CGFloat,
+        cornerRadius: CGFloat
+    ) -> some View {
+        if let song = library.songs(forPlaylist: playlist.id).first {
+            CachedArtworkView(
+                coverRef: song.coverArtFileName,
+                songID: song.id,
+                size: size,
+                cornerRadius: cornerRadius,
+                sourceID: song.sourceID,
+                filePath: song.filePath,
+                fileFormat: song.fileFormat
+            )
+        } else {
+            StoredCoverArtView(
+                fileName: playlist.coverArtPath,
+                size: size,
+                cornerRadius: cornerRadius
+            )
+        }
+    }
+
+    private func playlistListRow(_ playlist: Playlist) -> some View {
+        HStack(spacing: 12) {
+            homePlaylistArtwork(playlist, size: 54, cornerRadius: 9)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(playlist.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(
+                    "\(library.songs(forPlaylist: playlist.id).count) "
+                        + String(localized: "songs_count")
+                        + " · "
+                        + playlist.updatedAt.formatted(.relative(presentation: .named))
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
+
     // MARK: - For You
 
     /// Local recommendation engine output, cached inside `homeSnapshot`
@@ -579,31 +823,69 @@ struct HomeView: View {
                     ForEach(homeSnapshot.forYouResults) { result in
                         let song = result.song
                         Button { playSong(song) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 14) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    DiscoveryReasonsView(reasons: result.reasons, maxCount: 1)
+
+                                    Text(song.title)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+
+                                    Text(song.artistName ?? String(localized: "unknown_artist"))
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+
+                                    Spacer(minLength: 4)
+
+                                    Label("play", systemImage: "play.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
                                 CachedArtworkView(
                                     coverRef: song.coverArtFileName,
                                     songID: song.id,
-                                    size: 140, cornerRadius: 8,
+                                    size: sizeClass == .regular ? 136 : 124,
+                                    cornerRadius: 13,
                                     sourceID: song.sourceID,
                                     filePath: song.filePath,
                                     fileFormat: song.fileFormat
                                 )
-                                .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-                                Text(song.title).font(.caption).fontWeight(.medium).lineLimit(1)
-                                    .frame(width: 140, alignment: .leading)
-                                Text(song.artistName ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    .frame(width: 140, alignment: .leading)
-                                DiscoveryReasonsView(reasons: result.reasons, maxCount: 2)
-                                .frame(width: 140, alignment: .leading)
+                                .shadow(color: .black.opacity(0.14), radius: 7, y: 3)
                             }
-                            .padding(8)
-                            .background(tintedCardBackground(for: song))
+                            .padding(14)
+                            .frame(
+                                width: sizeClass == .regular ? 372 : 316,
+                                height: sizeClass == .regular ? 176 : 164
+                            )
+                            .background(recommendationCardBackground(for: song))
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 20)
+                .scrollTargetLayout()
             }
+            .scrollTargetBehavior(.viewAligned)
+        }
+    }
+
+    @ViewBuilder
+    private func recommendationCardBackground(for song: Song) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        if let tint = tintProvider.tint(forSongID: song.id) {
+            shape.fill(
+                LinearGradient(
+                    colors: [tint.opacity(0.28), tint.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        } else {
+            shape.fill(.thinMaterial)
         }
     }
 
@@ -622,26 +904,16 @@ struct HomeView: View {
 
             let songs = homeSnapshot.recentSongs
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 12) {
-                    ForEach(songs.prefix(15), id: \.id) { song in
+                LazyHGrid(
+                    rows: [
+                        GridItem(.fixed(60), spacing: 10),
+                        GridItem(.fixed(60)),
+                    ],
+                    spacing: 10
+                ) {
+                    ForEach(songs.prefix(12), id: \.id) { song in
                         Button { playSong(song) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                CachedArtworkView(
-                                    coverRef: song.coverArtFileName,
-                                    songID: song.id,
-                                    size: 100, cornerRadius: 8,
-                                    sourceID: song.sourceID,
-                                    filePath: song.filePath,
-                                    fileFormat: song.fileFormat
-                                )
-                                .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
-                                Text(song.title).font(.caption).fontWeight(.medium).lineLimit(1)
-                                    .frame(width: 100, alignment: .leading)
-                                Text(song.artistName ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    .frame(width: 100, alignment: .leading)
-                            }
-                            .padding(8)
-                            .background(tintedCardBackground(for: song))
+                            continueListeningRow(song)
                         }
                         .buttonStyle(.plain)
                     }
@@ -649,6 +921,44 @@ struct HomeView: View {
                 .padding(.horizontal, 20)
             }
         }
+    }
+
+    private func continueListeningRow(_ song: Song) -> some View {
+        HStack(spacing: 10) {
+            CachedArtworkView(
+                coverRef: song.coverArtFileName,
+                songID: song.id,
+                size: 48,
+                cornerRadius: 8,
+                sourceID: song.sourceID,
+                filePath: song.filePath,
+                fileFormat: song.fileFormat
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(song.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(song.artistName ?? String(localized: "unknown_artist"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "play.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.tint)
+        }
+        .padding(.horizontal, 6)
+        .frame(width: sizeClass == .regular ? 300 : 250, height: 60)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.thinMaterial)
+        }
+        .contentShape(Rectangle())
     }
 
     private func makeRecentSongs() -> [Song] {
@@ -736,21 +1046,10 @@ struct HomeView: View {
         let titleKey: LocalizedStringKey = homeSnapshot.topArtistsHasHistory ? "home_top_artists_title" : "tab_artists"
 
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                // Custom concentric-rings glyph signals "this is
-                // where your most-played artists live". SVG ships
-                // with light/dark variants and bakes its own
-                // gradients (multi-stop alpha rings, glow), so use
-                // `.original` rendering — template mode would
-                // flatten the gradient stack to a flat alpha mask.
-                Image("TopArtistsGlyph")
-                    .resizable()
-                    .renderingMode(.original)
-                    .scaledToFit()
-                    .frame(width: 24, height: 24)
-                Text(titleKey).font(.title3).fontWeight(.bold)
-            }
-            .padding(.horizontal, 20)
+            Text(titleKey)
+                .font(.title3)
+                .fontWeight(.bold)
+                .padding(.horizontal, 20)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {

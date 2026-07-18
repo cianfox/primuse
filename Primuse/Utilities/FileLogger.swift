@@ -70,16 +70,20 @@ final class FileLogger: @unchecked Sendable {
     }
 
     func log(_ message: String, file: String = #file, line: Int = #line) {
-        let safeMessage = Self.redactSensitiveData(message)
-        let timestamp = dateFormatter.string(from: Date())
         let fileName = (file as NSString).lastPathComponent.replacingOccurrences(of: ".swift", with: "")
-        let entry = "[\(timestamp)] [\(fileName):\(line)] \(safeMessage)\n"
-
-        // Also print to console
-        print(safeMessage)
 
         queue.async { [weak self] in
-            self?.appendToFile(entry)
+            guard let self else { return }
+            // Redaction (five regular-expression passes), timestamp formatting,
+            // console output, and disk I/O all live on the utility queue. Bulk
+            // metadata backfill can emit several messages per song; doing this
+            // work at the call site previously consumed the main actor even
+            // though the final file append itself was asynchronous.
+            let safeMessage = Self.redactSensitiveData(message)
+            let timestamp = self.dateFormatter.string(from: Date())
+            let entry = "[\(timestamp)] [\(fileName):\(line)] \(safeMessage)\n"
+            print(safeMessage)
+            self.appendToFile(entry)
         }
     }
 

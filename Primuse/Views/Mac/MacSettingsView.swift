@@ -1860,6 +1860,7 @@ private struct MacSTLyricsView: View {
 private struct MacSTAppleMusicView: View {
     @Environment(AppleMusicService.self) private var appleMusic
     @Environment(AppleMusicLibraryService.self) private var library
+    @Environment(MusicLibrary.self) private var musicLibrary
     @AppStorage(AppleMusicFeatureSettings.syncUserLibraryKey) private var syncUserLibrary = true
     @AppStorage(AppleMusicFeatureSettings.catalogSearchEnabledKey) private var catalogSearchEnabled = true
     @AppStorage(AppleMusicFeatureSettings.autoAddToSmartPlaylistsKey) private var autoAddToSmartPlaylists = false
@@ -1954,6 +1955,7 @@ private struct MacSTAppleMusicView: View {
             get: { syncUserLibrary },
             set: { newValue in
                 syncUserLibrary = newValue
+                musicLibrary.updateAppleMusicLibrarySyncEnabled(newValue)
                 if newValue {
                     library.sync()
                 } else {

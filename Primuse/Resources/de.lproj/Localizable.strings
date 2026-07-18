@@ -4,6 +4,15 @@
 // Tabs / Sections
 "home_title" = "Start";
 "library_title" = "Mediathek";
+"library_quick_access" = "Schnellzugriff";
+"library_browse" = "Mediathek durchsuchen";
+"library_edit_quick_access" = "Schnellzugriff bearbeiten";
+"library_add_quick_access" = "Kurzbefehl hinzufügen";
+"library_quick_access_limit" = "Bis zu 5 Kurzbefehle hinzufügen";
+"library_quick_access_selected" = "Ausgewählt";
+"library_quick_access_selected_empty" = "Keine Kurzbefehle ausgewählt";
+"library_quick_access_search_prompt" = "Alben, Künstler oder Playlists suchen";
+"playlists_count" = "Playlists";
 "search_title" = "Suchen";
 "settings_title" = "Einstellungen";
 "tab_songs" = "Titel";
@@ -390,6 +399,9 @@
 "version" = "Version";
 "build" = "Build";
 "licenses" = "Open-Source-Lizenzen";
+"github_repository" = "GitHub-Repository";
+"github_feedback" = "Vorschläge und Probleme";
+"github_feedback_hint" = "Über GitHub Issues kann der Entwickler Rückmeldungen schneller sehen und weiterverfolgen. Feedback ist auch über eine App-Store-Rezension möglich, kann dort aber verzögert ankommen.";
 "open_source" = "Open-Source-Bibliotheken";
 "gapless_playback" = "Lückenlose Wiedergabe";
 "gapless_desc" = "Nahtloser Übergang zwischen Titeln ohne stille Pause.";
@@ -942,9 +954,12 @@
 "home_section_top_artists" = "Häufig gehört";
 "home_section_recently_added" = "Zuletzt hinzugefügt";
 "home_section_continue_listening" = "Weiterhören";
+"home_section_quick_access" = "Schnellzugriff";
+"home_section_playlists" = "Meine Playlists";
 "home_settings_title" = "Start";
 "home_settings_sections_label" = "Sichtbare Bereiche";
-"home_settings_sections_footer" = "Blende Bereiche aus, die du nicht nutzt. Der Hero-Bereich wird immer angezeigt.";
+"home_settings_sections_footer" = "Bereiche ein- oder ausblenden und durch Ziehen neu anordnen. Der Hero-Bereich bleibt oben.";
+"home_settings_restore_default_order" = "Standardreihenfolge wiederherstellen";
 "start_song_radio" = "Titelradio starten";
 "start_similar_mix" = "Ähnlichen Mix starten";
 "similar_songs_empty" = "Noch keine ähnlichen Titel";

@@ -751,8 +751,19 @@ final class MusicLibrary {
     /// Backing storage that includes soft-deleted entries. UI-facing
     /// `playlists` filters this down.
     private(set) var allPlaylists: [Playlist] = []
-    /// Live (non-deleted) playlists for normal UI use.
-    var playlists: [Playlist] { allPlaylists.filter { !$0.isDeleted } }
+    /// Live (non-deleted) playlists for normal UI use. Apple Music's library
+    /// and user-playlist mirrors are read-only snapshots, so keep them stored
+    /// for fast re-enable but hide them whenever Apple Music library sync or
+    /// its virtual source is disabled.
+    var playlists: [Playlist] {
+        let hidesAppleMusicMirrors = !appleMusicLibrarySyncEnabled
+            || disabledSourceIDs.contains(AppleMusicLibraryService.systemSourceID)
+        return allPlaylists.filter { playlist in
+            guard !playlist.isDeleted else { return false }
+            return !hidesAppleMusicMirrors
+                || !AppleMusicLibraryService.isAppleMusicMirrorPlaylist(playlist.id)
+        }
+    }
     /// Soft-deleted playlists, newest deletion first. Drives the "Recently
     /// Deleted" recovery panel.
     var recentlyDeletedPlaylists: [Playlist] {
@@ -818,12 +829,21 @@ final class MusicLibrary {
         return "\(prefix):\(song.filePath)"
     }
     private(set) var disabledSourceIDs: Set<String> = []
+    /// Mirrors the Apple Music library-sync preference as observable state.
+    /// Reading UserDefaults directly from `playlists` would not invalidate
+    /// SwiftUI views when the macOS settings toggle changes.
+    private(set) var appleMusicLibrarySyncEnabled =
+        AppleMusicFeatureSettings.syncUserLibraryEnabled
 
     /// Cached filtered views — rebuilt only when songs/disabled state change
     private(set) var visibleSongs: [Song] = []
     private(set) var visibleAlbums: [Album] = []
     private(set) var visibleArtists: [Artist] = []
     private var visibleSongByID: [String: Song] = [:]
+    /// Source cards are re-rendered frequently while scanning/backfilling.
+    /// Keep the source grouping beside the other visible caches so those
+    /// renders don't filter a 10K+ song array once per card per frame.
+    private var visiblePlayableSongsBySourceID: [String: [Song]] = [:]
     private(set) var searchRevision: Int = 0
 
     private let snapshotURL: URL
@@ -833,6 +853,10 @@ final class MusicLibrary {
     func updateDisabledSourceIDs(_ ids: Set<String>) {
         disabledSourceIDs = ids
         rebuildVisibleCache()
+    }
+
+    func updateAppleMusicLibrarySyncEnabled(_ enabled: Bool) {
+        appleMusicLibrarySyncEnabled = enabled
     }
 
     var songCount: Int { visibleSongs.count }
@@ -854,6 +878,10 @@ final class MusicLibrary {
         visibleSongByID = Dictionary(
             visibleSongs.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
+        )
+        visiblePlayableSongsBySourceID = Dictionary(
+            grouping: visibleSongs.filter(\.isPlayable),
+            by: \.sourceID
         )
     }
 
@@ -1063,17 +1091,21 @@ final class MusicLibrary {
         let sourceIDs = explicitAffectedSourceIDs ?? Set(filteredNewSongs.map(\.sourceID))
 
         let removedSongs = songs.filter { sourceIDs.contains($0.sourceID) && !incomingIDs.contains($0.id) }
-        songs.removeAll { sourceIDs.contains($0.sourceID) && !incomingIDs.contains($0.id) }
+        // Mutate a local copy and publish the observable array once. Mutating
+        // `songs` for every row caused SwiftUI to repeatedly invalidate large
+        // library views during an incremental scan.
+        var mergedSongs = songs
+        mergedSongs.removeAll { sourceIDs.contains($0.sourceID) && !incomingIDs.contains($0.id) }
 
         var existingIndexByID: [String: Int] = [:]
-        existingIndexByID.reserveCapacity(songs.count)
-        for (i, s) in songs.enumerated() { existingIndexByID[s.id] = i }
+        existingIndexByID.reserveCapacity(mergedSongs.count)
+        for (i, s) in mergedSongs.enumerated() { existingIndexByID[s.id] = i }
 
         var contentChanged: [Song] = []
 
         for newSong in filteredNewSongs {
             if let idx = existingIndexByID[newSong.id] {
-                let existing = songs[idx]
+                let existing = mergedSongs[idx]
                 // Detect remote replacement: same path/ID but different
                 // bytes. Conservative — only triggers when both sides
                 // populate the field. Without this, the merge below
@@ -1094,7 +1126,7 @@ final class MusicLibrary {
                     return a != b
                 }()
                 if sizeChanged || mtimeChanged || revisionChanged {
-                    songs[idx] = newSong
+                    mergedSongs[idx] = newSong
                     contentChanged.append(newSong)
                     continue
                 }
@@ -1129,16 +1161,17 @@ final class MusicLibrary {
                     if let cover = newSong.coverArtFileName { merged.coverArtFileName = cover }
                     if let lyrics = newSong.lyricsFileName { merged.lyricsFileName = lyrics }
                     if let mvPath = newSong.mvPath { merged.mvPath = mvPath }
-                    songs[idx] = merged
+                    mergedSongs[idx] = merged
                 } else {
-                    songs[idx] = newSong
+                    mergedSongs[idx] = newSong
                 }
             } else {
-                songs.append(newSong)
-                existingIndexByID[newSong.id] = songs.count - 1
+                mergedSongs.append(newSong)
+                existingIndexByID[newSong.id] = mergedSongs.count - 1
             }
         }
 
+        songs = mergedSongs
         cleanPlaylistEntries()
         cleanPlaybackHistoryEntries()
         // Newly-added songs may resolve identities that were stashed when
@@ -1243,7 +1276,14 @@ final class MusicLibrary {
     /// filled, because SwiftUI doesn't always re-build NavigationDestination
     /// views from their parent's latest state.
     func song(id: String) -> Song? {
-        songs.first(where: { $0.id == id })
+        // Backfill asks this several times per result. Enabled songs are in the
+        // visible cache, making the common path O(1) instead of O(library size).
+        visibleSongByID[id] ?? songs.first(where: { $0.id == id })
+    }
+
+    /// Cached source slice used by SourcesView.
+    func playableSongs(forSourceID sourceID: String) -> [Song] {
+        visiblePlayableSongsBySourceID[sourceID] ?? []
     }
 
     /// Backward-compatible synchronous search. Keep it metadata-only so older
@@ -1911,9 +1951,10 @@ final class MusicLibrary {
     /// the artists/albums grouping is recomputed dozens of times a second).
     func replaceSongs(_ updatedSongs: [Song]) {
         guard !updatedSongs.isEmpty else { return }
+        var nextSongs = songs
         var idToIndex: [String: Int] = [:]
-        idToIndex.reserveCapacity(songs.count)
-        for (i, song) in songs.enumerated() { idToIndex[song.id] = i }
+        idToIndex.reserveCapacity(nextSongs.count)
+        for (i, song) in nextSongs.enumerated() { idToIndex[song.id] = i }
 
         var lastApplied: Song?
         var appliedIDs: Set<String> = []
@@ -1924,18 +1965,20 @@ final class MusicLibrary {
                 missedIDs.append(updated.id)
                 continue
             }
-            let oldCoverRef = songs[index].coverArtFileName
+            let oldCoverRef = nextSongs[index].coverArtFileName
             var s = updated
             MusicLibrary.fillDerivedIDs(&s)
-            songs[index] = s
+            nextSongs[index] = s
             lastApplied = s
             appliedIDs.insert(s.id)
             if oldCoverRef != s.coverArtFileName {
                 artworkChanges.append((s.id, oldCoverRef, s.coverArtFileName))
             }
         }
-        plog("📚 replaceSongs: requested=\(updatedSongs.count) applied=\(appliedIDs.count) missed=\(missedIDs.count) librarySongs=\(songs.count) missedSampleID=\(missedIDs.first ?? "-") sampleLibID=\(songs.first?.id ?? "-")")
+        plog("📚 replaceSongs: requested=\(updatedSongs.count) applied=\(appliedIDs.count) missed=\(missedIDs.count) librarySongs=\(nextSongs.count) missedSampleID=\(missedIDs.first ?? "-") sampleLibID=\(nextSongs.first?.id ?? "-")")
         guard let lastApplied else { return }
+        // One observable assignment per batch instead of one per song.
+        songs = nextSongs
         rebuildVisibleCache()
         lastReplacedSong = lastApplied
         lastReplacedSongIDs = appliedIDs
@@ -2149,7 +2192,7 @@ final class MusicLibrary {
     private func refreshPlaylistArtworkReferences() {
         for index in allPlaylists.indices {
             let firstSongID = playlistSongIDs[allPlaylists[index].id]?.first
-            allPlaylists[index].coverArtPath = songs.first(where: { $0.id == firstSongID })?.coverArtFileName
+            allPlaylists[index].coverArtPath = firstSongID.flatMap { song(id: $0) }?.coverArtFileName
         }
         sortPlaylists()
     }

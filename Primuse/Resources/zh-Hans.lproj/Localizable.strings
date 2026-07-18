@@ -1,5 +1,14 @@
 // MARK: - 标签栏
 "library_title" = "资料库";
+"library_quick_access" = "快捷收藏";
+"library_browse" = "浏览资料库";
+"library_edit_quick_access" = "编辑快捷收藏";
+"library_add_quick_access" = "添加快捷收藏";
+"library_quick_access_limit" = "最多可添加 5 个快捷收藏";
+"library_quick_access_selected" = "已选择";
+"library_quick_access_selected_empty" = "尚未选择快捷收藏";
+"library_quick_access_search_prompt" = "搜索专辑、艺术家或歌单";
+"playlists_count" = "个歌单";
 "sources_title" = "音乐源";
 "settings_title" = "设置";
 "search_title" = "搜索";
@@ -265,6 +274,9 @@
 "version" = "版本";
 "build" = "构建";
 "licenses" = "开源许可";
+"github_repository" = "GitHub 仓库";
+"github_feedback" = "功能建议与问题反馈";
+"github_feedback_hint" = "通过 GitHub Issues 反馈，开发者可以更快看到并跟进。也可以在 App Store 评论中留言，但评论传达可能存在延迟。";
 "open_source" = "开源库";
 "gapless_playback" = "无缝播放";
 "gapless_desc" = "曲目之间无缝衔接，消除静音间隙。";
@@ -896,9 +908,12 @@
 "home_section_top_artists" = "常听艺术家";
 "home_section_recently_added" = "最近添加";
 "home_section_continue_listening" = "继续听";
+"home_section_quick_access" = "快捷收藏";
+"home_section_playlists" = "我的歌单";
 "home_settings_title" = "首页";
 "home_settings_sections_label" = "显示板块";
-"home_settings_sections_footer" = "可以隐藏首页上不需要的板块。Hero 区域始终显示。";
+"home_settings_sections_footer" = "使用开关控制显示，拖动调整顺序。Hero 区域始终固定在顶部。";
+"home_settings_restore_default_order" = "恢复默认顺序";
 "similar_songs" = "相似歌曲";
 "start_song_radio" = "启动歌曲电台";
 "start_similar_mix" = "播放相似歌曲";

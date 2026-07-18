@@ -4,6 +4,15 @@
 // Tabs / Sections
 "home_title" = "Accueil";
 "library_title" = "Bibliothèque";
+"library_quick_access" = "Accès rapide";
+"library_browse" = "Parcourir la bibliothèque";
+"library_edit_quick_access" = "Modifier les accès rapides";
+"library_add_quick_access" = "Ajouter un raccourci";
+"library_quick_access_limit" = "Ajoutez jusqu’à 5 raccourcis";
+"library_quick_access_selected" = "Sélectionnés";
+"library_quick_access_selected_empty" = "Aucun raccourci sélectionné";
+"library_quick_access_search_prompt" = "Rechercher des albums, artistes ou playlists";
+"playlists_count" = "playlists";
 "search_title" = "Rechercher";
 "settings_title" = "Réglages";
 "tab_songs" = "Morceaux";
@@ -390,6 +399,9 @@
 "version" = "Version";
 "build" = "Build";
 "licenses" = "Licences open source";
+"github_repository" = "Dépôt GitHub";
+"github_feedback" = "Suggestions et problèmes";
+"github_feedback_hint" = "GitHub Issues permet au développeur de voir et de suivre les retours plus rapidement. Vous pouvez aussi laisser un avis sur l’App Store, mais sa transmission peut prendre plus de temps.";
 "open_source" = "Bibliothèques open source";
 "gapless_playback" = "Lecture sans interruption";
 "gapless_desc" = "Enchaînez les morceaux en continu, sans silence entre eux.";
@@ -942,9 +954,12 @@
 "home_section_top_artists" = "Écoutés fréquemment";
 "home_section_recently_added" = "Ajoutés récemment";
 "home_section_continue_listening" = "Reprendre l'écoute";
+"home_section_quick_access" = "Accès rapide";
+"home_section_playlists" = "Mes playlists";
 "home_settings_title" = "Accueil";
 "home_settings_sections_label" = "Sections visibles";
-"home_settings_sections_footer" = "Masquez les sections que vous n'utilisez pas. La zone Hero est toujours affichée.";
+"home_settings_sections_footer" = "Affichez les sections et faites-les glisser pour les réorganiser. La zone Hero reste en haut.";
+"home_settings_restore_default_order" = "Rétablir l’ordre par défaut";
 "start_song_radio" = "Lancer la radio du morceau";
 "start_similar_mix" = "Lancer un mix similaire";
 "similar_songs_empty" = "Aucun morceau similaire pour l'instant";

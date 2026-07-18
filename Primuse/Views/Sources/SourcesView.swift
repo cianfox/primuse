@@ -73,10 +73,22 @@ private struct SourceCacheProgressState {
     }
 }
 
+/// Standalone sources root for callers that don't already own navigation.
 struct SourcesView: View {
+    var body: some View {
+        NavigationStack {
+            SourcesContentView()
+        }
+    }
+}
+
+/// Sources page content. Push this from an existing NavigationStack to avoid
+/// nested stacks resetting the back button or immediately dismissing the page.
+struct SourcesContentView: View {
     @Environment(SourceManager.self) private var sourceManager
     @Environment(SourcesStore.self) private var sourceStore
     @Environment(MusicLibrary.self) private var library
+    @Environment(AppleMusicLibraryService.self) private var appleMusicLibrary
     @Environment(ScanService.self) private var scanService
     @Environment(MusicScraperService.self) private var scraperService
     @Environment(MetadataBackfillService.self) private var backfill
@@ -105,11 +117,10 @@ struct SourcesView: View {
     #endif
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if sources.isEmpty { emptyView }
-                else { sourceList }
-            }
+        Group {
+            if sources.isEmpty { emptyView }
+            else { sourceList }
+        }
             .navigationTitle("sources_title")
             .toolbarTitleDisplayMode(.inlineLarge)
             .overlay(alignment: .bottom) {
@@ -193,7 +204,6 @@ struct SourcesView: View {
             .onReceive(NotificationCenter.default.publisher(for: CloudDirectoryNameStore.didChangeNotification)) { _ in
                 cloudDirectoryNameRefreshID = UUID()
             }
-        }
     }
 
     private var emptyView: some View {
@@ -217,10 +227,11 @@ struct SourcesView: View {
                 }
             }
         }
-        .task(id: sources.map { "\($0.id):\($0.songCount)" }.joined(separator: ",")) {
+        .task(id: sources.map(\.id).joined(separator: ",")) {
             // 后台逐源算磁盘占用, 一次性重建字典(顺带清掉已删源的残留键)。
-            // diskUsage 内部走后台枚举, 不卡主线程。id 纳入 songCount, 让导入 /
-            // 扫描改变歌曲数后重算(下载缓存增长不改 songCount, 属已知最小实现)。
+            // diskUsage 内部走后台枚举, 不卡主线程。只让源列表结构变化触发；
+            // 扫描期间 songCount 会高频变化，把它放进 task id 会反复取消并
+            // 重启整轮磁盘枚举，正是大库来源页滚动卡顿的一部分。
             var sizes: [String: Int64] = [:]
             for source in sources {
                 let size = await sourceManager.diskUsage(for: source)
@@ -366,7 +377,11 @@ struct SourcesView: View {
                 }
             }
 
-            if let progress = sourceCacheProgress(for: source, songs: sourcePlayableSongs) {
+            if let progress = sourceCacheProgress(
+                for: source,
+                songs: sourcePlayableSongs,
+                hasDownloads: hasSourceDownloads
+            ) {
                 sourceCacheProgressView(progress)
             }
 
@@ -862,9 +877,7 @@ struct SourcesView: View {
     }
 
     private func playableSongs(for source: MusicSource) -> [Song] {
-        library.visibleSongs
-            .filter { $0.sourceID == source.id }
-            .filteredPlayable()
+        library.playableSongs(forSourceID: source.id)
     }
 
     /// Source IDs that currently have at least one song being downloaded for
@@ -881,12 +894,6 @@ struct SourcesView: View {
             }
         }
         return ids
-    }
-
-    /// In-memory only `.downloading` check — mirrors `downloadingSourceIDs`'s
-    /// reasoning so progress accounting can gate on it without a disk stat.
-    private func isDownloading(_ song: Song) -> Bool {
-        sourceManager.offlineAudioSnapshots[song.id]?.isDownloading ?? false
     }
 
     private func presentCacheConfirmation(for source: MusicSource, songs: [Song]) {
@@ -949,14 +956,18 @@ struct SourcesView: View {
         }
     }
 
-    private func sourceCacheProgress(for source: MusicSource, songs: [Song]) -> SourceCacheProgressState? {
+    private func sourceCacheProgress(
+        for source: MusicSource,
+        songs: [Song],
+        hasDownloads: Bool
+    ) -> SourceCacheProgressState? {
         if let run = activeCacheRun, run.sourceID == source.id {
             return sourceCacheProgress(songs: run.songs, estimate: run.estimate)
         }
 
-        guard songs.contains(where: { isDownloading($0) }) else {
-            return nil
-        }
+        // The caller already derived this from the small observed in-memory
+        // download dictionary. Avoid scanning every song in the source again.
+        guard hasDownloads else { return nil }
 
         return sourceCacheProgress(songs: songs, estimate: sourceCacheEstimate(for: songs))
     }
@@ -1204,6 +1215,13 @@ struct SourcesView: View {
         }
         updateSource(current.id) { $0.isEnabled = enabled }
         library.updateDisabledSourceIDs(disabledSourceIDs)
+        if current.id == AppleMusicLibraryService.systemSourceID {
+            if enabled {
+                appleMusicLibrary.sync()
+            } else {
+                appleMusicLibrary.cancel()
+            }
+        }
         if enabled {
             backfill.start()
         } else {

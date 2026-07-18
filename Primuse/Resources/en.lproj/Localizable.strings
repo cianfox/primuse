@@ -1,5 +1,14 @@
 // MARK: - Tabs
 "library_title" = "Library";
+"library_quick_access" = "Quick Access";
+"library_browse" = "Browse Library";
+"library_edit_quick_access" = "Edit Quick Access";
+"library_add_quick_access" = "Add Shortcut";
+"library_quick_access_limit" = "Add up to 5 shortcuts";
+"library_quick_access_selected" = "Selected";
+"library_quick_access_selected_empty" = "No shortcuts selected";
+"library_quick_access_search_prompt" = "Search albums, artists, or playlists";
+"playlists_count" = "playlists";
 "sources_title" = "Sources";
 "settings_title" = "Settings";
 "search_title" = "Search";
@@ -265,6 +274,9 @@
 "version" = "Version";
 "build" = "Build";
 "licenses" = "Open Source Licenses";
+"github_repository" = "GitHub Repository";
+"github_feedback" = "Suggestions & Issue Reports";
+"github_feedback_hint" = "GitHub Issues helps the developer see and follow up on feedback sooner. You can also leave feedback in an App Store review, though it may take longer to reach the developer.";
 "open_source" = "Open Source Libraries";
 "gapless_playback" = "Gapless Playback";
 "gapless_desc" = "Seamlessly transition between tracks without any silence gap.";
@@ -895,9 +907,12 @@
 "home_section_top_artists" = "Frequently Listened";
 "home_section_recently_added" = "Recently Added";
 "home_section_continue_listening" = "Continue Listening";
+"home_section_quick_access" = "Quick Access";
+"home_section_playlists" = "My Playlists";
 "home_settings_title" = "Home";
 "home_settings_sections_label" = "Visible sections";
-"home_settings_sections_footer" = "Hide sections you don't use. The Hero area is always shown.";
+"home_settings_sections_footer" = "Use the switches to show sections and drag to reorder them. The Hero area stays at the top.";
+"home_settings_restore_default_order" = "Restore Default Order";
 "similar_songs" = "Similar Songs";
 "start_song_radio" = "Start Song Radio";
 "start_similar_mix" = "Start Similar Mix";

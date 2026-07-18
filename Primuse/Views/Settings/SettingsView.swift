@@ -14,7 +14,7 @@ struct SettingsView: View {
             List {
                 Section("library") {
                     NavigationLink {
-                        SourcesView()
+                        SourcesContentView()
                     } label: {
                         Label("manage_sources", systemImage: "externaldrive.connected.to.line.below")
                     }
@@ -155,7 +155,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("about") {
+                Section {
                     HStack {
                         Label("version", systemImage: "number")
                         Spacer()
@@ -183,6 +183,18 @@ struct SettingsView: View {
                     } label: {
                         Label("licenses", systemImage: "doc.text")
                     }
+
+                    Link(destination: URL(string: "https://github.com/chenqi92/primuse")!) {
+                        Label("github_repository", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+
+                    Link(destination: URL(string: "https://github.com/chenqi92/primuse/issues/new/choose")!) {
+                        Label("github_feedback", systemImage: "exclamationmark.bubble")
+                    }
+                } header: {
+                    Text("about")
+                } footer: {
+                    Text("github_feedback_hint")
                 }
             }
             .navigationTitle("settings_title")

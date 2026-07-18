@@ -46,9 +46,6 @@ struct ArtistListView: View {
                 }
             }
             .listStyle(.plain)
-            .searchable(text: $searchText,
-                        placement: .toolbar,
-                        prompt: Text("search_artists_prompt"))
         }
     }
 

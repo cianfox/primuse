@@ -4,6 +4,15 @@
 // Tabs / Sections
 "home_title" = "홈";
 "library_title" = "라이브러리";
+"library_quick_access" = "빠른 접근";
+"library_browse" = "라이브러리 둘러보기";
+"library_edit_quick_access" = "빠른 접근 편집";
+"library_add_quick_access" = "바로가기 추가";
+"library_quick_access_limit" = "바로가기를 최대 5개 추가할 수 있습니다";
+"library_quick_access_selected" = "선택됨";
+"library_quick_access_selected_empty" = "선택한 바로가기가 없습니다";
+"library_quick_access_search_prompt" = "앨범, 아티스트 또는 플레이리스트 검색";
+"playlists_count" = "개의 플레이리스트";
 "search_title" = "검색";
 "settings_title" = "설정";
 "tab_songs" = "곡";
@@ -390,6 +399,9 @@
 "version" = "버전";
 "build" = "빌드";
 "licenses" = "오픈 소스 라이선스";
+"github_repository" = "GitHub 저장소";
+"github_feedback" = "기능 제안 및 문제 신고";
+"github_feedback_hint" = "GitHub Issues로 남기면 개발자가 더 빨리 확인하고 후속 조치를 할 수 있습니다. App Store 리뷰로도 의견을 남길 수 있지만 전달이 지연될 수 있습니다.";
 "open_source" = "오픈 소스 라이브러리";
 "gapless_playback" = "갭리스 재생";
 "gapless_desc" = "무음 구간 없이 트랙 사이를 자연스럽게 전환합니다.";
@@ -942,9 +954,12 @@
 "home_section_top_artists" = "자주 듣는 아티스트";
 "home_section_recently_added" = "최근 추가됨";
 "home_section_continue_listening" = "이어서 듣기";
+"home_section_quick_access" = "빠른 접근";
+"home_section_playlists" = "내 플레이리스트";
 "home_settings_title" = "홈";
 "home_settings_sections_label" = "표시할 섹션";
-"home_settings_sections_footer" = "사용하지 않는 섹션을 숨길 수 있습니다. Hero 영역은 항상 표시됩니다.";
+"home_settings_sections_footer" = "스위치로 표시 여부를 정하고 드래그하여 순서를 변경합니다. Hero 영역은 맨 위에 고정됩니다.";
+"home_settings_restore_default_order" = "기본 순서 복원";
 "start_song_radio" = "곡 라디오 시작";
 "start_similar_mix" = "비슷한 곡 믹스 시작";
 "similar_songs_empty" = "아직 비슷한 곡이 없습니다";

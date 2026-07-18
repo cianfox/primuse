@@ -4,6 +4,8 @@ import PrimuseKit
 enum LibrarySection: String, CaseIterable, Hashable {
     case playlists, artists, albums, songs
 
+    static let browserOrder: [LibrarySection] = [.songs, .albums, .artists, .playlists]
+
     var title: LocalizedStringKey {
         switch self {
         case .playlists: return "tab_playlists"
@@ -38,31 +40,70 @@ enum LibraryDeepLink: Equatable, Sendable {
     case playlist(Playlist)
 }
 
+enum LibraryPinKind: String, Codable {
+    case album, artist, playlist
+}
+
+struct LibraryPinReference: Codable, Hashable, Identifiable {
+    let kind: LibraryPinKind
+    let itemID: String
+
+    var id: String { "\(kind.rawValue):\(itemID)" }
+}
+
+enum LibraryPinStorage {
+    static let defaultsKey = "primuse.library.quickAccess.v1"
+    static let maximumCount = 5
+
+    static func decode(_ rawValue: String) -> [LibraryPinReference] {
+        guard let data = rawValue.data(using: .utf8),
+              let pins = try? JSONDecoder().decode([LibraryPinReference].self, from: data) else {
+            return []
+        }
+        return Array(pins.prefix(maximumCount))
+    }
+
+    static func encode(_ pins: [LibraryPinReference]) -> String {
+        guard let data = try? JSONEncoder().encode(Array(pins.prefix(maximumCount))) else {
+            return ""
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 struct LibraryView: View {
-    @Environment(AudioPlayerService.self) private var player
     @Environment(MusicLibrary.self) private var library
-    @Environment(SourcesStore.self) private var sourcesStore
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Binding private var deepLink: LibraryDeepLink?
     @State private var navigationPath = NavigationPath()
-    /// 重复歌组数 ── 后台算好回填, 不在 body 里同步跑 (大库会卡 1-3s)。
-    @State private var duplicateGroupsCount = 0
+    @State private var showQuickAccessEditor = false
+    @AppStorage(LibraryPinStorage.defaultsKey)
+    private var quickAccessRawValue = ""
 
     private var songs: [Song] { library.visibleSongs }
     private var albums: [Album] { library.visibleAlbums }
     private var artists: [Artist] { library.visibleArtists }
-    private var playlists: [Playlist] { library.playlists }
-    private var hasContent: Bool { !songs.isEmpty }
-
-    /// 「我喜欢的」系统歌单 ── 资料库置顶快捷入口指向它。歌单可能还没建出来
-    /// (用户一次都没点过 heart), 这里给个同 ID 的占位; PlaylistDetailView 全程按
-    /// id 取实时数据, 进去照样能点喜欢、收到后续 toggle。
+    private var regularPlaylists: [Playlist] {
+        library.playlists.filter { $0.id != MusicLibrary.likedSongsPlaylistID }
+    }
+    private var hasContent: Bool {
+        !songs.isEmpty
+            || !albums.isEmpty
+            || !artists.isEmpty
+            || !regularPlaylists.isEmpty
+            || !library.smartPlaylists.isEmpty
+    }
+    private var storedPins: [LibraryPinReference] {
+        LibraryPinStorage.decode(quickAccessRawValue)
+    }
+    private var visiblePins: [LibraryPinReference] {
+        storedPins.filter(pinExists)
+    }
     private var likedPlaylist: Playlist {
         library.playlists.first(where: { $0.id == MusicLibrary.likedSongsPlaylistID })
-            ?? Playlist(id: MusicLibrary.likedSongsPlaylistID, name: String(localized: "playlist_liked_name"))
-    }
-    private var likedSongsCount: Int {
-        library.songs(forPlaylist: MusicLibrary.likedSongsPlaylistID).count
+            ?? Playlist(
+                id: MusicLibrary.likedSongsPlaylistID,
+                name: String(localized: "playlist_liked_name")
+            )
     }
 
     init(deepLink: Binding<LibraryDeepLink?> = .constant(nil)) {
@@ -71,371 +112,430 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
-            List {
-                // 主入口 ── 大行 List 风格 (类似 Apple Music 资料库主页)。
-                // 「我喜欢的」作为固定快捷入口置顶, 它底层就是 likedSongsPlaylistID
-                // 那个 system 歌单, PlaylistListView 会把它从「歌单」列表过滤掉, 避免
-                // 同一个东西出现两次 (跟 macOS 侧栏一致)。下面 4 个分类按 内容窄→宽
-                // 排序 (歌单 < 艺人 < 专辑 < 全部歌曲), 每行带数量徽标方便扫读。
-                Section {
-                    Button {
-                        navigationPath.append(likedPlaylist)
-                    } label: {
-                        libraryEntryRowLabel(
-                            icon: "heart.fill",
-                            color: .pink,
-                            title: Text("sidebar_liked_songs"),
-                            count: likedSongsCount
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    ForEach(LibrarySection.allCases, id: \.self) { section in
-                        Button {
-                            navigationPath.append(section)
-                        } label: {
-                            libraryEntryRowLabel(
-                                icon: section.icon,
-                                color: section.color,
-                                title: Text(section.title),
-                                count: count(for: section)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
+            Group {
                 if hasContent {
-                    // 最近添加 ── 保留, 在 List 里嵌横向 ScrollView 比上一版
-                    // 嵌 LazyVGrid 更轻; 看完直接 see_all 进 songs。
-                    Section {
-                        NavigationLink(value: LibrarySection.songs) {
-                            HStack {
-                                Text("recently_added")
-                                    .font(.headline)
-                                Spacer()
-                                Text("see_all")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(recentItems) { item in
-                                    RecentItemCard(item: item)
-                                        .frame(width: 130)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            if let song = item.song {
-                                                playSong(song)
-                                            } else if let album = item.album {
-                                                playAlbum(album)
-                                            }
-                                        }
-                                }
-                            }
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 4)
-                        }
-                    }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-
-                    // 听歌统计 ── 本周时长 + 歌数 + top 3 艺人小封面, 一眼看到
-                    // 自己在听什么。点击 row 进 ListeningStatsView 详细页。
-                    if !listenedThisWeek.isEmpty {
-                        Section {
-                            NavigationLink {
-                                ListeningStatsView()
-                            } label: {
-                                listeningStatsSummary
-                            }
-                        } header: {
-                            Text("library_stats_header")
-                        }
-                    }
-
-                    // 待整理 ── 健康度指示, 仅有数据时显示, 没东西整理就不出现
-                    // 避免噪音。点击直接进对应处理页。
-                    if duplicateGroupsCount > 0 || trashItemsCount > 0 {
-                        Section {
-                            if duplicateGroupsCount > 0 {
-                                NavigationLink {
-                                    DuplicateSongsView()
-                                } label: {
-                                    cleanupRow(
-                                        icon: "square.stack.3d.up.badge.automatic",
-                                        color: .orange,
-                                        title: Text("library_cleanup_dup"),
-                                        detail: String(format: String(localized: "library_cleanup_dup_count_format"),
-                                                       duplicateGroupsCount)
-                                    )
-                                }
-                            }
-                            if trashItemsCount > 0 {
-                                NavigationLink {
-                                    RecentlyDeletedView()
-                                } label: {
-                                    cleanupRow(
-                                        icon: "trash",
-                                        color: .gray,
-                                        title: Text("library_cleanup_trash"),
-                                        detail: String(format: String(localized: "library_cleanup_trash_count_format"),
-                                                       trashItemsCount)
-                                    )
-                                }
-                            }
-                        } header: {
-                            Text("library_cleanup_header")
-                        }
-                    }
+                    libraryHub
                 } else {
-                    // 空态 ── 引导用户去加第一个 source
-                    Section {
-                        VStack(spacing: 16) {
-                            Image(systemName: "music.note.list")
-                                .font(.system(size: 40))
-                                .foregroundStyle(.tertiary)
-
-                            Text("welcome_title")
-                                .font(.headline)
-                            Text("welcome_desc")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-
-                            NavigationLink {
-                                SourcesView()
-                            } label: {
-                                Text("manage_sources").fontWeight(.medium)
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 20)
-                    }
+                    emptyLibraryState
                 }
             }
-            .listSectionSpacing(.compact)
             .navigationTitle("library_title")
             .toolbarTitleDisplayMode(.inlineLarge)
             .navigationDestination(for: LibrarySection.self) { section in
-                switch section {
-                case .albums: AlbumGridView().navigationTitle(section.title)
-                case .artists: ArtistListView(artists: artists).navigationTitle(section.title)
-                case .songs: SongListView(songs: songs).navigationTitle(section.title)
-                case .playlists: PlaylistListView().navigationTitle(section.title)
-                }
+                destination(for: section)
+                    .navigationTitle(section.title)
+                    .toolbarTitleDisplayMode(.inline)
             }
             .navigationDestination(for: Album.self) { AlbumDetailView(album: $0) }
             .navigationDestination(for: Artist.self) { ArtistDetailView(artist: $0) }
             .navigationDestination(for: Playlist.self) { PlaylistDetailView(playlist: $0) }
-            .onAppear { applyDeepLink(deepLink) }
-            .onChange(of: deepLink) { _, newValue in applyDeepLink(newValue) }
-            .task(id: library.songCount) { await recomputeDuplicateGroups() }
-        }
-    }
-
-    /// 重复歌检测丢到后台跑, 再回主线程更新徽标。songCount 变 (扫描/回填)
-    /// 时由 `.task(id:)` 重新触发, 主线程 body 不再同步扫全库。
-    private func recomputeDuplicateGroups() async {
-        let snapshot = songs
-        let count = await Task.detached(priority: .utility) {
-            DuplicateDetector.detect(in: snapshot).count
-        }.value
-        guard !Task.isCancelled else { return }
-        duplicateGroupsCount = count
-    }
-
-    // MARK: - Recent Items
-
-    private var recentItems: [RecentItem] {
-        if !albums.isEmpty {
-            return library.recentlyAddedAlbums(limit: 6).map { album in
-                let albumSongs = library.songs(forAlbum: album.id)
-                let firstSong = albumSongs.first { $0.coverArtFileName?.isEmpty == false } ?? albumSongs.first
-                return RecentItem(
-                    id: album.id,
-                    title: album.title,
-                    subtitle: album.artistName ?? "",
-                    coverFileName: firstSong?.coverArtFileName,
-                    songID: firstSong?.id,
-                    sourceID: firstSong?.sourceID,
-                    filePath: firstSong?.filePath,
-                    fileFormat: firstSong?.fileFormat,
-                    song: nil,
-                    album: album
-                )
+            .onAppear {
+                sanitizeStoredPins()
+                applyDeepLink(deepLink)
+            }
+            .onChange(of: deepLink) { _, newValue in
+                applyDeepLink(newValue)
+            }
+            .sheet(isPresented: $showQuickAccessEditor) {
+                LibraryQuickAccessEditor(pinsRawValue: $quickAccessRawValue)
             }
         }
-        return songs.sorted { $0.dateAdded > $1.dateAdded }.prefix(6).map { song in
-            RecentItem(
-                id: song.id,
-                title: song.title,
-                subtitle: song.artistName ?? "",
-                coverFileName: song.coverArtFileName,
-                songID: song.id,
-                sourceID: song.sourceID,
-                filePath: song.filePath,
-                fileFormat: song.fileFormat,
-                song: song,
-                album: nil
-            )
+    }
+
+    private var libraryHub: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                quickAccessSection
+                browseLibrarySection
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 32)
         }
     }
 
-    // MARK: - Helpers
+    private var quickAccessSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("library_quick_access") {
+                Button("edit") {
+                    showQuickAccessEditor = true
+                }
+                .font(.subheadline.weight(.medium))
+            }
 
-    private func statLabel(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(.headline).monospacedDigit()
-            Text(label).font(.caption2).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    NavigationLink(value: likedPlaylist) {
+                        quickAccessLabel(
+                            title: String(localized: "sidebar_liked_songs"),
+                            subtitle: countText(
+                                library.songs(forPlaylist: MusicLibrary.likedSongsPlaylistID).count,
+                                unitKey: "songs_count"
+                            )
+                        ) {
+                            likedArtwork
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(visiblePins) { pin in
+                        pinnedItemCard(pin)
+                    }
+
+                    Button {
+                        showQuickAccessEditor = true
+                    } label: {
+                        addQuickAccessLabel
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+            }
+            .contentMargins(.horizontal, 0, for: .scrollContent)
         }
-        .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Entry row helpers
+    private var browseLibrarySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("library_browse")
 
-    private func count(for section: LibrarySection) -> Int {
-        switch section {
-        case .playlists: return playlists.count
-        case .artists: return artists.count
-        case .albums: return albums.count
-        case .songs: return songs.count
+            LazyVStack(spacing: 10) {
+                ForEach(LibrarySection.browserOrder, id: \.self) { section in
+                    NavigationLink(value: section) {
+                        libraryCategoryRow(section)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
         }
     }
 
-    /// 主入口大行 ── label + 右侧数量徽标 + chevron。
-    @ViewBuilder
-    private func libraryEntryRowLabel(
-        icon: String,
-        color: Color,
-        title: Text,
-        count: Int
+    private func sectionHeader<Trailing: View>(
+        _ titleKey: LocalizedStringKey,
+        @ViewBuilder trailing: () -> Trailing
     ) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(color)
-                )
-            title
-                .font(.body)
+        HStack {
+            Text(titleKey)
+                .font(.title3.weight(.bold))
             Spacer()
-            Text("\(count)")
-                .font(.subheadline)
+            trailing()
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func sectionHeader(_ titleKey: LocalizedStringKey) -> some View {
+        sectionHeader(titleKey) {
+            EmptyView()
+        }
+    }
+
+    private var likedArtwork: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [.pink, .red],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            Image(systemName: "heart.fill")
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 116, height: 116)
+        .shadow(color: .pink.opacity(0.18), radius: 8, y: 4)
+    }
+
+    private func quickAccessLabel<Artwork: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder artwork: () -> Artwork
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            artwork()
+                .frame(width: 116, height: 116)
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(subtitle)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .frame(width: 116, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var addQuickAccessLabel: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.secondary.opacity(0.07))
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(
+                        Color.secondary.opacity(0.32),
+                        style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                    )
+                Image(systemName: "plus")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 116, height: 116)
+
+            Text("library_add_quick_access")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text("\(visiblePins.count)/\(LibraryPinStorage.maximumCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 116, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func pinnedItemCard(_ pin: LibraryPinReference) -> some View {
+        switch pin.kind {
+        case .album:
+            if let album = albums.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: album) {
+                    quickAccessLabel(
+                        title: album.title,
+                        subtitle: album.artistName ?? String(localized: "unknown_artist")
+                    ) {
+                        CachedArtworkView(
+                            albumID: album.id,
+                            albumTitle: album.title,
+                            artistName: album.artistName,
+                            size: 116,
+                            cornerRadius: 16
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        case .artist:
+            if let artist = artists.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: artist) {
+                    quickAccessLabel(
+                        title: artist.name,
+                        subtitle: countText(artist.albumCount, unitKey: "albums_count")
+                    ) {
+                        CachedArtworkView(
+                            artistID: artist.id,
+                            artistName: artist.name,
+                            size: 116,
+                            cornerRadius: 58
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        case .playlist:
+            if let playlist = regularPlaylists.first(where: { $0.id == pin.itemID }) {
+                NavigationLink(value: playlist) {
+                    quickAccessLabel(
+                        title: playlist.name,
+                        subtitle: countText(
+                            library.songs(forPlaylist: playlist.id).count,
+                            unitKey: "songs_count"
+                        )
+                    ) {
+                        playlistArtwork(playlist, size: 116, cornerRadius: 16)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func libraryCategoryRow(_ section: LibrarySection) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: section.icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(section.color.gradient, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(section.title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(categoryCountText(section))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+            categoryPreview(section)
+
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
-        .contentShape(Rectangle())
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Listening stats section
-
-    /// 本周 (近 7 天) 的播放历史; 给主页 summary card 用, 不到 7 天的新用户
-    /// 自然显示为空, summary section 走条件渲染 (entries 空就整段不显示)。
-    private var listenedThisWeek: [PlayHistoryStore.Entry] {
-        PlayHistoryStore.shared.entries(in: .week)
-    }
-
-    private var listeningStatsSummary: some View {
-        let entries = listenedThisWeek
-        let totalSec = entries.reduce(0.0) { $0 + $1.listenedSec }
-        let totalHours = Int(totalSec / 3600)
-        let totalMin = Int((totalSec.truncatingRemainder(dividingBy: 3600)) / 60)
-        let topArtists = PlayHistoryStore.shared.topArtists(in: .week, limit: 3)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if totalHours > 0 {
-                    Text("\(totalHours)").font(.title2.weight(.semibold)).monospacedDigit()
-                    Text("h").font(.subheadline).foregroundStyle(.secondary)
-                }
-                Text("\(totalMin)").font(.title2.weight(.semibold)).monospacedDigit()
-                Text("min").font(.subheadline).foregroundStyle(.secondary)
-                Text("·").foregroundStyle(.tertiary)
-                Text("\(entries.count)").font(.title3.weight(.medium)).monospacedDigit()
-                Text("library_stats_plays_suffix")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            if !topArtists.isEmpty {
-                HStack(spacing: 8) {
-                    Text("library_stats_top_artists_label")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(topArtists) { item in
-                        Text(item.title)
-                            .font(.caption.weight(.medium))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color.secondary.opacity(0.12))
-                            )
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 72)
+        .background(
+            Color.secondary.opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.secondary.opacity(0.1), lineWidth: 0.5)
         }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Cleanup section
-
-    /// 待整理: 重复歌组数 (后台算, 见 `duplicateGroupsCount` @State) + 回收站项数。
-    private var trashItemsCount: Int {
-        library.recentlyDeletedPlaylists.count
-            + library.recentlyDeletedSmartPlaylists.count
-            + sourcesStore.recentlyDeletedSources.count
-            + ScraperConfigStore.shared.recentlyDeletedConfigs.count
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     @ViewBuilder
-    private func cleanupRow(
-        icon: String,
-        color: Color,
-        title: Text,
-        detail: String
-    ) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(color)
+    private func categoryPreview(_ section: LibrarySection) -> some View {
+        switch section {
+        case .songs:
+            overlappingPreview(Array(songs.prefix(3))) { song in
+                CachedArtworkView(
+                    coverRef: song.coverArtFileName,
+                    songID: song.id,
+                    size: 36,
+                    cornerRadius: 7,
+                    sourceID: song.sourceID,
+                    filePath: song.filePath,
+                    fileFormat: song.fileFormat
                 )
-            VStack(alignment: .leading, spacing: 2) {
-                title.font(.body)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
+        case .albums:
+            overlappingPreview(Array(albums.prefix(3))) { album in
+                CachedArtworkView(
+                    albumID: album.id,
+                    albumTitle: album.title,
+                    artistName: album.artistName,
+                    size: 36,
+                    cornerRadius: 7
+                )
+            }
+        case .artists:
+            overlappingPreview(Array(artists.prefix(3))) { artist in
+                CachedArtworkView(
+                    artistID: artist.id,
+                    artistName: artist.name,
+                    size: 36,
+                    cornerRadius: 18
+                )
+            }
+        case .playlists:
+            overlappingPreview(Array(regularPlaylists.prefix(3))) { playlist in
+                playlistArtwork(playlist, size: 36, cornerRadius: 7)
+            }
         }
-        .contentShape(Rectangle())
-        .padding(.vertical, 2)
     }
 
-    private func playAlbum(_ album: Album) {
-        let queue = library.songs(forAlbum: album.id).filteredPlayable()
-        guard let first = queue.first else { return }
-        player.setQueue(queue, startAt: 0)
-        Task { await player.play(song: first) }
+    private func overlappingPreview<Item: Identifiable, Content: View>(
+        _ items: [Item],
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        HStack(spacing: -10) {
+            if items.isEmpty {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.secondary.opacity(0.1))
+                    .frame(width: 36, height: 36)
+            } else {
+                ForEach(items) { item in
+                    content(item)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        }
+                }
+            }
+        }
+        .frame(width: 68, alignment: .trailing)
     }
 
-    private func playSong(_ song: Song) {
-        let queue = songs.filteredPlayable()
-        guard let index = queue.firstIndex(where: { $0.id == song.id }) else { return }
-        player.setQueue(queue, startAt: index)
-        Task { await player.play(song: song) }
+    @ViewBuilder
+    private func playlistArtwork(_ playlist: Playlist, size: CGFloat, cornerRadius: CGFloat) -> some View {
+        if let song = library.songs(forPlaylist: playlist.id).first {
+            CachedArtworkView(
+                coverRef: song.coverArtFileName,
+                songID: song.id,
+                size: size,
+                cornerRadius: cornerRadius,
+                sourceID: song.sourceID,
+                filePath: song.filePath,
+                fileFormat: song.fileFormat
+            )
+        } else {
+            StoredCoverArtView(fileName: playlist.coverArtPath, size: size, cornerRadius: cornerRadius)
+        }
+    }
+
+    private func categoryCountText(_ section: LibrarySection) -> String {
+        switch section {
+        case .songs:
+            return countText(songs.count, unitKey: "songs_count")
+        case .albums:
+            return countText(albums.count, unitKey: "albums_count")
+        case .artists:
+            return countText(artists.count, unitKey: "artists_count")
+        case .playlists:
+            return countText(
+                regularPlaylists.count + library.smartPlaylists.count,
+                unitKey: "playlists_count"
+            )
+        }
+    }
+
+    private func countText(_ count: Int, unitKey: String.LocalizationValue) -> String {
+        "\(count.formatted()) \(String(localized: unitKey))"
+    }
+
+    @ViewBuilder
+    private func destination(for section: LibrarySection) -> some View {
+        switch section {
+        case .songs:
+            SongListView(songs: songs)
+        case .albums:
+            AlbumGridView()
+        case .artists:
+            ArtistListView(artists: artists)
+        case .playlists:
+            PlaylistListView()
+        }
+    }
+
+    private var emptyLibraryState: some View {
+        ContentUnavailableView {
+            Label("welcome_title", systemImage: "music.note.list")
+        } description: {
+            Text("welcome_desc")
+        } actions: {
+            NavigationLink {
+                SourcesContentView()
+            } label: {
+                Text("manage_sources")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func pinExists(_ pin: LibraryPinReference) -> Bool {
+        switch pin.kind {
+        case .album:
+            return albums.contains { $0.id == pin.itemID }
+        case .artist:
+            return artists.contains { $0.id == pin.itemID }
+        case .playlist:
+            return regularPlaylists.contains { $0.id == pin.itemID }
+        }
+    }
+
+    private func sanitizeStoredPins() {
+        let sanitized = storedPins.filter(pinExists)
+        guard sanitized != storedPins else { return }
+        quickAccessRawValue = LibraryPinStorage.encode(sanitized)
     }
 
     private func applyDeepLink(_ link: LibraryDeepLink?) {
@@ -443,13 +543,10 @@ struct LibraryView: View {
         var path = NavigationPath()
         switch link {
         case .album(let album):
-            path.append(LibrarySection.albums)
             path.append(album)
         case .artist(let artist):
-            path.append(LibrarySection.artists)
             path.append(artist)
         case .playlist(let playlist):
-            path.append(LibrarySection.playlists)
             path.append(playlist)
         }
         navigationPath = path
@@ -457,46 +554,299 @@ struct LibraryView: View {
     }
 }
 
-// MARK: - Recent Item
+private struct LibraryQuickAccessEditor: View {
+    @Environment(MusicLibrary.self) private var library
+    @Environment(\.dismiss) private var dismiss
+    @Binding var pinsRawValue: String
+    @State private var searchText = ""
 
-struct RecentItem: Identifiable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let coverFileName: String?
-    let songID: String?
-    let sourceID: String?
-    let filePath: String?
-    let fileFormat: AudioFormat?
-    let song: Song?
-    let album: Album?
-}
-
-struct RecentItemCard: View {
-    let item: RecentItem
+    private var pins: [LibraryPinReference] {
+        LibraryPinStorage.decode(pinsRawValue)
+    }
+    private var selectedPins: [LibraryPinReference] {
+        pins.filter(pinMatchesSearch)
+    }
+    private var albums: [Album] {
+        let matching = library.visibleAlbums.filter {
+            let pin = LibraryPinReference(kind: .album, itemID: $0.id)
+            return !pins.contains(pin)
+                && (
+                    searchText.isEmpty
+                        || $0.title.localizedCaseInsensitiveContains(searchText)
+                        || ($0.artistName?.localizedCaseInsensitiveContains(searchText) ?? false)
+                )
+        }
+        return matching.sorted {
+            return $0.title.localizedCompare($1.title) == .orderedAscending
+        }
+    }
+    private var artists: [Artist] {
+        let matching = library.visibleArtists.filter {
+            let pin = LibraryPinReference(kind: .artist, itemID: $0.id)
+            return !pins.contains(pin)
+                && (searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText))
+        }
+        return matching.sorted {
+            return $0.name.localizedCompare($1.name) == .orderedAscending
+        }
+    }
+    private var playlists: [Playlist] {
+        let matching = library.playlists
+            .filter { $0.id != MusicLibrary.likedSongsPlaylistID }
+            .filter {
+                let pin = LibraryPinReference(kind: .playlist, itemID: $0.id)
+                return !pins.contains(pin)
+                    && (searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText))
+            }
+        return matching.sorted {
+            return $0.updatedAt > $1.updatedAt
+        }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            CachedArtworkView(coverRef: item.coverFileName, songID: item.songID ?? "", cornerRadius: 8,
-                              sourceID: item.sourceID, filePath: item.filePath,
-                              fileFormat: item.fileFormat)
-                .aspectRatio(1, contentMode: .fit)
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+        NavigationStack {
+            List {
+                if searchText.isEmpty || !selectedPins.isEmpty {
+                    Section {
+                        if pins.isEmpty {
+                            Label("library_quick_access_selected_empty", systemImage: "pin")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(selectedPins) { pin in
+                                selectedPinRow(pin)
+                            }
+                        }
+                    } header: {
+                        HStack {
+                            Text("library_quick_access_selected")
+                            Spacer()
+                            Text("\(pins.count)/\(LibraryPinStorage.maximumCount)")
+                                .monospacedDigit()
+                        }
+                    } footer: {
+                        Text("library_quick_access_limit")
+                    }
+                }
 
-            Text(item.title)
-                .font(.caption)
-                .lineLimit(1)
+                if !albums.isEmpty {
+                    Section("tab_albums") {
+                        ForEach(albums) { album in
+                            pinButton(
+                                LibraryPinReference(kind: .album, itemID: album.id)
+                            ) {
+                                CachedArtworkView(
+                                    albumID: album.id,
+                                    albumTitle: album.title,
+                                    artistName: album.artistName,
+                                    size: 42,
+                                    cornerRadius: 7
+                                )
+                            } title: {
+                                Text(album.title)
+                            } subtitle: {
+                                Text(album.artistName ?? String(localized: "unknown_artist"))
+                            }
+                        }
+                    }
+                }
 
-            Text(item.subtitle)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                if !artists.isEmpty {
+                    Section("tab_artists") {
+                        ForEach(artists) { artist in
+                            pinButton(
+                                LibraryPinReference(kind: .artist, itemID: artist.id)
+                            ) {
+                                CachedArtworkView(
+                                    artistID: artist.id,
+                                    artistName: artist.name,
+                                    size: 42,
+                                    cornerRadius: 21
+                                )
+                            } title: {
+                                Text(artist.name)
+                            } subtitle: {
+                                Text("\(artist.albumCount) \(String(localized: "albums_count"))")
+                            }
+                        }
+                    }
+                }
+
+                if !playlists.isEmpty {
+                    Section("tab_playlists") {
+                        ForEach(playlists) { playlist in
+                            pinButton(
+                                LibraryPinReference(kind: .playlist, itemID: playlist.id)
+                            ) {
+                                editorPlaylistArtwork(playlist)
+                            } title: {
+                                Text(playlist.name)
+                            } subtitle: {
+                                Text(
+                                    "\(library.songs(forPlaylist: playlist.id).count) "
+                                        + String(localized: "songs_count")
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: Text("library_quick_access_search_prompt")
+            )
+            .navigationTitle("library_edit_quick_access")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("done") {
+                        dismiss()
+                    }
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func selectedPinRow(_ pin: LibraryPinReference) -> some View {
+        switch pin.kind {
+        case .album:
+            if let album = library.visibleAlbums.first(where: { $0.id == pin.itemID }) {
+                pinButton(pin) {
+                    CachedArtworkView(
+                        albumID: album.id,
+                        albumTitle: album.title,
+                        artistName: album.artistName,
+                        size: 42,
+                        cornerRadius: 7
+                    )
+                } title: {
+                    Text(album.title)
+                } subtitle: {
+                    Text(album.artistName ?? String(localized: "unknown_artist"))
+                }
+            }
+        case .artist:
+            if let artist = library.visibleArtists.first(where: { $0.id == pin.itemID }) {
+                pinButton(pin) {
+                    CachedArtworkView(
+                        artistID: artist.id,
+                        artistName: artist.name,
+                        size: 42,
+                        cornerRadius: 21
+                    )
+                } title: {
+                    Text(artist.name)
+                } subtitle: {
+                    Text("\(artist.albumCount) \(String(localized: "albums_count"))")
+                }
+            }
+        case .playlist:
+            if let playlist = library.playlists.first(where: { $0.id == pin.itemID }) {
+                pinButton(pin) {
+                    editorPlaylistArtwork(playlist)
+                } title: {
+                    Text(playlist.name)
+                } subtitle: {
+                    Text(
+                        "\(library.songs(forPlaylist: playlist.id).count) "
+                            + String(localized: "songs_count")
+                    )
+                }
+            }
+        }
+    }
+
+    private func pinMatchesSearch(_ pin: LibraryPinReference) -> Bool {
+        switch pin.kind {
+        case .album:
+            guard let album = library.visibleAlbums.first(where: { $0.id == pin.itemID }) else {
+                return false
+            }
+            return searchText.isEmpty
+                || album.title.localizedCaseInsensitiveContains(searchText)
+                || (album.artistName?.localizedCaseInsensitiveContains(searchText) ?? false)
+        case .artist:
+            guard let artist = library.visibleArtists.first(where: { $0.id == pin.itemID }) else {
+                return false
+            }
+            return searchText.isEmpty || artist.name.localizedCaseInsensitiveContains(searchText)
+        case .playlist:
+            guard let playlist = library.playlists.first(where: { $0.id == pin.itemID }) else {
+                return false
+            }
+            return searchText.isEmpty || playlist.name.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private func pinButton<Artwork: View, Title: View, Subtitle: View>(
+        _ pin: LibraryPinReference,
+        @ViewBuilder artwork: () -> Artwork,
+        @ViewBuilder title: () -> Title,
+        @ViewBuilder subtitle: () -> Subtitle
+    ) -> some View {
+        let isSelected = pins.contains(pin)
+        let canSelect = isSelected || pins.count < LibraryPinStorage.maximumCount
+
+        return Button {
+            toggle(pin)
+        } label: {
+            HStack(spacing: 12) {
+                artwork()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    title()
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    subtitle()
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSelect)
+        .opacity(canSelect ? 1 : 0.45)
+    }
+
+    @ViewBuilder
+    private func editorPlaylistArtwork(_ playlist: Playlist) -> some View {
+        if let song = library.songs(forPlaylist: playlist.id).first {
+            CachedArtworkView(
+                coverRef: song.coverArtFileName,
+                songID: song.id,
+                size: 42,
+                cornerRadius: 7,
+                sourceID: song.sourceID,
+                filePath: song.filePath,
+                fileFormat: song.fileFormat
+            )
+        } else {
+            StoredCoverArtView(fileName: playlist.coverArtPath, size: 42, cornerRadius: 7)
+        }
+    }
+
+    private func toggle(_ pin: LibraryPinReference) {
+        var updated = pins
+        if let index = updated.firstIndex(of: pin) {
+            updated.remove(at: index)
+        } else if updated.count < LibraryPinStorage.maximumCount {
+            updated.append(pin)
+        }
+        pinsRawValue = LibraryPinStorage.encode(updated)
     }
 }
 
 #Preview {
     LibraryView()
-        .environment(AudioPlayerService())
         .environment(MusicLibrary())
 }

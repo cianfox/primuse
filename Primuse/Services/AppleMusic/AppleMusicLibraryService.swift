@@ -98,6 +98,10 @@ final class AppleMusicLibraryService {
             cancel()
             return
         }
+        guard !library.disabledSourceIDs.contains(Self.systemSourceID) else {
+            cancel()
+            return
+        }
         guard syncTask == nil else { return }
         guard appleMusic.authState == .authorized else {
             state = .failed("Apple Music 未授权, 去 Settings → Apple Music 启用")
@@ -117,6 +121,7 @@ final class AppleMusicLibraryService {
     /// 任务会被 await 直接复用, 不会重复触发。
     func ensureCachePopulated() async {
         guard AppleMusicFeatureSettings.syncUserLibraryEnabled else { return }
+        guard !library.disabledSourceIDs.contains(Self.systemSourceID) else { return }
         if !songCache.isEmpty { return }
         guard appleMusic.authState == .authorized else { return }
         if let existing = syncTask {

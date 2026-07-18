@@ -34,7 +34,7 @@ final class ScanService {
         }
     }
 
-    private struct ScanCheckpoint: Codable {
+    private struct ScanCheckpoint: Codable, Sendable {
         var directories: [String]
         var songs: [Song]
         var totalCount: Int
@@ -56,12 +56,15 @@ final class ScanService {
     /// Mirrors `MetadataBackfillService.workerGeneration`.
     private var scanGenerations: [String: Int] = [:]
     private var checkpoints: [String: ScanCheckpoint] = [:]
+    /// Serial off-main checkpoint writes. A checkpoint can contain thousands
+    /// of Song values, so JSON encoding it on the main actor visibly stalls
+    /// scrolling even though scanning itself is asynchronous.
+    private var checkpointWriteTask: Task<Void, Never>?
     #if os(iOS)
     private var backgroundTaskIDs: [String: UIBackgroundTaskIdentifier] = [:]
     #endif
 
     private let checkpointURL: URL
-    private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     init(fileManager: FileManager = .default) {
@@ -69,8 +72,6 @@ final class ScanService {
         let directory = appSupport.appendingPathComponent("Primuse", isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         checkpointURL = directory.appendingPathComponent("scan-checkpoints.json")
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
         loadCheckpoints()
     }
@@ -233,6 +234,10 @@ final class ScanService {
     /// "扫描期间 UI 卡顿"。1w 首库下从原本的每 10 首提交一次 (1000 次
     /// rebuildIndex) 降到每 200 首一次 (50 次), 主线程阻塞时间下降 20×。
     private static let flushBatchSize = 200
+    /// Scanner streams can yield much faster than the display refresh rate.
+    /// Publishing progress four times a second is enough for smooth feedback
+    /// without repeatedly invalidating the Sources hierarchy.
+    private static let progressPublishInterval: TimeInterval = 0.25
     /// 即便没攒够 batchSize, 距离上次 flush 超过这个间隔也强制 flush 一次
     /// 让用户看到 "scanned X" 数字仍在动 (别等到扫描结束才一次性更新)。
     private static let flushInterval: TimeInterval = 1.5
@@ -451,12 +456,18 @@ final class ScanService {
             var lastSongs: [Song] = []
             var lastIncrementalUpdate = 0
             var lastFlushAt = Date()
+            var lastProgressPublishedAt = Date.distantPast
             for try await update in stream {
                 try Task.checkCancellation()
                 try checkSourceStillEnabled(source.id, sourceStore: sourceStore)
-                scanStates[source.id]?.scannedCount = update.scannedCount
-                scanStates[source.id]?.totalCount = update.totalCount
-                scanStates[source.id]?.currentFile = update.currentFile
+                publishScanProgress(
+                    sourceID: source.id,
+                    scannedCount: update.scannedCount,
+                    addedCount: nil,
+                    totalCount: update.totalCount,
+                    currentFile: update.currentFile,
+                    lastPublishedAt: &lastProgressPublishedAt
+                )
                 lastSongs = update.songs
 
                 let pendingDelta = update.scannedCount - lastIncrementalUpdate
@@ -569,13 +580,18 @@ final class ScanService {
             var lastSongs: [Song] = []
             var lastIncrementalUpdate = 0
             var lastFlushAt = Date()
+            var lastProgressPublishedAt = Date.distantPast
             for try await update in stream {
                 try Task.checkCancellation()
                 try checkSourceStillEnabled(source.id, sourceStore: sourceStore)
-                scanStates[source.id]?.scannedCount = update.scannedCount
-                scanStates[source.id]?.addedCount = update.addedCount
-                scanStates[source.id]?.totalCount = update.totalCount
-                scanStates[source.id]?.currentFile = update.currentFile
+                publishScanProgress(
+                    sourceID: source.id,
+                    scannedCount: update.scannedCount,
+                    addedCount: update.addedCount,
+                    totalCount: update.totalCount,
+                    currentFile: update.currentFile,
+                    lastPublishedAt: &lastProgressPublishedAt
+                )
                 lastSongs = update.songs
 
                 // Flush 阈值: 每 flushBatchSize 首 *新增* 一次, 或者距上次 flush
@@ -699,6 +715,32 @@ final class ScanService {
 
     // MARK: - Helpers
 
+    private func publishScanProgress(
+        sourceID: String,
+        scannedCount: Int,
+        addedCount: Int?,
+        totalCount: Int,
+        currentFile: String,
+        lastPublishedAt: inout Date
+    ) {
+        let now = Date()
+        guard now.timeIntervalSince(lastPublishedAt) >= Self.progressPublishInterval else {
+            return
+        }
+        var state = scanStates[sourceID] ?? ScanState(isScanning: true)
+        state.isScanning = true
+        state.scannedCount = scannedCount
+        if let addedCount {
+            state.addedCount = addedCount
+        }
+        state.totalCount = totalCount
+        state.currentFile = currentFile
+        // One dictionary write produces one observation change instead of
+        // publishing each ScanState field independently.
+        scanStates[sourceID] = state
+        lastPublishedAt = now
+    }
+
     private func loadCheckpoints() {
         guard let data = try? Data(contentsOf: checkpointURL),
               let decoded = try? decoder.decode([String: ScanCheckpoint].self, from: data) else {
@@ -735,8 +777,24 @@ final class ScanService {
     }
 
     private func persistCheckpoints() {
+        let snapshot = checkpoints
+        let url = checkpointURL
+        let previous = checkpointWriteTask
+        checkpointWriteTask = Task.detached(priority: .utility) {
+            await previous?.value
+            Self.writeCheckpoints(snapshot, to: url)
+        }
+    }
+
+    private nonisolated static func writeCheckpoints(
+        _ checkpoints: [String: ScanCheckpoint],
+        to url: URL
+    ) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(checkpoints) else { return }
-        try? data.write(to: checkpointURL, options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
 
     private func beginBackgroundTask(for sourceID: String) {
