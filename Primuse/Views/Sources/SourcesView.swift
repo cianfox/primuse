@@ -73,6 +73,14 @@ private struct SourceCacheProgressState {
     }
 }
 
+/// Snapshot of the scan scope when a directory picker is opened. Both source
+/// screens use it to trigger one scan after the picker closes instead of
+/// starting a scan for every checkbox tap.
+struct SourceDirectorySelectionSession {
+    let sourceID: String
+    let previousDirectories: [String]
+}
+
 /// Standalone sources root for callers that don't already own navigation.
 struct SourcesView: View {
     var body: some View {
@@ -95,6 +103,7 @@ struct SourcesContentView: View {
     @State private var showAddSource = false
     @State private var editingSource: MusicSource?
     @State private var connectingSource: MusicSource?
+    @State private var directorySelectionSession: SourceDirectorySelectionSession?
     @State private var optimisticallyHiddenIDs: Set<String> = []
     @State private var undoToast: UndoDeleteToast?
     @State private var pendingDeleteTasks: [String: Task<Void, Never>] = [:]
@@ -138,7 +147,7 @@ struct SourcesContentView: View {
                 SourceTypeSelectionView { source in
                     sourceStore.add(source)
                     // 本地导入: 文件已拷进沙箱, add 后立即扫描入库, 让导入的歌
-                    // 即时出现(其余源类型仍由用户手动连接/选目录后再扫)。
+                    // 即时出现。需要远端目录的源会在目录选择会话结束后自动扫描。
                     if source.type == .local {
                         scanService.scanSource(
                             source,
@@ -157,8 +166,9 @@ struct SourcesContentView: View {
                     Task { await sourceManager.refreshConnector(for: updated.id) }
                 }
             }
-            .sheet(item: $connectingSource) { source in
+            .sheet(item: $connectingSource, onDismiss: finishDirectorySelectionSession) { source in
                 connectionSheet(for: source)
+                    .onAppear { beginDirectorySelectionSession(for: source) }
             }
             .sheet(item: $diagnosingSource) { source in
                 SourceDiagnosticsView(source: source)
@@ -1208,6 +1218,27 @@ struct SourcesContentView: View {
             guard let items = grouped[cat], !items.isEmpty else { return nil }
             return (cat, items)
         }
+    }
+
+    private func beginDirectorySelectionSession(for source: MusicSource) {
+        guard directorySelectionSession?.sourceID != source.id else { return }
+        directorySelectionSession = SourceDirectorySelectionSession(
+            sourceID: source.id,
+            previousDirectories: currentSource(for: source).scannedDirectories
+        )
+    }
+
+    private func finishDirectorySelectionSession() {
+        guard let session = directorySelectionSession else { return }
+        directorySelectionSession = nil
+        scanService.scanAfterDirectorySelectionChange(
+            sourceID: session.sourceID,
+            previousDirectories: session.previousDirectories,
+            sourceManager: sourceManager,
+            library: library,
+            sourceStore: sourceStore,
+            scraperService: scraperService
+        )
     }
 
     private func toggleSourceEnabled(_ source: MusicSource) {

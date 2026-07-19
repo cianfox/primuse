@@ -232,6 +232,45 @@ final class ScanService {
         activeTasks[source.id] = task
     }
 
+    /// Starts a fresh incremental scan after the user finishes changing a
+    /// source's directory selection.
+    ///
+    /// Directory pickers persist their binding while the sheet is open. The
+    /// caller captures the selection before presenting the picker and passes
+    /// it here when the picker closes. Comparing normalized effective roots
+    /// avoids rescanning for ordering changes or a child directory that is
+    /// already covered by a selected parent.
+    func scanAfterDirectorySelectionChange(
+        sourceID: String,
+        previousDirectories: [String],
+        sourceManager: SourceManager,
+        library: MusicLibrary,
+        sourceStore: SourcesStore,
+        scraperService: MusicScraperService? = nil
+    ) {
+        guard let source = sourceStore.source(id: sourceID),
+              source.isEnabled,
+              !source.isDeleted else { return }
+
+        let previous = normalizedDirectories(previousDirectories)
+        let current = normalizedDirectories(source.scannedDirectories)
+        guard !current.isEmpty, current != previous else { return }
+
+        // A checkpoint belongs to the old directory scope. If a scan is
+        // currently running, invalidate it before launching the replacement;
+        // generation fencing keeps the cancelled task from overwriting the
+        // new scan's state when its async work eventually unwinds.
+        cancelScan(for: sourceID)
+        removeCheckpoint(for: sourceID)
+        scanSource(
+            source,
+            sourceManager: sourceManager,
+            library: library,
+            sourceStore: sourceStore,
+            scraperService: scraperService
+        )
+    }
+
     /// Identifier used for BGProcessingTask scheduling.
     /// Must match `BGTaskSchedulerPermittedIdentifiers` in Info.plist.
     nonisolated static let backgroundTaskIdentifier = "com.welape.yuanyin.scan-resume"

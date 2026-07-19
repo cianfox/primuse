@@ -18,6 +18,7 @@ struct MacSourcesView: View {
     @State private var showAddSource = false
     @State private var editingSource: MusicSource?
     @State private var connectingSource: MusicSource?
+    @State private var directorySelectionSession: SourceDirectorySelectionSession?
     @State private var sourceToDelete: MusicSource?
     @State private var cloudDirectoryNameRefreshID = UUID()
 
@@ -48,13 +49,14 @@ struct MacSourcesView: View {
                 Task { await sourceManager.refreshConnector(for: updated.id) }
             }
         }
-        .sheet(item: $connectingSource) { source in
+        .sheet(item: $connectingSource, onDismiss: finishDirectorySelectionSession) { source in
             // 这个 sheet 里既有 (云盘/Synology 的) 授权小步骤, 也有 940 宽的树形
             // 目录浏览器。macOS 的 sheet 会按"首屏内容"定窗宽, 之后切到更宽的浏览
             // 步骤时不会自己变大 → 浏览器被挤到溢出、左右两侧裁切。把固定 ideal
             // 尺寸放在最外层 (不随步骤变), 让窗口一开始就按浏览器的尺寸来。
             connectionSheet(for: source)
                 .frame(minWidth: 880, idealWidth: 940, minHeight: 600, idealHeight: 680)
+                .onAppear { beginDirectorySelectionSession(for: source) }
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudDirectoryNameStore.didChangeNotification)) { _ in
             cloudDirectoryNameRefreshID = UUID()
@@ -571,6 +573,27 @@ struct MacSourcesView: View {
     /// 留在 Sources 列表里只会让用户误点 connect 按钮。直接隐藏。
     private var sources: [MusicSource] {
         sourceStore.sources.filter { $0.type != .appleMusic }
+    }
+
+    private func beginDirectorySelectionSession(for source: MusicSource) {
+        guard directorySelectionSession?.sourceID != source.id else { return }
+        directorySelectionSession = SourceDirectorySelectionSession(
+            sourceID: source.id,
+            previousDirectories: currentSource(for: source).scannedDirectories
+        )
+    }
+
+    private func finishDirectorySelectionSession() {
+        guard let session = directorySelectionSession else { return }
+        directorySelectionSession = nil
+        scanService.scanAfterDirectorySelectionChange(
+            sourceID: session.sourceID,
+            previousDirectories: session.previousDirectories,
+            sourceManager: sourceManager,
+            library: library,
+            sourceStore: sourceStore,
+            scraperService: scraperService
+        )
     }
 
     private func setEnabled(_ source: MusicSource, _ enabled: Bool) {
