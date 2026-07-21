@@ -3,6 +3,34 @@ import FilesProvider
 import Foundation
 import PrimuseKit
 
+/// FilesProvider may invoke a request callback more than once while unwinding
+/// an FTP failure. Checked continuations must be resumed exactly once, so take
+/// the continuation under a lock before delivering the first result.
+private final class FTPRangeContinuationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, any Error>?
+
+    init(_ continuation: CheckedContinuation<Data, any Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning data: Data) {
+        takeContinuation()?.resume(returning: data)
+    }
+
+    func resume(throwing error: any Error) {
+        takeContinuation()?.resume(throwing: error)
+    }
+
+    private func takeContinuation() -> CheckedContinuation<Data, any Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = continuation
+        continuation = nil
+        return result
+    }
+}
+
 actor FTPSource: MusicSourceConnector {
     let sourceID: String
     private let host: String
@@ -188,11 +216,14 @@ actor FTPSource: MusicSourceConnector {
         guard actualLength > 0 else { return Data() }
 
         return try await withCheckedThrowingContinuation { continuation in
+            let continuationBox = FTPRangeContinuationBox(continuation)
             _ = provider.contents(path: path, offset: actualOffset, length: actualLength) { data, error in
                 if let error {
-                    continuation.resume(throwing: SourceError.connectionFailed(error.localizedDescription))
+                    continuationBox.resume(
+                        throwing: SourceError.connectionFailed(error.localizedDescription)
+                    )
                 } else {
-                    continuation.resume(returning: data ?? Data())
+                    continuationBox.resume(returning: data ?? Data())
                 }
             }
         }

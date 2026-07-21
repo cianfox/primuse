@@ -3,6 +3,8 @@ import Foundation
 import PrimuseKit
 
 actor ConnectorScanner {
+    private static let progressYieldStride = 20
+
     private let connector: any MusicSourceConnector
     private let sourceID: String
     private let metadataService = MetadataService()
@@ -31,7 +33,12 @@ actor ConnectorScanner {
         existingSongs: [Song] = [],
         startingCount: Int = 0
     ) -> AsyncThrowingStream<ScanUpdate, Error> {
-        AsyncThrowingStream { continuation in
+        // Each update carries the complete song snapshot. An unbounded stream
+        // retains every pending snapshot when a fast remote listing outruns the
+        // consumer, and subsequent appends then copy those shared arrays. Keep
+        // only the newest pending snapshot; the final yield below still carries
+        // the complete scan result.
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 do {
                     plog("🔍 ConnectorScanner.scan source=\(sourceID) dirs=\(directories)")
@@ -117,15 +124,21 @@ actor ConnectorScanner {
                                     allSongs.append(scannedSong.song)
                                     allSongIndexByPath[scannedSong.song.filePath] = allSongs.count - 1
 
-                                    continuation.yield(
-                                        ScanUpdate(
-                                            scannedCount: scannedCount,
-                                            addedCount: addedCount,
-                                            totalCount: totalCount,
-                                            currentFile: scannedSong.displayName,
-                                            songs: allSongs
+                                    // Server-side song scanners can enumerate
+                                    // thousands of tracks faster than the UI can
+                                    // persist a full snapshot. Coalesce progress
+                                    // just like the generic file scanner below.
+                                    if addedCount % Self.progressYieldStride == 0 {
+                                        continuation.yield(
+                                            ScanUpdate(
+                                                scannedCount: scannedCount,
+                                                addedCount: addedCount,
+                                                totalCount: totalCount,
+                                                currentFile: scannedSong.displayName,
+                                                songs: allSongs
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                                 successfulDirectoryCount += 1
                             } catch is CancellationError {
@@ -228,7 +241,7 @@ actor ConnectorScanner {
                                 // Yield progress every 20 items — yielding on every
                                 // file made the SwiftUI publisher chain the bottleneck
                                 // when scanning fast cloud listings.
-                                if addedCount % 20 == 0 {
+                                if addedCount % Self.progressYieldStride == 0 {
                                     continuation.yield(
                                         ScanUpdate(
                                             scannedCount: scannedCount,
