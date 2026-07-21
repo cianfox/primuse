@@ -1047,16 +1047,17 @@ struct MacAppIcon: Identifiable, Equatable, Sendable {
     /// 这套图标的品牌色 — 仅用于色环展示, 不强行改全局 accent。
     let tint: Color
 
-    /// 默认项 + 7 套备选, 跟资源目录里的 AppIcon{n}Preview 一一对应。
+    /// 默认项 + 8 套功能方向, 跟资源目录里的 AppIcon{n}Preview 一一对应。
     static let all: [MacAppIcon] = [
-        MacAppIcon(id: "",         previewAsset: "AppIconPreview",  nameKey: "icon_default", tint: PMColor.brandDefault),
-        MacAppIcon(id: "AppIcon1", previewAsset: "AppIcon1Preview", nameKey: "icon_theme_1", tint: Color(red: 0.39, green: 0.32, blue: 0.98)),
-        MacAppIcon(id: "AppIcon2", previewAsset: "AppIcon2Preview", nameKey: "icon_theme_2", tint: Color(red: 0.55, green: 0.32, blue: 0.85)),
-        MacAppIcon(id: "AppIcon3", previewAsset: "AppIcon3Preview", nameKey: "icon_theme_3", tint: Color(red: 0.20, green: 0.78, blue: 0.78)),
-        MacAppIcon(id: "AppIcon4", previewAsset: "AppIcon4Preview", nameKey: "icon_theme_4", tint: Color(red: 0.92, green: 0.72, blue: 0.20)),
-        MacAppIcon(id: "AppIcon5", previewAsset: "AppIcon5Preview", nameKey: "icon_theme_5", tint: Color(red: 0.95, green: 0.45, blue: 0.78)),
-        MacAppIcon(id: "AppIcon6", previewAsset: "AppIcon6Preview", nameKey: "icon_theme_6", tint: Color(red: 0.45, green: 0.55, blue: 0.95)),
-        MacAppIcon(id: "AppIcon7", previewAsset: "AppIcon7Preview", nameKey: "icon_theme_7", tint: Color(red: 0.55, green: 0.50, blue: 0.92)),
+        MacAppIcon(id: "",         previewAsset: "AppIconPreview",  nameKey: "icon_default", tint: Color(red: 0.251, green: 0.765, blue: 0.816)),
+        MacAppIcon(id: "AppIcon1", previewAsset: "AppIcon1Preview", nameKey: "icon_theme_1", tint: Color(red: 0.957, green: 0.784, blue: 0.298)),
+        MacAppIcon(id: "AppIcon2", previewAsset: "AppIcon2Preview", nameKey: "icon_theme_2", tint: Color(red: 0.251, green: 0.765, blue: 0.816)),
+        MacAppIcon(id: "AppIcon3", previewAsset: "AppIcon3Preview", nameKey: "icon_theme_3", tint: Color(red: 1.000, green: 0.420, blue: 0.341)),
+        MacAppIcon(id: "AppIcon4", previewAsset: "AppIcon4Preview", nameKey: "icon_theme_4", tint: Color(red: 0.251, green: 0.765, blue: 0.816)),
+        MacAppIcon(id: "AppIcon5", previewAsset: "AppIcon5Preview", nameKey: "icon_theme_5", tint: Color(red: 0.545, green: 0.424, blue: 1.000)),
+        MacAppIcon(id: "AppIcon6", previewAsset: "AppIcon6Preview", nameKey: "icon_theme_6", tint: Color(red: 0.788, green: 0.941, blue: 0.353)),
+        MacAppIcon(id: "AppIcon7", previewAsset: "AppIcon7Preview", nameKey: "icon_theme_7", tint: Color(red: 0.388, green: 0.902, blue: 0.839)),
+        MacAppIcon(id: "AppIcon8", previewAsset: "AppIcon8Preview", nameKey: "icon_theme_8", tint: Color(red: 1.000, green: 0.373, blue: 0.561)),
     ]
 
     static func option(for id: String) -> MacAppIcon {
@@ -1159,7 +1160,13 @@ final class MacUIPreferences {
         coverDrivenAmbient = d.object(forKey: Self.keyCoverDrivenAmbient) as? Bool ?? true
         brandColorHex = d.string(forKey: Self.keyBrand) ?? Self.defaultBrandHex
         colorScheme = PMColorSchemeOverride(rawValue: d.string(forKey: Self.keyColorScheme) ?? "") ?? .system
-        appIconID = d.string(forKey: Self.keyAppIcon) ?? ""
+        let persistedAppIconID = d.string(forKey: Self.keyAppIcon) ?? ""
+        appIconID = MacAppIcon.all.contains(where: { $0.id == persistedAppIconID })
+            ? persistedAppIconID
+            : ""
+        if appIconID != persistedAppIconID {
+            d.removeObject(forKey: Self.keyAppIcon)
+        }
     }
 
     /// 启动时把持久化的明暗模式 + App 图标重放一遍 (didSet 在 init 期不触发,

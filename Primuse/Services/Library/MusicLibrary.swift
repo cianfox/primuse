@@ -1347,6 +1347,12 @@ final class MusicLibrary {
         visibleSongByID[id] ?? songs.first(where: { $0.id == id })
     }
 
+    /// O(1) membership check for UI observers that must distinguish the
+    /// enabled/visible library from songs retained under a disabled source.
+    func containsVisibleSong(id: String) -> Bool {
+        visibleSongByID[id] != nil
+    }
+
     /// Cached source slice used by SourcesView.
     func playableSongs(forSourceID sourceID: String) -> [Song] {
         visiblePlayableSongsBySourceID[sourceID] ?? []

@@ -296,7 +296,7 @@ struct NowPlayingView: View {
                 // currentTime + snapshotTime 一起记录, receiver 用 (now -
                 // snapshot) 推算"如果还在播,实际应该到哪里了",避免接力
                 // 时听见同一段刚播过的内容。
-                "currentTime": player.currentTime,
+                "currentTime": player.handoffPlaybackTimeSnapshot(),
                 "snapshotTime": Date().timeIntervalSinceReferenceDate,
                 "isPlaying": player.isPlaying,
                 "shuffleEnabled": player.shuffleEnabled,
@@ -2210,6 +2210,9 @@ struct LyricsScrollView: View {
     /// 拖动 session 开始时的偏移基准 (用于把 translation.height 累加上去)。
     @State private var wordDragStartOffset: CGFloat = 0
     @State private var wordAutoFollowResumeTask: Task<Void, Never>? = nil
+    /// 行级歌词在手动浏览保护期结束时必须主动归位。旧实现只在歌词索引
+    /// 下一次变化时尝试 scrollTo，遇到长句/间奏就会长期停在错误位置。
+    @State private var lineAutoFollowResumeTask: Task<Void, Never>? = nil
     private static let manualScrollGracePeriod: TimeInterval = 3.0
 
     // Translation —— system translation framework
@@ -2244,7 +2247,7 @@ struct LyricsScrollView: View {
                 lineLevelLyricsView
             }
         }
-        .onReceive(Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in
             updateCurrentLine()
         }
         .onChange(of: songID) { _, _ in
@@ -2256,6 +2259,7 @@ struct LyricsScrollView: View {
             lyricRowHitFrames = [:]
             manualWordOffset = nil
             wordAutoFollowResumeTask?.cancel()
+            lineAutoFollowResumeTask?.cancel()
         }
         .lyricsTranslationTaskIfAvailable(
             songID: songID,
@@ -2318,7 +2322,9 @@ struct LyricsScrollView: View {
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Spacer().frame(height: 20)
+                        // Give the first and last rows enough physical room to
+                        // reach the same 42% visual anchor as every middle row.
+                        Spacer().frame(height: geo.size.height * Self.lyricsVisualAnchor)
 
                         ForEach(Array(lyrics.enumerated()), id: \.element.id) { index, line in
                             lyricsRow(line: line, index: index, availableWidth: contentWidth)
@@ -2326,7 +2332,7 @@ struct LyricsScrollView: View {
                                 .padding(.vertical, 2)
                         }
 
-                        Spacer().frame(height: 80)
+                        Spacer().frame(height: geo.size.height * (1 - Self.lyricsVisualAnchor))
                     }
                     .frame(width: contentWidth, alignment: .topLeading)
                     .padding(.horizontal, Self.lyricsHorizontalPadding)
@@ -2348,8 +2354,14 @@ struct LyricsScrollView: View {
                 // scrollTo 暂时退让, 用户能往上往下浏览其他歌词。
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 4)
-                        .onChanged { _ in lastUserScrollTime = Date() }
-                        .onEnded { _ in lastUserScrollTime = Date() }
+                        .onChanged { _ in
+                            lineAutoFollowResumeTask?.cancel()
+                            lastUserScrollTime = Date()
+                        }
+                        .onEnded { _ in
+                            lastUserScrollTime = Date()
+                            scheduleLineAutoFollowResume(proxy: proxy)
+                        }
                 )
                 .onChange(of: currentLineIndex) { _, idx in
                     guard !isPinchingLyrics, idx < lyrics.count else { return }
@@ -2357,9 +2369,22 @@ struct LyricsScrollView: View {
                     // 否则刚拖到想看的位置又被自动 scrollTo 弹回, 等同不能浏览。
                     guard Date().timeIntervalSince(lastUserScrollTime) >= Self.manualScrollGracePeriod
                     else { return }
-                    withAnimation(.smooth(duration: 0.34, extraBounce: 0)) {
-                        proxy.scrollTo(lyrics[idx].id, anchor: .center)
-                    }
+                    scrollLine(to: idx, proxy: proxy, animated: true)
+                }
+                .onChange(of: lyricsFontScale) { _, _ in
+                    scheduleLineAutoFollowResume(proxy: proxy, delay: 0)
+                }
+                .task(id: lineLevelScrollIdentity) {
+                    // Wait for the rows to enter the ScrollViewReader before
+                    // the first positioning request. This also covers opening
+                    // lyrics while playback is already in the middle of a song.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    updateCurrentLine()
+                    scrollLine(to: currentLineIndex, proxy: proxy, animated: false)
+                }
+                .onDisappear {
+                    lineAutoFollowResumeTask?.cancel()
                 }
             }
         }
@@ -2501,6 +2526,45 @@ struct LyricsScrollView: View {
         }
     }
 
+    private var lineLevelScrollIdentity: String {
+        "\(songID ?? "")|\(lyrics.first?.id ?? "")|\(lyrics.last?.id ?? "")|\(lyrics.count)"
+    }
+
+    private func scheduleLineAutoFollowResume(
+        proxy: ScrollViewProxy,
+        delay: TimeInterval = Self.manualScrollGracePeriod
+    ) {
+        lineAutoFollowResumeTask?.cancel()
+        lineAutoFollowResumeTask = Task { @MainActor in
+            if delay > 0 {
+                try? await Task.sleep(for: .seconds(delay))
+            } else {
+                await Task.yield()
+            }
+            guard !Task.isCancelled,
+                  !isPinchingLyrics,
+                  Date().timeIntervalSince(lastUserScrollTime) >= delay else { return }
+            scrollLine(to: currentLineIndex, proxy: proxy, animated: true)
+        }
+    }
+
+    private func scrollLine(to index: Int, proxy: ScrollViewProxy, animated: Bool) {
+        guard lyrics.indices.contains(index) else { return }
+        let update = {
+            proxy.scrollTo(
+                lyrics[index].id,
+                anchor: UnitPoint(x: 0.5, y: Self.lyricsVisualAnchor)
+            )
+        }
+        if animated {
+            withAnimation(.smooth(duration: 0.34, extraBounce: 0), update)
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
+        }
+    }
+
     private var wordLevelBadge: some View {
         HStack(spacing: 6) {
             Image(systemName: "waveform")
@@ -2536,7 +2600,7 @@ struct LyricsScrollView: View {
         guard !lyrics.isEmpty else { return 0 }
         let safeIndex = min(max(index, 0), lyrics.count - 1)
         guard let frame = wordLineFrames[lyrics[safeIndex].id] else { return wordAutoOffset }
-        let visualAnchor = viewportHeight * 0.42
+        let visualAnchor = viewportHeight * Self.lyricsVisualAnchor
         return visualAnchor - frame.midY
     }
 
@@ -2725,6 +2789,7 @@ struct LyricsScrollView: View {
     private static let lineLevelLookahead: TimeInterval = 0.25
     private static let wordLevelLineLookahead: TimeInterval = 0.10
     private static let wordLevelScrollDuration: TimeInterval = 0.54
+    private static let lyricsVisualAnchor: CGFloat = 0.42
     /// active 行放大倍数。1.08 时一行满宽 (≈viewport-48) 向右长出约 7%,
     /// 仍落在 24pt 水平 padding 内, 不会被外层 .clipped() 切到。再大就要防裁切。
     private static let wordLevelActiveScale: CGFloat = 1.08
@@ -2737,10 +2802,21 @@ struct LyricsScrollView: View {
     }
 
     private func lineIndex(at time: TimeInterval, lookahead: TimeInterval) -> Int {
-        for (i, line) in lyrics.enumerated().reversed() where time + lookahead >= line.timestamp {
-            return i
+        // The timer runs while lyrics are visible, so use binary search rather
+        // than rescanning from the end on every tick (especially costly near
+        // the beginning of long word-level lyric files).
+        let target = time + lookahead
+        var lower = 0
+        var upper = lyrics.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if lyrics[middle].timestamp <= target {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
         }
-        return 0
+        return max(0, lower - 1)
     }
 }
 

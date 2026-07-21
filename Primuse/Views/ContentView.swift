@@ -273,17 +273,12 @@ struct ContentView: View {
                     .zIndex(2)
             }
         }
-        // 当前播放歌被移出库时停播。两个信号都要监听:
-        // - visibleSongs.count: 源被启用/停用 (走 updateDisabledSourceIDs,
-        //   只 rebuildVisibleCache 不 bump searchRevision) 时靠数量变化触发。
-        // - searchRevision: 增删/重扫描会 bump。覆盖"同一 upsert 批次里删 1
-        //   加 1"(文件移动/重命名导致歌曲 ID 变化) 这种 count 不变、但当前歌
-        //   实际已被移除的场景 —— 只看 count 会漏检。
-        .onChange(of: library.visibleSongs.count) { _, _ in
-            stopIfCurrentSongRemoved()
-        }
-        .onChange(of: library.searchRevision) { _, _ in
-            stopIfCurrentSongRemoved()
+        // 隔离资料库批次更新观察。直接把 searchRevision 的 onChange 挂在
+        // ContentView 上会让整个 TabView 在后台扫描/回填时反复重算。
+        .background {
+            CurrentSongLibraryObserver {
+                stopIfCurrentSongRemoved()
+            }
         }
         // 跨年自动弹年度报告 ── 每次 ContentView 进入 (app 启动 / 切前台后
         // 重新出现) 都跑一次, trigger 内部用 UserDefaults 记录已弹避免重复。
@@ -369,7 +364,7 @@ struct ContentView: View {
     /// 指向已不存在的源文件。
     private func stopIfCurrentSongRemoved() {
         guard let cs = player.currentSong else { return }
-        if !library.visibleSongs.contains(where: { $0.id == cs.id }) {
+        if !library.containsVisibleSong(id: cs.id) {
             player.stop(); player.clearQueue(); showNowPlaying = false
         }
     }
@@ -454,6 +449,27 @@ struct ContentView: View {
     }
 }
 
+/// Keeps high-frequency library revision tracking out of `ContentView`'s
+/// observation scope. The callback only mutates the root when the playing song
+/// really disappeared; ordinary scan batches leave the tab hierarchy intact.
+private struct CurrentSongLibraryObserver: View {
+    @Environment(MusicLibrary.self) private var library
+    let onLibraryChange: () -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            // Source enable/disable rebuilds the visible cache without always
+            // bumping searchRevision, so retain both signals.
+            .onChange(of: library.visibleSongs.count) { _, _ in
+                onLibraryChange()
+            }
+            .onChange(of: library.searchRevision) { _, _ in
+                onLibraryChange()
+            }
+    }
+}
+
 // MARK: - Player Overlay (handles position, drag, rounded corners)
 
 struct PlayerOverlay: View {
@@ -472,6 +488,7 @@ struct PlayerOverlay: View {
     @State private var dismissScale: CGFloat = 1
     @State private var dismissOpacity: CGFloat = 1
     @State private var screenHeight: CGFloat = UIScreen.main.bounds.height
+    @State private var isDismissDragActive = false
 
     /// Device screen corner radius (matches physical display)
     private let deviceCornerRadius: CGFloat = 55
@@ -513,14 +530,29 @@ struct PlayerOverlay: View {
             .opacity(isDismissing ? dismissOpacity : 1)
             .offset(y: entered ? dragOffset : screenHeight + 100)
             .ignoresSafeArea()
-            .gesture(
+            // Only a downward drag that starts in the top chrome may dismiss
+            // the player. The previous full-screen exclusive gesture competed
+            // with the lyrics ScrollView: scrolling lyrics translated the
+            // whole player (and its More button), making controls move away
+            // from the finger. Simultaneous recognition preserves child
+            // scrolling while the start-location gate keeps dismissal on the
+            // grabber/header affordance.
+            .simultaneousGesture(
                 DragGesture()
                     .onChanged { value in
                         guard !isDismissing, entered else { return }
+                        if !isDismissDragActive {
+                            let isVertical = abs(value.translation.height) > abs(value.translation.width)
+                            guard value.startLocation.y <= 96,
+                                  isVertical,
+                                  value.translation.height > 0 else { return }
+                            isDismissDragActive = true
+                        }
                         dragOffset = max(0, value.translation.height)
                     }
                     .onEnded { value in
-                        guard !isDismissing, entered else { return }
+                        guard !isDismissing, entered, isDismissDragActive else { return }
+                        isDismissDragActive = false
                         if dragOffset > 150 || value.predictedEndTranslation.height > 500 {
                             dismissPlayer()
                         } else {

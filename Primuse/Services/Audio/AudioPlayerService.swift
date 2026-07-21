@@ -176,7 +176,10 @@ final class AudioPlayerService {
     /// `currentTimeAnchor` 在 didSet 里自动同步 wall-clock，配合 `interpolatedTime(at:)`
     /// 在 0.5s 引擎采样间隙内做线性外推，让 60Hz 字级歌词动画无抖。
     private(set) var currentTime: TimeInterval = 0 {
-        didSet { currentTimeAnchor = Date() }
+        didSet {
+            currentTimeAnchor = Date()
+            handoffCurrentTime = currentTime
+        }
     }
     private(set) var duration: TimeInterval = 0
     private(set) var isLoading = false
@@ -186,7 +189,22 @@ final class AudioPlayerService {
     private(set) var isMusicVideoPlaybackActive = false
     private(set) var musicVideoAudioFallbackToken = UUID()
 
-    private(set) var currentTimeAnchor: Date = Date()
+    /// Timeline-driven lyric views read this value while rendering, but they
+    /// already own their own clocks. Publishing an additional Observation
+    /// mutation for every progress sample only creates a second invalidation
+    /// wave, so keep the interpolation anchor outside the observable graph.
+    @ObservationIgnored private(set) var currentTimeAnchor: Date = Date()
+
+    /// `NSUserActivity` asks for a point-in-time progress snapshot. Reading the
+    /// observable `currentTime` from its update closure made the entire now
+    /// playing hierarchy (including an open Menu) refresh every 0.5 seconds.
+    /// Mirror the value into ignored storage so Handoff can sample it without
+    /// becoming a high-frequency UI dependency.
+    @ObservationIgnored private var handoffCurrentTime: TimeInterval = 0
+
+    func handoffPlaybackTimeSnapshot() -> TimeInterval {
+        handoffCurrentTime
+    }
 
     /// 在 `currentTime` 与下一次 0.5s 采样之间做线性外推，每次 currentTime
     /// 真实更新（didSet 重置 anchor）就跟引擎报告时间校准一次,不会累积漂移。
@@ -3135,8 +3153,10 @@ final class AudioPlayerService {
     // MARK: - Crossfade
 
     private func checkCrossfade() {
+        // This runs on every playback progress tick. Avoid copying the full
+        // settings payload in the overwhelmingly common disabled case.
+        guard playbackSettings.crossfadeEnabled, !crossfadeTriggered else { return }
         let settings = playbackSettings.snapshot()
-        guard settings.crossfadeEnabled, !crossfadeTriggered else { return }
         guard duration > 0, currentTime >= duration - settings.crossfadeDuration else { return }
         // Skip under repeat-one — `nextSongInQueue()` returns the
         // current song there, which would crossfade-to-self. Pre-fix

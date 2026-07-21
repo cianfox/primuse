@@ -6,6 +6,40 @@ import UIKit
 import AppKit
 #endif
 
+/// Task handles are operational state, not rendering state. Keeping them in
+/// `@State` made every debounce cancellation/replacement invalidate HomeView,
+/// defeating the debounce while background metadata batches were arriving.
+@MainActor
+private final class HomeRefreshCoordinator {
+    var debounceTask: Task<Void, Never>?
+    var recommendationTask: Task<Void, Never>?
+    var libraryHighlightsTask: Task<Void, Never>?
+
+    func cancelAll() {
+        debounceTask?.cancel()
+        recommendationTask?.cancel()
+        libraryHighlightsTask?.cancel()
+        debounceTask = nil
+        recommendationTask = nil
+        libraryHighlightsTask = nil
+    }
+}
+
+/// Tracks the rapidly changing revision in its own observation scope so scan
+/// batches do not invalidate the much larger home-page view tree.
+private struct HomeLibraryRevisionObserver: View {
+    @Environment(MusicLibrary.self) private var library
+    let onRevisionChange: () -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: library.searchRevision) { _, _ in
+                onRevisionChange()
+            }
+    }
+}
+
 struct HomeView: View {
     var switchToSettingsTab: (() -> Void)?
     @Environment(AudioPlayerService.self) private var player
@@ -43,15 +77,16 @@ struct HomeView: View {
             .task {
                 await refreshHomeSnapshotAfterPresentationIfNeeded()
             }
-            .onChange(of: library.searchRevision) { _, _ in
-                scheduleDebouncedHomeRefresh()
+            .background {
+                HomeLibraryRevisionObserver {
+                    scheduleDebouncedHomeRefresh()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
                 refreshHomeSnapshot(force: true)
             }
             .onDisappear {
-                homeRefreshDebounceTask?.cancel()
-                homeRefreshDebounceTask = nil
+                refreshCoordinator.cancelAll()
             }
             .navigationTitle("home_title")
             .toolbarTitleDisplayMode(.inlineLarge)
@@ -101,14 +136,12 @@ struct HomeView: View {
     // library scan would otherwise fire refreshHomeSnapshot(force:) dozens
     // of times — each one a full main-thread resort/regroup/recommend.
     // Coalesce the storm and only recompute once it settles.
-    @State private var homeRefreshDebounceTask: Task<Void, Never>?
+    @State private var refreshCoordinator = HomeRefreshCoordinator()
     // Backfill currently publishes at most once every two seconds. Keep this
     // window longer than that interval so a continuous large-library job does
     // not rebuild recommendations and album groupings on the main actor while
     // the user is scrolling; the snapshot refreshes once the burst settles.
     private static let homeRefreshDebounce: Duration = .seconds(3)
-    @State private var recommendationTask: Task<Void, Never>?
-    @State private var libraryHighlightsTask: Task<Void, Never>?
 
     private struct HomeSnapshotSignature: Equatable {
         let libraryRevision: Int
@@ -231,8 +264,8 @@ struct HomeView: View {
     /// the previous direct call did — the debounce is what suppresses the
     /// redundant work now.
     private func scheduleDebouncedHomeRefresh() {
-        homeRefreshDebounceTask?.cancel()
-        homeRefreshDebounceTask = Task { @MainActor in
+        refreshCoordinator.debounceTask?.cancel()
+        refreshCoordinator.debounceTask = Task { @MainActor in
             try? await Task.sleep(for: Self.homeRefreshDebounce)
             guard !Task.isCancelled else { return }
             refreshHomeSnapshot(force: true)
@@ -316,8 +349,8 @@ struct HomeView: View {
                 signature: signature
             )
         } else {
-            recommendationTask?.cancel()
-            recommendationTask = nil
+            refreshCoordinator.recommendationTask?.cancel()
+            refreshCoordinator.recommendationTask = nil
         }
 
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -346,8 +379,8 @@ struct HomeView: View {
         recentSongs: [Song],
         signature: HomeSnapshotSignature
     ) {
-        libraryHighlightsTask?.cancel()
-        libraryHighlightsTask = Task { @MainActor in
+        refreshCoordinator.libraryHighlightsTask?.cancel()
+        refreshCoordinator.libraryHighlightsTask = Task { @MainActor in
             let payload = await Task.detached(priority: .utility) {
                 let startedAt = Date()
                 let heroCoverSongs = Self.makeHeroCoverSongs(
@@ -389,8 +422,8 @@ struct HomeView: View {
         input: MusicDiscoveryEngine.RecommendationInput,
         signature: HomeSnapshotSignature
     ) {
-        recommendationTask?.cancel()
-        recommendationTask = Task { @MainActor in
+        refreshCoordinator.recommendationTask?.cancel()
+        refreshCoordinator.recommendationTask = Task { @MainActor in
             let payload = await Task.detached(priority: .utility) {
                 let startedAt = Date()
                 let results = MusicDiscoveryEngine.dailyRecommendations(from: input, limit: 12)
@@ -604,7 +637,11 @@ struct HomeView: View {
             .padding(14)
             .background {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.thinMaterial)
+                    .fill(homeCardSurface)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(.primary.opacity(0.06), lineWidth: 0.5)
+                    }
             }
             .padding(.horizontal, 16)
         }
@@ -636,7 +673,7 @@ struct HomeView: View {
                 endPoint: .bottom
             ))
         } else {
-            shape.fill(.ultraThinMaterial)
+            shape.fill(homeCardSurface)
         }
     }
 
@@ -805,7 +842,11 @@ struct HomeView: View {
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(.thinMaterial)
+                .fill(homeCardSurface)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(.primary.opacity(0.06), lineWidth: 0.5)
+                }
         }
         .padding(.horizontal, 16)
     }
@@ -912,7 +953,7 @@ struct HomeView: View {
             .padding(14)
             .background {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.thinMaterial)
+                    .fill(homeCardSurface)
                     .overlay {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .stroke(.primary.opacity(0.06), lineWidth: 0.5)

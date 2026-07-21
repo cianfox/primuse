@@ -37,27 +37,23 @@ final class AppIconService {
         let supportsAppearance: Bool
     }
 
-    static let themeCount = 11
+    static let themeCount = 8
 
     /// Themes that ship only a single visual variant (no dark counterpart in
     /// the asset catalog). Add a theme index here when no dark image exists.
-    private static let singleVariantThemes: Set<Int> = [2]
+    private static let singleVariantThemes: Set<Int> = []
 
-    /// Brand tints per icon — eyeballed from the preview artwork. Updating an
-    /// icon design? Refresh the tint here too.
+    /// Brand tints sampled from the shared flat icon palette.
     private static let iconTints: [String: Color] = [
-        "":         Color(red: 0.078, green: 0.490, blue: 0.541),  // default — deep sea teal
-        "AppIcon1": Color(red: 0.39, green: 0.32, blue: 0.98),  // 1 — blue-purple gradient
-        "AppIcon2": Color(red: 0.55, green: 0.32, blue: 0.85),  // 2 — gorilla purple
-        "AppIcon3": Color(red: 0.20, green: 0.78, blue: 0.78),  // 3 — NAS cyan
-        "AppIcon4": Color(red: 0.92, green: 0.72, blue: 0.20),  // 4 — gold
-        "AppIcon5": Color(red: 0.95, green: 0.45, blue: 0.78),  // 5 — pastel magenta
-        "AppIcon6": Color(red: 0.45, green: 0.55, blue: 0.95),  // 6 — pastel blue
-        "AppIcon7": Color(red: 0.55, green: 0.50, blue: 0.92),  // 7 — pastel lavender
-        "AppIcon8": Color(red: 0.16, green: 0.64, blue: 0.88),  // 8 — soundflow blue
-        "AppIcon9": Color(red: 0.94, green: 0.27, blue: 0.53),  // 9 — sonic-pulse magenta
-        "AppIcon10": Color(red: 0.20, green: 0.75, blue: 0.68), // 10 — minimal-note mint
-        "AppIcon11": Color(red: 0.93, green: 0.22, blue: 0.56), // 11 — P-note magenta
+        "":         Color(red: 0.251, green: 0.765, blue: 0.816), // multi-source playback — cyan
+        "AppIcon1": Color(red: 0.957, green: 0.784, blue: 0.298), // private library — yellow
+        "AppIcon2": Color(red: 0.251, green: 0.765, blue: 0.816), // lossless audio — cyan
+        "AppIcon3": Color(red: 1.000, green: 0.420, blue: 0.341), // synchronized lyrics — coral
+        "AppIcon4": Color(red: 0.251, green: 0.765, blue: 0.816), // cross-device continuity — cyan
+        "AppIcon5": Color(red: 0.545, green: 0.424, blue: 1.000), // headphones — electric violet
+        "AppIcon6": Color(red: 0.788, green: 0.941, blue: 0.353), // record — acid lime
+        "AppIcon7": Color(red: 0.388, green: 0.902, blue: 0.839), // music note — mint cyan
+        "AppIcon8": Color(red: 1.000, green: 0.373, blue: 0.561), // speaker — vivid pink
     ]
 
     let options: [IconOption] = {
@@ -105,7 +101,15 @@ final class AppIconService {
     private init() {
         self.currentIconID = ""
         // Read after init so @AppStorage can resolve.
-        self.currentIconID = storedChoiceID
+        let persistedID = storedChoiceID
+        if options.contains(where: { $0.id == persistedID }) {
+            self.currentIconID = persistedID
+        } else {
+            // Themes 9–11 were removed in the 2026 icon-system refresh.
+            // Normalize an old stored selection so the settings UI and tint
+            // both fall back to the new primary icon after an app update.
+            storedChoiceID = ""
+        }
         // Make sure the widget extension sees the right brand color on first
         // launch — without this, fresh installs render the widget with
         // whatever fallback the design system picks.
