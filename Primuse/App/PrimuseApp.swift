@@ -114,7 +114,10 @@ private enum BackgroundScanResumeTask {
             )
             await scanService.waitForActiveScansToComplete()
 
-            scraper.resumePendingScrape(in: services.musicLibrary)
+            scraper.resumePendingScrape(
+                in: services.musicLibrary,
+                allowBackgroundExecution: true
+            )
             await scraper.waitUntilScrapeIdle()
 
             backfill.start()
@@ -364,6 +367,41 @@ final class PrimuseAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 #endif
+
+/// Keeps automatic full-library uploads in a settled foreground window. A
+/// lifecycle upload used to start while UIKit was committing the background
+/// scene, competing with scraping and SwiftUI for the same watchdog budget.
+@MainActor
+private final class LifecycleSnapshotUploadCoordinator {
+    static let shared = LifecycleSnapshotUploadCoordinator()
+
+    private var scheduledTask: Task<Void, Never>?
+
+    func sceneDidBecomeActive(syncEnabled: Bool) {
+        scheduledTask?.cancel()
+        guard syncEnabled else { return }
+
+        scheduledTask = Task(priority: .utility) {
+            do {
+                // Let startup, scene restoration, and the first home snapshot
+                // settle. Cancellation on the next inactive phase is immediate.
+                try await Task.sleep(for: .seconds(20))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            _ = await LibrarySnapshotSync.shared.uploadNow()
+        }
+    }
+
+    func sceneWillResignActive() {
+        scheduledTask?.cancel()
+        scheduledTask = nil
+        Task {
+            await LibrarySnapshotSync.shared.cancelUpload()
+        }
+    }
+}
 
 @main
 struct PrimuseApp: App {
@@ -650,24 +688,29 @@ struct PrimuseApp: App {
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     switch newPhase {
-                    case .background, .inactive:
-                        // Spotlight is optional background work. Stop it before
-                        // UIKit starts the scene-update watchdog countdown;
-                        // rebuilding thousands of thumbnails here previously
-                        // contributed to 0x8BADF00D terminations.
+                    case .inactive:
+                        #if os(iOS)
+                        // Quiesce observable library mutations only for the
+                        // active → inactive → background commit. The work is
+                        // resumed below after the background scene has settled;
+                        // background scraping itself remains enabled.
+                        LifecycleSnapshotUploadCoordinator.shared.sceneWillResignActive()
                         AppServices.shared.spotlightIndex.cancelPendingReindex()
+                        musicLibrary.beginSceneTransitionQuiescence()
+                        scraperService.pauseForSceneTransition()
+                        scanService.cancelAllActiveScans()
+                        metadataBackfill.stop()
+                        playerService.handleAppWillResignActive()
+                        #else
+                        // Window focus changes map to inactive on macOS and are
+                        // not an iOS scene-watchdog transition. Keep long-running
+                        // work intact there.
                         playerService.handleAppWillResignActive()
                         musicLibrary.persistNow()
-                        // active → inactive → background is the normal scene
-                        // transition. Upload only for the final background
-                        // phase; doing it for both phases used to launch several
-                        // complete lyric snapshot encodes at once. uploadNow()
-                        // also coalesces manual and lifecycle requests globally.
-                        if newPhase == .background, iCloudSyncEnabled {
-                            Task.detached(priority: .background) {
-                                await LibrarySnapshotSync.shared.uploadNow()
-                            }
-                        }
+                        #endif
+
+                    case .background:
+                        #if os(iOS)
                         // If a scan was running OR backfill has pending work, ask
                         // iOS to wake us later via BGProcessingTask so we can keep
                         // going past the beginBackgroundTask 30s ceiling. (No-op
@@ -676,7 +719,46 @@ struct PrimuseApp: App {
                             backfillPending: metadataBackfill.hasPendingWork,
                             scrapePending: scraperService.hasPendingScrape
                         )
+
+                        // Do not start observable/heavy work in the scene-change
+                        // callback itself. Once UIKit has had two seconds to
+                        // finish the transition, continue scraping in the normal
+                        // background execution window. BGProcessingTask takes
+                        // over later if iOS expires that finite window.
+                        Task { @MainActor in
+                            do {
+                                try await Task.sleep(for: .seconds(2))
+                            } catch {
+                                return
+                            }
+                            guard self.scenePhase == .background else { return }
+                            musicLibrary.endSceneTransitionQuiescence()
+                            musicLibrary.persistNow()
+                            scanService.resumePendingScans(
+                                sourceManager: sourceManager,
+                                library: musicLibrary,
+                                sourceStore: sourcesStore,
+                                scraperService: scraperService
+                            )
+                            scraperService.resumeBackgroundContinuation(in: musicLibrary)
+                            metadataBackfill.start()
+                        }
+                        #else
+                        musicLibrary.persistNow()
+                        if iCloudSyncEnabled {
+                            Task.detached(priority: .background) {
+                                _ = await LibrarySnapshotSync.shared.uploadNow()
+                            }
+                        }
+                        #endif
+
                     case .active:
+                        #if os(iOS)
+                        musicLibrary.endSceneTransitionQuiescence()
+                        #endif
+                        LifecycleSnapshotUploadCoordinator.shared.sceneDidBecomeActive(
+                            syncEnabled: iCloudSyncEnabled
+                        )
                         playerService.handleAppDidBecomeActive()
                         AppServices.shared.spotlightIndex.reindex(library: musicLibrary)
                         Task { await updateChecker.checkForUpdate() }
@@ -689,7 +771,7 @@ struct PrimuseApp: App {
                             sourceStore: sourcesStore,
                             scraperService: scraperService
                         )
-                        scraperService.resumePendingScrape(in: musicLibrary)
+                        scraperService.resumeAfterSceneTransition(in: musicLibrary)
                         // Pick up any bare songs left behind by an earlier scan.
                         metadataBackfill.start()
                     @unknown default:

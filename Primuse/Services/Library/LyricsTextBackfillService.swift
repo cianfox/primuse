@@ -80,6 +80,7 @@ final class LyricsTextBackfillService {
             let chunk = Array(candidates[start..<end])
 
             let batch = await Self.decodeChunk(chunk)
+            if Task.isCancelled { return }
 
             processedCount += chunk.count
             indexedCount += batch.count

@@ -23,10 +23,15 @@ private actor SnapshotUploadSingleFlight {
         }
         return result
     }
+
+    func cancel() {
+        inFlight?.task.cancel()
+        inFlight = nil
+    }
 }
 
 /// Serializes CloudKit mutations so a sources-only write cannot race a full
-/// snapshot delete/recreate cycle.
+/// snapshot mutation.
 private actor SnapshotMutationLock {
     private var isLocked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -102,17 +107,54 @@ final class LibrarySnapshotSync: Sendable {
         }
     }
 
+    /// Scene transitions may begin while a delayed foreground upload is still
+    /// running. Cancel it so snapshot CPU/network work cannot leak into UIKit's
+    /// scene-update watchdog window.
+    func cancelUpload() async {
+        await fullUploadSingleFlight.cancel()
+    }
+
     private func performUploadNow() async -> Bool {
+        guard !Task.isCancelled else { return false }
         let fm = FileManager.default
         guard fm.fileExists(atPath: libraryCacheURL.path) else {
             plog("LibrarySnapshotSync: no local library-cache.json, skip upload")
             return false
         }
 
-        let record = CKRecord(recordType: recordType, recordID: recordID)
+        let record: CKRecord
+        do {
+            record = try await database.record(for: recordID)
+        } catch is CancellationError {
+            return false
+        } catch {
+            record = CKRecord(recordType: recordType, recordID: recordID)
+        }
+        guard !Task.isCancelled else { return false }
+
+        // Work on the fetched record (and its change tag) instead of deleting
+        // the last known-good snapshot first. Explicitly clear both alternate
+        // representations so changedKeys removes stale fields atomically.
+        for key in ["libraryGz", "library", "sourcesGz", "sources", "lyricsGz"] {
+            record[key] = nil
+        }
         // 整库快照走【内联 gzip Data】而非 CKAsset:实测 tvOS 下 CKAsset 的字节经常
         // 下载失败,而内联 Data(和凭据同通道)稳定可靠。压缩后超 ~800KB 才回退 CKAsset。
-        let libInfo = attachSnapshot(record, fileURL: libraryCacheURL, gzKey: "libraryGz", assetKey: "library")
+        guard let libraryAttachment = attachSnapshot(
+            record,
+            fileURL: libraryCacheURL,
+            gzKey: "libraryGz",
+            assetKey: "library"
+        ) else {
+            plog("LibrarySnapshotSync: cannot stage library snapshot, keeping cloud record unchanged")
+            return false
+        }
+        defer {
+            if let stagingURL = libraryAttachment.stagingURL {
+                try? fm.removeItem(at: stagingURL)
+            }
+        }
+        let libInfo = libraryAttachment.info
         var srcInfo = "sources=skip"
         if fm.fileExists(atPath: sourcesURL.path) {
             srcInfo = attachSourcesSnapshot(record, gzKey: "sourcesGz", assetKey: "sources")
@@ -127,21 +169,11 @@ final class LibrarySnapshotSync: Sendable {
             }
         }
         record["modifiedAt"] = Date() as CKRecordValue
-
-        // Build every bounded local field before deleting the old record. If a
-        // local read fails, the last known-good cloud snapshot remains intact.
-        // Old records are still recreated because stale CKAsset fields may not
-        // be cleared reliably by an all-keys save without a change tag.
-        do {
-            try await database.deleteRecord(withID: recordID)
-            plog("LibrarySnapshotSync: cleared old snapshot record before re-upload")
-        } catch {
-            // unknownItem (the record did not exist) is expected.
-        }
+        guard !Task.isCancelled else { return false }
 
         var ok = false
         do {
-            let (saveResults, _) = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys)
+            let (saveResults, _) = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .changedKeys)
             switch saveResults[recordID] {
             case .success:
                 plog("LibrarySnapshotSync: uploaded snapshot [\(libInfo); \(srcInfo)]")
@@ -155,7 +187,9 @@ final class LibrarySnapshotSync: Sendable {
             plog("LibrarySnapshotSync: upload failed — \(error)")
         }
         #if !os(tvOS)
-        await gatherAndUploadCredentials()
+        if !Task.isCancelled {
+            await gatherAndUploadCredentials()
+        }
         #endif
         return ok
     }
@@ -449,22 +483,48 @@ final class LibrarySnapshotSync: Sendable {
         return url
     }
 
-    /// 把 `fileURL` 的内容压缩后内联进 record;过大则回退 CKAsset。返回简要说明供日志。
-    @discardableResult
-    private func attachSnapshot(_ record: CKRecord, fileURL: URL, gzKey: String, assetKey: String) -> String {
-        if let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
-           let size = values.fileSize,
-           size > Self.maxInlineSnapshotInputBytes {
-            record[assetKey] = CKAsset(fileURL: fileURL)
-            return "\(assetKey)=asset raw=\(size)B"
-        }
-        guard let raw = try? Data(contentsOf: fileURL) else { return "\(gzKey)=no-file" }
-        if let gz = try? (raw as NSData).compressed(using: .zlib) as Data, gz.count < Self.inlineGzLimit {
+    private struct SnapshotAttachment {
+        let info: String
+        let stagingURL: URL?
+    }
+
+    /// 把 `fileURL` 的内容压缩后内联进 record;过大则回退 CKAsset。CKAsset 必须
+    /// 指向本次上传独占的稳定副本: library-cache.json 会被持续刮削的持久化任务
+    /// 原子替换,直接引用活文件会让 CloudKit 报 Asset File Modified。
+    private func attachSnapshot(
+        _ record: CKRecord,
+        fileURL: URL,
+        gzKey: String,
+        assetKey: String
+    ) -> SnapshotAttachment? {
+        let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
+        let size = values?.fileSize
+        if let size, size <= Self.maxInlineSnapshotInputBytes,
+           let raw = try? Data(contentsOf: fileURL),
+           let gz = try? (raw as NSData).compressed(using: .zlib) as Data,
+           gz.count < Self.inlineGzLimit {
             record[gzKey] = gz as CKRecordValue
-            return "\(gzKey)=inline \(gz.count)B"
-        } else {
-            record[assetKey] = CKAsset(fileURL: fileURL)
-            return "\(assetKey)=asset"
+            return SnapshotAttachment(info: "\(gzKey)=inline \(gz.count)B", stagingURL: nil)
+        }
+
+        guard !Task.isCancelled else { return nil }
+        let stagingURL = directory.appendingPathComponent(
+            ".library-sync-\(UUID().uuidString).json",
+            isDirectory: false
+        )
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: fileURL, to: stagingURL)
+            record[assetKey] = CKAsset(fileURL: stagingURL)
+            let rawDescription = size.map { " raw=\($0)B" } ?? ""
+            return SnapshotAttachment(
+                info: "\(assetKey)=asset\(rawDescription)",
+                stagingURL: stagingURL
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: stagingURL)
+            plog("LibrarySnapshotSync: staging snapshot asset failed — \(error)")
+            return nil
         }
     }
 

@@ -22,6 +22,7 @@ private struct SearchLibraryRevisionObserver: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onChange(of: library.searchRevision) { _, _ in onRevisionChange() }
+            .onChange(of: library.lyricsSearchRevision) { _, _ in onRevisionChange() }
     }
 }
 

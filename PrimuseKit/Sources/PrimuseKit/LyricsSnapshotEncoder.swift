@@ -44,6 +44,7 @@ public enum LyricsSnapshotEncoder {
         var candidates: [Candidate] = []
         candidates.reserveCapacity(urls.count)
         for url in urls {
+            guard !Task.isCancelled else { return nil }
             let name = url.lastPathComponent
             guard isValidFileName(name),
                   let values = try? url.resourceValues(forKeys: keys),
@@ -82,6 +83,7 @@ public enum LyricsSnapshotEncoder {
         var fileCount = 0
         var truncated = false
         for candidate in candidates {
+            guard !Task.isCancelled else { return nil }
             let commaBytes = fileCount == 0 ? 0 : 1
             let fixedBytes = commaBytes + candidate.name.utf8.count + 5
             let availableForBase64 = maximumOutputBytes - output.count - fixedBytes - 1

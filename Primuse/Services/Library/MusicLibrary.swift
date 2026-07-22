@@ -906,6 +906,10 @@ final class MusicLibrary {
     /// body evaluation.
     private var visibleSongCountBySourceID: [String: Int] = [:]
     private(set) var searchRevision: Int = 0
+    /// Lyrics cache files are searched directly by `LibrarySearchWorker`.
+    /// Keep their invalidation separate from structural library revisions so
+    /// each scraped lyric does not refresh Home and other whole-library views.
+    private(set) var lyricsSearchRevision: Int = 0
 
     private let snapshotURL: URL
     private let encoder = JSONEncoder()
@@ -983,12 +987,11 @@ final class MusicLibrary {
 
         loadSnapshot()
 
-        // MetadataAssetStore 写 lyrics 缓存后会发这个通知 — 把对应 song 的
-        // lyricsText 同步进库, 让 FTS5 全文歌词搜索覆盖到这首。
-        //
-        // 关键: 一次刮削会触发多次 cacheLyrics (主写一次 + sidecar 写一次)。
-        // 500ms debounce 合并多个 songID, flush 时只更新 search 用 lyricsText,
-        // 不再走 replaceSongs 的全套 album/artist/playlist pipeline。
+        // MetadataAssetStore writes the actual searchable lyrics files. Search
+        // reads those files directly, so do not mirror every scrape into the
+        // two observable 11k-song arrays. That old mirror caused a full-array
+        // traversal/publication about once per scraped song. A small, separate
+        // revision only invalidates SearchView's lyrics cache.
         NotificationCenter.default.addObserver(
             forName: .primuseLyricsDidCache,
             object: nil,
@@ -996,10 +999,9 @@ final class MusicLibrary {
         ) { [weak self] note in
             guard let self,
                   let info = note.userInfo,
-                  let songID = info["songID"] as? String,
-                  let text = info["lyricsText"] as? String else { return }
+                  info["songID"] as? String != nil else { return }
             Task { @MainActor in
-                self.scheduleLyricsTextFlush(songID: songID, lyricsText: text)
+                self.scheduleLyricsSearchInvalidation()
             }
         }
     }
@@ -1009,14 +1011,63 @@ final class MusicLibrary {
     /// flush 时只用最新值, 中间快照丢弃。
     private var pendingLyricsText: [String: String] = [:]
     private var pendingLyricsFlushTask: Task<Void, Never>?
+    private var lyricsSearchInvalidationTask: Task<Void, Never>?
+    private var deferredLyricsSearchInvalidation = false
+    private var isDeferringSceneTransitionPublications = false
+    private var deferredPersistRequested = false
 
-    private func scheduleLyricsTextFlush(songID: String, lyricsText: String) {
-        // 内容跟 library 里已有的一致就不排队 — 也避免反复 fire flush。
-        if let existing = songs.first(where: { $0.id == songID })?.lyricsText,
-           existing == lyricsText {
+    /// SwiftUI scene commits have a strict watchdog budget. Keep incoming
+    /// lyrics-search updates buffered while iOS moves active → background;
+    /// scraping and cache writes continue, but the two 11k-element observable
+    /// arrays are not republished in that narrow window.
+    func beginSceneTransitionQuiescence() {
+        guard !isDeferringSceneTransitionPublications else { return }
+        isDeferringSceneTransitionPublications = true
+        pendingLyricsFlushTask?.cancel()
+        pendingLyricsFlushTask = nil
+        if lyricsSearchInvalidationTask != nil {
+            deferredLyricsSearchInvalidation = true
+        }
+        lyricsSearchInvalidationTask?.cancel()
+        lyricsSearchInvalidationTask = nil
+        persistTask?.cancel()
+        persistTask = nil
+        plog("📚 Deferring library publications during scene transition")
+    }
+
+    func endSceneTransitionQuiescence() {
+        guard isDeferringSceneTransitionPublications else { return }
+        isDeferringSceneTransitionPublications = false
+        plog("📚 Resuming deferred library publications after scene transition")
+
+        if !pendingLyricsText.isEmpty {
+            schedulePendingLyricsTextFlush()
+        }
+        if deferredLyricsSearchInvalidation {
+            deferredLyricsSearchInvalidation = false
+            scheduleLyricsSearchInvalidation()
+        }
+        if deferredPersistRequested {
+            deferredPersistRequested = false
+            persistSnapshot()
+        }
+    }
+
+    private func scheduleLyricsSearchInvalidation() {
+        if isDeferringSceneTransitionPublications {
+            deferredLyricsSearchInvalidation = true
             return
         }
-        pendingLyricsText[songID] = lyricsText
+        guard lyricsSearchInvalidationTask == nil else { return }
+        lyricsSearchInvalidationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, let self else { return }
+            self.lyricsSearchRevision &+= 1
+            self.lyricsSearchInvalidationTask = nil
+        }
+    }
+
+    private func schedulePendingLyricsTextFlush() {
         pendingLyricsFlushTask?.cancel()
         pendingLyricsFlushTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.pendingLyricsFlushDelay))
@@ -1041,6 +1092,10 @@ final class MusicLibrary {
     /// needless main-actor work immediately after the lyrics UI appeared.
     func updateLyricsText(_ lyricsTextBySongID: [String: String]) {
         guard !lyricsTextBySongID.isEmpty else { return }
+        if isDeferringSceneTransitionPublications {
+            pendingLyricsText.merge(lyricsTextBySongID) { _, latest in latest }
+            return
+        }
 
         var songIndexByID: [String: Int] = [:]
         songIndexByID.reserveCapacity(songs.count)
@@ -2267,6 +2322,10 @@ final class MusicLibrary {
     private var persistWriteTask: Task<Void, Never>?
 
     private func persistSnapshot() {
+        if isDeferringSceneTransitionPublications {
+            deferredPersistRequested = true
+            return
+        }
         persistTask?.cancel()
         persistTask = Task {
             try? await Task.sleep(for: .seconds(2))

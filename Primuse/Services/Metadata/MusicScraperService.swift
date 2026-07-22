@@ -16,8 +16,10 @@ final class MusicScraperService {
     private var scrapingTask: Task<Void, Never>?
     private var scrapingGeneration = 0
     private var backgroundEnrichmentTask: Task<Void, Never>?
+    private var sidecarWriteTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingEnrichmentSongIDs: [String] = []
     private var pendingEnrichmentSongIDSet: Set<String> = []
+    private var isPausedForSceneTransition = false
     private let scrapeCheckpointURL: URL
     private var scrapeCheckpoint: ScrapeCheckpoint?
     #if os(iOS)
@@ -154,7 +156,7 @@ final class MusicScraperService {
                     let songForWrite = updatedSong
                     let sourceManager = self.sourceManager
                     let songID = updatedSong.id
-                    Task.detached(priority: .utility) {
+                    startSidecarWriteTask {
                         do {
                             let writeResult = try await MusicScraperService.writeSidecarWithTimeout(
                                 seconds: sidecarSettings.timeout,
@@ -186,11 +188,12 @@ final class MusicScraperService {
                                 await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
                             }
 
-                        if needsUpdate {
-                            await MainActor.run {
-                                library.updateAssetReferences(songID: refSong.id, coverRef: refSong.coverArtFileName)
+                            guard !Task.isCancelled else { return }
+                            if needsUpdate {
+                                await MainActor.run {
+                                    library.updateAssetReferences(songID: refSong.id, coverRef: refSong.coverArtFileName)
+                                }
                             }
-                        }
 
                             if !writeResult.errors.isEmpty {
                                 plog("⚠️ Sidecar write errors: \(writeResult.errors)")
@@ -279,10 +282,62 @@ final class MusicScraperService {
             pendingEnrichmentSongIDs.append(song.id)
         }
 
-        guard backgroundEnrichmentTask == nil else { return }
+        startBackgroundEnrichmentIfNeeded(in: library)
+    }
+
+    private func startBackgroundEnrichmentIfNeeded(in library: MusicLibrary) {
+        guard !isPausedForSceneTransition,
+              backgroundEnrichmentTask == nil,
+              !pendingEnrichmentSongIDs.isEmpty else { return }
         backgroundEnrichmentTask = Task(priority: .utility) { @MainActor [weak self] in
             await self?.runBackgroundEnrichment(in: library)
         }
+    }
+
+    /// Briefly gates scraping while UIKit commits active → inactive →
+    /// background. The work is resumed from its checkpoint shortly after the
+    /// background phase arrives; this is not a policy pause. Without the gate,
+    /// per-song library publications make SwiftUI recompute the 11k-song view
+    /// graph inside UIKit's ten-second scene-update watchdog window.
+    func pauseForSceneTransition() {
+        guard !isPausedForSceneTransition else { return }
+        isPausedForSceneTransition = true
+        let shouldHoldBackgroundWindow = isScraping
+        plog("MusicScraperService: briefly gating publications for scene transition (scraping=\(isScraping))")
+
+        if isScraping {
+            cancel(preservingCheckpoint: true)
+        } else {
+            cancelSidecarWriteTasks()
+        }
+
+        // cancel(preservingCheckpoint:) ends the old assertion. Re-acquire one
+        // for the short transition gate so iOS keeps us runnable long enough
+        // to restart from the checkpoint in the background phase.
+        if shouldHoldBackgroundWindow {
+            beginBackgroundTaskIfNeeded()
+        }
+
+        backgroundEnrichmentTask?.cancel()
+        backgroundEnrichmentTask = nil
+        isBackgroundEnriching = false
+    }
+
+    func resumeAfterSceneTransition(in library: MusicLibrary) {
+        isPausedForSceneTransition = false
+        plog("MusicScraperService: resuming after foreground scene transition")
+        resumePendingScrape(in: library)
+        startBackgroundEnrichmentIfNeeded(in: library)
+    }
+
+    /// Continue the same scrape in the normal UIApplication background window
+    /// once the scene transition itself has settled. BGProcessingTask remains
+    /// the longer-running continuation after that finite window expires.
+    func resumeBackgroundContinuation(in library: MusicLibrary) {
+        isPausedForSceneTransition = false
+        plog("MusicScraperService: continuing scrape after background scene settled")
+        resumePendingScrape(in: library, allowBackgroundExecution: true)
+        startBackgroundEnrichmentIfNeeded(in: library)
     }
 
     func cancel() {
@@ -303,6 +358,7 @@ final class MusicScraperService {
         }
         scrapingTask?.cancel()
         scrapingTask = nil
+        cancelSidecarWriteTasks()
         isScraping = false
         currentSongTitle = ""
         endBackgroundTaskIfHeld()
@@ -311,8 +367,16 @@ final class MusicScraperService {
         }
     }
 
-    func resumePendingScrape(in library: MusicLibrary) {
-        guard !isScraping, let checkpoint = scrapeCheckpoint else { return }
+    func resumePendingScrape(
+        in library: MusicLibrary,
+        allowBackgroundExecution: Bool = false
+    ) {
+        if allowBackgroundExecution {
+            isPausedForSceneTransition = false
+        }
+        guard allowBackgroundExecution || !isPausedForSceneTransition,
+              !isScraping,
+              let checkpoint = scrapeCheckpoint else { return }
         let songsByID = Dictionary(
             library.visibleSongs.map { ($0.id, $0) },
             uniquingKeysWith: { current, _ in current }
@@ -327,7 +391,8 @@ final class MusicScraperService {
             songs: songs,
             in: library,
             forceRescrape: checkpoint.forceRescrape,
-            saveCheckpoint: false
+            saveCheckpoint: false,
+            allowBackgroundExecution: allowBackgroundExecution
         )
     }
 
@@ -345,9 +410,11 @@ final class MusicScraperService {
         songs requestedSongs: [Song],
         in library: MusicLibrary,
         forceRescrape: Bool,
-        saveCheckpoint: Bool = true
+        saveCheckpoint: Bool = true,
+        allowBackgroundExecution: Bool = false
     ) {
-        guard !isScraping else { return }
+        guard !isScraping,
+              allowBackgroundExecution || !isPausedForSceneTransition else { return }
 
         let latestByID = Dictionary(library.visibleSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let songs = requestedSongs.reduce(into: (ordered: [Song](), seen: Set<String>())) { result, song in
@@ -400,16 +467,25 @@ final class MusicScraperService {
             // Phase 1: Scrape song metadata + write sidecar files
             for song in songs {
                 guard !Task.isCancelled else { return }
-                defer { advanceScrapeCheckpoint(afterCompleting: song.id) }
+                defer {
+                    // A lifecycle cancellation means this song may only be
+                    // partially written. Leave the checkpoint on it so resume
+                    // repeats one idempotent unit instead of silently skipping.
+                    if !Task.isCancelled {
+                        advanceScrapeCheckpoint(afterCompleting: song.id)
+                    }
+                }
 
                 currentSongTitle = song.title
 
                 do {
                     guard let result = try await processedSongWithAssets(song, forceRescrape: forceRescrape) else {
+                        guard !Task.isCancelled else { return }
                         processedCount += 1
                         skippedCount += 1
                         continue
                     }
+                    guard !Task.isCancelled else { return }
 
                     processedCount += 1
                     var updatedSong = result.song
@@ -450,6 +526,7 @@ final class MusicScraperService {
                             updatedSong.lyricsFileName = MetadataAssetStore.shared.expectedLyricsFileName(for: updatedSong.id)
                         }
 
+                        guard !Task.isCancelled else { return }
                         library.replaceSong(updatedSong)
                         updatedCount += 1
 
@@ -459,6 +536,7 @@ final class MusicScraperService {
                             coverData: coverData,
                             lyricsLines: lyricsLines
                         )
+                        guard !Task.isCancelled else { return }
 
                         if sidecarCoverData != nil || sidecarLyricsLines != nil {
                             let songForWrite = updatedSong
@@ -472,7 +550,7 @@ final class MusicScraperService {
                             }
 
                             // Write sidecar files to source asynchronously (don't block scraping loop)
-                            Task.detached(priority: .utility) {
+                            startSidecarWriteTask {
                                 do {
                                     let writeResult = try await MusicScraperService.writeSidecarWithTimeout(
                                         seconds: sidecarSettings.timeout,
@@ -500,6 +578,7 @@ final class MusicScraperService {
                                         await MetadataAssetStore.shared.cacheLyrics(lyricsLines, forSongID: songID, force: true)
                                     }
 
+                                    guard !Task.isCancelled else { return }
                                     if needsUpdate {
                                         await MainActor.run {
                                             library.updateAssetReferences(songID: refSong.id, coverRef: refSong.coverArtFileName)
@@ -519,7 +598,10 @@ final class MusicScraperService {
                     } else {
                         skippedCount += 1
                     }
+                } catch is CancellationError {
+                    return
                 } catch {
+                    if Task.isCancelled { return }
                     processedCount += 1
                     failedCount += 1
                 }
@@ -590,6 +672,35 @@ final class MusicScraperService {
     private func clearScrapeCheckpoint() {
         scrapeCheckpoint = nil
         try? FileManager.default.removeItem(at: scrapeCheckpointURL)
+    }
+
+    /// Tracks every unstructured sidecar write so lifecycle cancellation can
+    /// stop the network/file work as well as the parent scraping loop. Detached
+    /// tasks that were not retained previously survived `scrapingTask.cancel()`.
+    private func startSidecarWriteTask(
+        _ operation: @escaping @Sendable () async -> Void
+    ) {
+        guard !isPausedForSceneTransition else { return }
+
+        let id = UUID()
+        let task = Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+        sidecarWriteTasks[id] = task
+
+        Task { @MainActor [weak self] in
+            await task.value
+            self?.sidecarWriteTasks[id] = nil
+        }
+    }
+
+    private func cancelSidecarWriteTasks() {
+        let tasks = sidecarWriteTasks.values
+        sidecarWriteTasks.removeAll(keepingCapacity: true)
+        for task in tasks {
+            task.cancel()
+        }
     }
 
     private func beginBackgroundTaskIfNeeded() {
@@ -760,6 +871,7 @@ final class MusicScraperService {
                 guard let result = try await processedSongWithAssets(song, forceRescrape: false) else {
                     continue
                 }
+                guard !Task.isCancelled else { return }
 
                 if result.song != song {
                     // processedSongWithAssets 用 trustedSource:false, merged song 里的
@@ -785,6 +897,7 @@ final class MusicScraperService {
                         enrichedSong.lyricsFileName = song.lyricsFileName
                     }
 
+                    guard !Task.isCancelled else { return }
                     if enrichedSong != song {
                         library.replaceSong(enrichedSong)
                         await writeBackToMediaServerIfSupported(
