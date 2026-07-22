@@ -2,6 +2,29 @@ import SwiftUI
 import MusicKit
 import PrimuseKit
 
+@MainActor
+private final class SearchWorkCoordinator {
+    var searchTask: Task<Void, Never>?
+    var lyricsCache = LibrarySearchCache()
+    var generation = 0
+
+    func cancelSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+    }
+}
+
+private struct SearchLibraryRevisionObserver: View {
+    @Environment(MusicLibrary.self) private var library
+    let onRevisionChange: () -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: library.searchRevision) { _, _ in onRevisionChange() }
+    }
+}
+
 struct SearchView: View {
     private static let recentSearchesKey = "search_recent_queries"
     private static let recentSearchLimit = 12
@@ -15,8 +38,10 @@ struct SearchView: View {
     @State private var searchResults: [LibrarySearchResult] = []
     @State private var matchingAlbums: [PrimuseKit.Album] = []
     @State private var recentSearches: [String] = []
-    @State private var searchTask: Task<Void, Never>?
-    @State private var lyricsSearchCache = LibrarySearchCache()
+    /// Task handles, generation tokens and the reusable lyrics index are
+    /// operational state. Keeping them outside SwiftUI rendering state avoids
+    /// extra full-page evaluations on every debounce/cancellation/cache fill.
+    @State private var workCoordinator = SearchWorkCoordinator()
     /// 是否正在跑一次搜索 (含 debounce + detached worker)。用来在结果还没
     /// 出来时显示 loading 占位, 避免 200ms+ 窗口里先闪一下 "无匹配" 再
     /// 跳到结果。
@@ -24,10 +49,6 @@ struct SearchView: View {
     /// 当前已经渲染的结果对应的 query。如果它与 searchText 不一致, 说明
     /// 屏幕上还是上一轮的旧结果, ContentUnavailableView 不该出来。
     @State private var renderedQuery: String = ""
-    /// 自增 generation token — 防止旧 task 的 defer 覆盖新一轮 performSearch
-    /// 设的 isSearching 状态。task 完成时只在 gen 还匹配时才 reset。
-    @State private var searchGeneration: Int = 0
-
     var body: some View {
         // macOS: 不再自带 NavigationStack —— SearchView 已经渲染在
         // MacDetailContainer 的栈里, 点专辑/艺术家结果时直接 push 到主栈,
@@ -55,10 +76,12 @@ struct SearchView: View {
             performSearch(query: newValue)
             appleMusic.search(query: newValue)
         }
-        .onChange(of: library.searchRevision) { _, _ in
-            lyricsSearchCache = LibrarySearchCache()
+        .background {
+            SearchLibraryRevisionObserver {
+                workCoordinator.lyricsCache = LibrarySearchCache()
+            }
         }
-        .onDisappear { searchTask?.cancel() }
+        .onDisappear { workCoordinator.cancelSearch() }
     }
 
     private var iosBody: some View {
@@ -861,7 +884,7 @@ struct SearchView: View {
     }
 
     private func performSearch(query: String) {
-        searchTask?.cancel()
+        workCoordinator.cancelSearch()
         guard !query.isEmpty else {
             searchResults = []
             matchingAlbums = []
@@ -872,19 +895,19 @@ struct SearchView: View {
 
         let songsSnapshot = library.visibleSongs
         let albumsSnapshot = library.visibleAlbums
-        let cacheSnapshot = lyricsSearchCache
+        let cacheSnapshot = workCoordinator.lyricsCache
 
-        searchGeneration += 1
-        let myGen = searchGeneration
+        workCoordinator.generation += 1
+        let myGen = workCoordinator.generation
         isSearching = true
 
-        searchTask = Task {
+        workCoordinator.searchTask = Task {
             // 不管成功 / 取消 / 出错都要把 isSearching 关回去, 否则 UI 卡在
             // loading 状态。用 generation 防止旧 task 的 defer 覆盖新一轮
             // performSearch 设的状态 — 新 task 已 bump generation 时, 旧 task
             // defer 看到 gen 不匹配就不动 state。
             defer {
-                if myGen == searchGeneration {
+                if myGen == workCoordinator.generation {
                     isSearching = false
                 }
             }
@@ -908,7 +931,7 @@ struct SearchView: View {
             guard !Task.isCancelled else { return }
             searchResults = output.songResults
             matchingAlbums = output.albumResults
-            lyricsSearchCache = output.cache
+            workCoordinator.lyricsCache = output.cache
             renderedQuery = query
             isSearching = false
         }

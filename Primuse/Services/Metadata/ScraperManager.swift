@@ -33,7 +33,7 @@ actor ScraperManager {
         var delay: Duration = retryAfter.map { .seconds(max($0, 1)) } ?? Self.defaultBackoff
         if delay > Self.maxBackoff { delay = Self.maxBackoff }
         rateLimitBackoff[config.id] = ContinuousClock.now + delay
-        NSLog("⛔️ Scrape rate limited [\(config.type.displayName)], backing off \(delay)")
+        plog("⛔️ Scrape rate limited [\(config.type.displayName)], backing off \(delay)")
     }
 
     /// 判断 catch 到的 error 是否为限流;是则登记退避并返回 true(调用方据此跳到下一源)。
@@ -62,22 +62,22 @@ actor ScraperManager {
         if needs.metadata {
             for config in enabledSources where config.type.supportsMetadata {
                 if isBackingOff(config) {
-                    NSLog("🔍 Skipping \(config.type.displayName) metadata — rate-limit backoff")
+                    plog("🔍 Skipping \(config.type.displayName) metadata — rate-limit backoff")
                     continue
                 }
                 do {
-                    NSLog("🔍 Scraping metadata from \(config.type.displayName) for '\(cleanedTitle)'")
+                    plog("🔍 Scraping metadata from \(config.type.displayName) for '\(cleanedTitle)'")
                     let scraper = getScraper(for: config)
                     let searchResult = try await scraper.search(
                         query: cleanedTitle, artist: effectiveArtist, album: nil, limit: Self.autoScrapeLimit
                     )
-                    NSLog("🔍 \(config.type.displayName) returned \(searchResult.items.count) results")
+                    plog("🔍 \(config.type.displayName) returned \(searchResult.items.count) results")
                     if let best = Self.bestMatch(in: searchResult.items, title: cleanedTitle, artist: effectiveArtist, durationMs: durationMs(duration)) {
                         result.detail = try await scraper.getDetail(externalId: best.externalId)
                         if result.detail != nil { break }
                     }
                 } catch {
-                    NSLog("🔍 \(config.type.displayName) FAILED: \(error.localizedDescription)")
+                    plog("🔍 \(config.type.displayName) FAILED: \(error.localizedDescription)")
                     await SSLTrustStore.shared.handleSSLErrorIfNeeded(error)
                     _ = handleRateLimit(error, config: config)
                     result.errors.append("[\(config.type.displayName)] metadata: \(error.localizedDescription)")

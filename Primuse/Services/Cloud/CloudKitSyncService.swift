@@ -1245,8 +1245,15 @@ final class CloudKitSyncService {
                   let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else {
                 continue
             }
+            // A corrupted/stale CloudKit system-fields archive must be a cache
+            // miss, not an uncaught Objective-C exception. The default policy
+            // is `.raiseException`, which bypasses Swift's `try?`/`do-catch`.
+            unarchiver.decodingFailurePolicy = .setErrorAndReturn
             unarchiver.requiresSecureCoding = true
-            guard let record = CKRecord(coder: unarchiver),
+            let record = CKRecord(coder: unarchiver)
+            unarchiver.finishDecoding()
+            guard unarchiver.error == nil,
+                  let record,
                   Self.sameRecordID(record.recordID, recordID) else {
                 continue
             }

@@ -1,4 +1,5 @@
 import Foundation
+import PrimuseKit
 
 actor SynologyAPI {
     private let host: String
@@ -330,7 +331,7 @@ actor SynologyAPI {
 
     func deleteFile(path: String) async throws {
         guard let sid else { throw SynologyError.notLoggedIn }
-        let pathData = try JSONSerialization.data(withJSONObject: [path])
+        let pathData = try SafeJSONSerialization.data(withJSONObject: [path])
         let pathJSON = String(data: pathData, encoding: .utf8) ?? "[\"\(path)\"]"
 
         let data = try await request(path: "/webapi/entry.cgi", params: [

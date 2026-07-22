@@ -93,11 +93,12 @@ struct AlbumGridView: View {
     /// 设计稿 LIB-02: 不再用带大封面的 hero header (那是全部歌曲/歌单的样式),
     /// 而是左上角 "资料库 / 专辑" 小标题 + 右上排序, 下面五列封面网格。
     private var macGrid: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        let albums = sortedAlbums
+        return ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                albumsHeader
+                albumsHeader(displayedCount: albums.count)
 
-                if sortedAlbums.isEmpty {
+                if albums.isEmpty {
                     ContentUnavailableView.search(text: albumFilter)
                         .frame(maxWidth: .infinity, minHeight: 280)
                         .padding(.horizontal, PMSpace.xxxl)
@@ -107,7 +108,7 @@ struct AlbumGridView: View {
                         alignment: .leading,
                         spacing: 24
                     ) {
-                        ForEach(sortedAlbums) { album in
+                        ForEach(albums) { album in
                             NavigationLink(value: album) {
                                 GeometryReader { proxy in
                                     macAlbumTile(album, artworkSize: proxy.size.width)
@@ -120,7 +121,7 @@ struct AlbumGridView: View {
                     .padding(.horizontal, PMSpace.xxxl)
                 } else {
                     LazyVStack(spacing: 1) {
-                        ForEach(sortedAlbums) { album in
+                        ForEach(albums) { album in
                             NavigationLink(value: album) {
                                 macAlbumListRow(album)
                             }
@@ -136,7 +137,7 @@ struct AlbumGridView: View {
         .background(PMColor.bg.ignoresSafeArea())
     }
 
-    private var albumsHeader: some View {
+    private func albumsHeader(displayedCount: Int) -> some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("library_title")
@@ -152,7 +153,7 @@ struct AlbumGridView: View {
             Spacer()
 
             HStack(spacing: 10) {
-                Text(verbatim: "\(sortedAlbums.count)/\(library.visibleAlbums.count) \(String(localized: "albums_count")) · 按\(albumSort.label)")
+                Text(verbatim: "\(displayedCount)/\(library.visibleAlbums.count) \(String(localized: "albums_count")) · 按\(albumSort.label)")
                     .font(.system(size: 12))
                     .foregroundStyle(PMColor.textFaint)
                 albumFilterField

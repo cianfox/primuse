@@ -367,6 +367,7 @@ struct PlaylistDetailView: View {
 
     private var macSongTable: some View {
         let rows = Array(songs.enumerated())
+        let playCounts = playCountsBySongID
         return VStack(spacing: 0) {
             // 设计稿 9 列: # / cover / 标题 / 艺术家 / 专辑 / 格式 / 时长 / 播放 / 源
             HStack(spacing: 12) {
@@ -391,7 +392,7 @@ struct PlaylistDetailView: View {
 
             LazyVStack(spacing: 1) {
                 ForEach(rows, id: \.element.id) { index, song in
-                    macSongRow(song, index: index)
+                    macSongRow(song, index: index, playCount: playCounts[song.id, default: 0])
                 }
             }
             .padding(.vertical, 4)
@@ -406,9 +407,8 @@ struct PlaylistDetailView: View {
         return dict
     }
 
-    private func macSongRow(_ song: Song, index: Int) -> some View {
+    private func macSongRow(_ song: Song, index: Int, playCount: Int) -> some View {
         let isCurrent = player.currentSong?.id == song.id
-        let plays = playCountsBySongID[song.id] ?? 0
         let source = sourcesStore.sources.first(where: { $0.id == song.sourceID })
         return HStack(spacing: 12) {
             ZStack {
@@ -470,8 +470,8 @@ struct PlaylistDetailView: View {
                 .frame(width: 80, alignment: .trailing)
 
             Group {
-                if plays > 0 {
-                    Text("\(plays)")
+                if playCount > 0 {
+                    Text("\(playCount)")
                         .font(.system(size: 11.5, design: .monospaced))
                         .monospacedDigit()
                         .foregroundStyle(PMColor.textMuted)

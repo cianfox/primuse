@@ -135,7 +135,7 @@ actor Pan123Source: MusicSourceConnector, OAuthCloudSource {
 
     func deleteFile(at path: String) async throws {
         guard let fid = Self.intValue(path) else { throw CloudDriveError.invalidResponse }
-        let body = try JSONSerialization.data(withJSONObject: ["fileIDs": [fid]])
+        let body = try SafeJSONSerialization.data(withJSONObject: ["fileIDs": [fid]])
         _ = try await authedRequest("/api/v1/file/trash", method: "POST", body: body)
     }
 

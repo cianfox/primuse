@@ -182,7 +182,7 @@ struct MacSidebar: View {
                             .truncationMode(.tail)
                         Spacer(minLength: 4)
                         // 设计稿: 音乐源行右侧显示该源的歌曲数 (mono 字体 + textFaint)
-                        let count = library.visibleSongs.filter { $0.sourceID == source.id }.count
+                        let count = library.visibleSongCount(forSourceID: source.id)
                         if count > 0 {
                             Text("\(count)")
                                 .font(.system(size: 11, design: .monospaced))

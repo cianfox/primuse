@@ -1512,19 +1512,19 @@ private final class MusicVideoLayerView: UIView {
 
     private var currentPlayer: AVPlayer?
 
-    var playerLayer: AVPlayerLayer {
-        layer as! AVPlayerLayer
+    var playerLayer: AVPlayerLayer? {
+        layer as? AVPlayerLayer
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer?.videoGravity = .resizeAspect
         backgroundColor = .black
         observeApplicationState()
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     deinit {
@@ -1533,7 +1533,7 @@ private final class MusicVideoLayerView: UIView {
 
     func setPlayer(_ player: AVPlayer) {
         currentPlayer = player
-        playerLayer.player = UIApplication.shared.applicationState == .background ? nil : player
+        playerLayer?.player = UIApplication.shared.applicationState == .background ? nil : player
     }
 
     private func observeApplicationState() {
@@ -1553,11 +1553,11 @@ private final class MusicVideoLayerView: UIView {
     }
 
     @objc private func applicationDidEnterBackground() {
-        playerLayer.player = nil
+        playerLayer?.player = nil
     }
 
     @objc private func applicationWillEnterForeground() {
-        playerLayer.player = currentPlayer
+        playerLayer?.player = currentPlayer
     }
 }
 #elseif os(macOS)
@@ -1588,7 +1588,7 @@ private final class MusicVideoLayerView: NSView {
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     override func layout() {

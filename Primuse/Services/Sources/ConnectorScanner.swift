@@ -149,7 +149,6 @@ actor ConnectorScanner {
                                     firstDirectoryError = error
                                 }
                                 plog("⚠️ Failed to scan directory \(directory): \(error)")
-                                NSLog("⚠️ Failed to scan directory \(directory): \(error.localizedDescription)")
                                 continue
                             }
                         }
@@ -262,7 +261,6 @@ actor ConnectorScanner {
                                 firstDirectoryError = error
                             }
                             plog("⚠️ Failed to scan directory \(directory): \(error)")
-                            NSLog("⚠️ Failed to scan directory \(directory): \(error.localizedDescription)")
                             continue
                         }
                     }

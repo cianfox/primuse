@@ -234,7 +234,7 @@ final class NetworkDiscoveryService {
         pendingResolutionKeys.removeAll()
         devices.removeAll()
 
-        NSLog("🔍 NetworkDiscovery: Starting mDNS scan...")
+        plog("🔍 NetworkDiscovery: Starting mDNS scan...")
 
         let params = NWParameters()
         params.includePeerToPeer = true
@@ -246,7 +246,7 @@ final class NetworkDiscoveryService {
             browser.stateUpdateHandler = { state in
                 Task { @MainActor in
                     if case .failed(let error) = state {
-                        NSLog("⚠️ NetworkDiscovery: Browser failed for \(serviceType): \(error)")
+                        plog("⚠️ NetworkDiscovery: Browser failed for \(serviceType): \(error)")
                     }
                 }
             }
@@ -330,7 +330,7 @@ final class NetworkDiscoveryService {
 
                 if discoveredSet.insert(device).inserted {
                     devices.append(device)
-                    NSLog("🔍 NetworkDiscovery: Found \(device.name) (\(device.sourceType)) at \(device.host):\(device.port)")
+                    plog("🔍 NetworkDiscovery: Found \(device.name) (\(device.sourceType)) at \(device.host):\(device.port)")
                 }
             }
         }
@@ -439,6 +439,6 @@ final class NetworkDiscoveryService {
     private func finishDiscovery() {
         stopDiscovery()
         lastDiscoveryTime = Date()
-        NSLog("🔍 NetworkDiscovery: Scan complete, found \(devices.count) device(s)")
+        plog("🔍 NetworkDiscovery: Scan complete, found \(devices.count) device(s)")
     }
 }

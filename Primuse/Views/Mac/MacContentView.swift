@@ -248,7 +248,7 @@ private final class ResizeHandleNSView: NSView {
         self.preferences = preferences
         super.init(frame: .zero)
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) { return nil }
 
     /// 关键: 落在手柄上的 mouseDown 不触发窗口移动。
     override var mouseDownCanMoveWindow: Bool { false }

@@ -257,14 +257,14 @@ actor SMBSource: MusicSourceConnector {
 
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let serverURL = try Self.buildSMBUrl(host: trimmedHost, port: port)
-        NSLog("ℹ️ SMB connecting to \(serverURL.absoluteString) (original host: \(trimmedHost))")
+        plog("ℹ️ SMB connecting to \(serverURL.absoluteString) (original host: \(trimmedHost))")
 
         // 凭证里若混入首尾空白 / 换行 / 粘贴带入的不可见字符, SMB 会直接判定认证失败。
         // 用户名与密码统一去除首尾空白(NAS 账号密码极少以空格首尾)。
         let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanUser.count != username.count || cleanPassword.count != password.count {
-            NSLog("⚠️ SMB credential trimmed surrounding whitespace: user \(username.count)→\(cleanUser.count), password \(password.count)→\(cleanPassword.count)")
+            plog("⚠️ SMB credential trimmed surrounding whitespace: user \(username.count)→\(cleanUser.count), password \(password.count)→\(cleanPassword.count)")
         }
 
         // AMSMB2/libsmb2 的访客登录约定是 guest + 空密码。直接传空用户名在部分
@@ -344,7 +344,7 @@ actor SMBSource: MusicSourceConnector {
             guard Self.isTransientConnectionError(error) else {
                 throw mapSMBError(error)
             }
-            NSLog("⚠️ SMB transient error, reconnecting: \(error)")
+            plog("⚠️ SMB transient error, reconnecting: \(error)")
             await invalidateConnection()
             do {
                 return try await block()
@@ -490,16 +490,16 @@ actor SMBSource: MusicSourceConnector {
 
         if isIPv6 {
             if let hostname = reverseResolve(ipv6: host) {
-                NSLog("ℹ️ SMB: Reverse DNS '\(host)' → '\(hostname)'")
+                plog("ℹ️ SMB: Reverse DNS '\(host)' → '\(hostname)'")
                 if let ipv4 = forwardResolveIPv4(hostname) {
-                    NSLog("ℹ️ SMB: Resolved '\(hostname)' → '\(ipv4)'")
+                    plog("ℹ️ SMB: Resolved '\(hostname)' → '\(ipv4)'")
                     connectHost = ipv4
                 } else {
-                    NSLog("ℹ️ SMB: No IPv4 for '\(hostname)', using hostname directly")
+                    plog("ℹ️ SMB: No IPv4 for '\(hostname)', using hostname directly")
                     connectHost = hostname
                 }
             } else {
-                NSLog("⚠️ SMB: Reverse DNS failed for '\(host)', using bracketed IPv6")
+                plog("⚠️ SMB: Reverse DNS failed for '\(host)', using bracketed IPv6")
             }
         }
 

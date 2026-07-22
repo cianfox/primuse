@@ -109,7 +109,9 @@ struct DesktopLyricsView: View {
             withAnimation(.easeInOut(duration: 0.15)) { isHovering = hovering }
         }
         .task(id: player.currentSong?.id) { await reloadLyrics() }
-        .onChange(of: player.currentTime) { _, new in updateIndex(time: new) }
+        .background {
+            DesktopLyricsTimeObserver { updateIndex(time: $0) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .primuseLyricsDidChange)) { note in
             guard let songID = note.object as? String,
                   songID == player.currentSong?.id else { return }
@@ -580,11 +582,29 @@ struct DesktopLyricsView: View {
 
     private func updateIndex(time: TimeInterval) {
         guard !lyrics.isEmpty else { return }
-        for i in (0..<lyrics.count).reversed() where time >= lyrics[i].timestamp {
-            if currentIndex != i { currentIndex = i }
-            return
+        var low = 0
+        var high = lyrics.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if lyrics[middle].timestamp <= time {
+                low = middle + 1
+            } else {
+                high = middle
+            }
         }
-        currentIndex = 0
+        let index = max(0, low - 1)
+        if currentIndex != index { currentIndex = index }
+    }
+}
+
+private struct DesktopLyricsTimeObserver: View {
+    @Environment(AudioPlayerService.self) private var player
+    let onTimeChange: (TimeInterval) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: player.currentTime) { _, time in onTimeChange(time) }
     }
 }
 

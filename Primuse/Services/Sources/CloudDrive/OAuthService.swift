@@ -253,7 +253,7 @@ final class OAuthService: NSObject, ASWebAuthenticationPresentationContextProvid
         if config.tokenURL.contains("alipan.com") {
             // Aliyun Drive prefers JSON
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: bodyParams)
+            request.httpBody = try SafeJSONSerialization.data(withJSONObject: bodyParams)
         } else if config.tokenURL.contains("123pan.com") {
             // 123 云盘 oauth2/access_token 用 QueryString 传参(POST, body 空)+ Platform 头。
             var comps = URLComponents(string: config.tokenURL)!

@@ -16,6 +16,7 @@ struct ExternalDisplayNowPlayingView: View {
     @Environment(MusicScraperService.self) private var scraperService
 
     @State private var lyrics: [LyricLine] = []
+    @State private var currentLyricIndex = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -38,6 +39,11 @@ struct ExternalDisplayNowPlayingView: View {
             }
         }
         .task(id: player.currentSong?.id) { await loadLyrics() }
+        .background {
+            ExternalDisplayLyricTimeObserver { time in
+                updateLyricIndex(for: time)
+            }
+        }
     }
 
     @ViewBuilder
@@ -120,13 +126,26 @@ struct ExternalDisplayNowPlayingView: View {
         }
     }
 
-    private var currentLyricIndex: Int {
-        guard !lyrics.isEmpty else { return 0 }
-        var result = 0
-        for index in lyrics.indices where lyrics[index].timestamp <= player.currentTime {
-            result = index
+    private func updateLyricIndex(for time: TimeInterval) {
+        guard !lyrics.isEmpty else {
+            currentLyricIndex = 0
+            return
         }
-        return result
+
+        var lower = 0
+        var upper = lyrics.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if lyrics[middle].timestamp <= time {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        let nextIndex = max(0, lower - 1)
+        if nextIndex != currentLyricIndex {
+            currentLyricIndex = nextIndex
+        }
     }
 
     private var idleBody: some View {
@@ -153,5 +172,20 @@ struct ExternalDisplayNowPlayingView: View {
         } else {
             lyrics = []
         }
+        updateLyricIndex(for: player.currentTime)
+    }
+}
+
+/// 仅这个零尺寸观察器跟随播放时间；外接屏主体只在歌词行真正变化时刷新。
+private struct ExternalDisplayLyricTimeObserver: View {
+    @Environment(AudioPlayerService.self) private var player
+    let onTimeChange: (TimeInterval) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: player.currentTime) { _, time in
+                onTimeChange(time)
+            }
     }
 }

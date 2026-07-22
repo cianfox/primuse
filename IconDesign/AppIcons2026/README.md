@@ -2,13 +2,13 @@
 
 Nine functional directions use flat geometry across two solid-color families:
 
-- `00-multi-source-playback.png` — default: multiple music sources converge into playback.
-- `01-private-library.png` — personal album library.
-- `02-lossless-audio.png` — high-fidelity / lossless playback.
-- `03-synchronized-lyrics.png` — time-synchronized lyrics.
+- `00-multi-source-playback.png` — default: equalizer columns, playback, and an audio pulse.
+- `01-private-library.png` — a personal record archive drawer.
+- `02-lossless-audio.png` — a lossless waveform crossing an acoustic diaphragm.
+- `03-synchronized-lyrics.png` — highlighted lyrics synchronized to an audio pulse.
 - `04-cross-device-continuity.png` — playback handoff between devices.
 - `05-headphones-play.png` — headphones surrounding a clear play symbol.
-- `06-record-play.png` — record collection and playback.
+- `06-record-play.png` — a dynamically cropped turntable, record, and tonearm.
 - `07-music-note-waveform.png` — an explicit music note, play mark, and waveform.
 - `08-speaker-sound.png` — speaker playback with radiating sound.
 
@@ -24,23 +24,23 @@ Exactly one square master artwork; full-bleed canvas; no baked rounded-square ma
 
 ### Default — multi-source playback
 
-Create exactly one 1024×1024 master app-icon artwork for Primuse, a personal music-library and multi-source music player. Full-bleed square canvas, artwork reaches every edge; do not draw a rounded-square container, border, bezel, inset card, or device mockup. Clean contemporary flat vector geometry, instantly readable at 32 px, 2–4 large bold rounded shapes, crisp edges, generous negative space. Use only deep ink teal #102D35, warm ivory #F5F1E8, coral #FF6B57, cyan #40C3D0, and golden yellow #F4C84C. Solid colors only. On the solid ink background, three broad rounded source streams in cyan, coral, and yellow enter from different edges, converge cleanly at the center, and become one unmistakable large ivory right-pointing play triangle. The play triangle dominates. It reads “music playback from many sources,” not roads, arrows, a map, a person, or an abstract puzzle. No gradients, gloss, 3D, shadows, glow, grain, texture, tiny details, letters, words, music notes, logos, watermark, hands, faces, animals, contact sheet, or multiple options.
+Create exactly one 1024×1024 master app-icon artwork for Primuse, a personal music-library and multi-source music player. Full-bleed square canvas; do not draw a rounded-square container, border, bezel, inset card, or device mockup. Clean contemporary flat vector geometry, instantly readable at 32 px, large bold rounded shapes, crisp edges, and generous negative space. Use only deep ink teal #102D35, warm ivory #F5F1E8, coral #FF6B57, cyan #40C3D0, and golden yellow #F4C84C as solid fills. On the solid ink background, arrange three giant rounded vertical equalizer columns in cyan, coral, and yellow as one compact rhythmic group with clearly different heights. Cut one oversized warm-ivory right-pointing play triangle through the center of the columns, then join their bases with one broad warm-ivory audio pulse curve. It immediately reads “music playback,” not roads, branching streams, a chart, or an abstract corporate logo. No gradients, gloss, 3D, shadows, glow, grain, texture, tiny equalizer bars, letters, words, music notes, logos, watermark, contact sheet, or multiple options.
 
 ### Direction 1 — private library
 
-Use the same Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show three large overlapping album-cover tiles in cyan, coral, and yellow as a compact stack, with one unmistakable ivory right-pointing play triangle centered on the front tile. It immediately reads “personal music library / albums ready to play,” not a folder, bookshelf, app grid, window, or abstract blocks.
+Use the same primary Primuse canvas, palette, geometry, and exclusions. On the solid ink background, create one warm-ivory archive drawer or record bin spanning the lower third, with three large album sleeves rising from it in a clean asymmetric fan. The central cyan sleeve clearly reveals part of a circular vinyl record; give the record a coral center containing one simple right-pointing play cutout. Use golden yellow only as one large index tab. It immediately reads “my album archive ready to play,” not books, a folder, an app grid, overlapping UI cards, or generic windows. Maximum five major shapes and no tiny sleeve artwork.
 
 ### Direction 2 — lossless audio
 
-Use the same Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show one large simple ivory speaker diaphragm / acoustic cone made from two bold concentric circular forms, crossed through the center by one clean cyan waveform with only three broad peaks. It immediately reads “high-fidelity lossless audio,” not a target, radar, eye, vinyl record, camera lens, or abstract rings.
+Use the same primary Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show one large simple warm-ivory speaker diaphragm / acoustic cone made from two bold circular forms, crossed through the center by one clean cyan waveform with only three broad peaks. It immediately reads “high-fidelity lossless audio,” not a target, radar, eye, vinyl record, camera lens, or abstract rings.
 
 ### Direction 3 — synchronized lyrics
 
-Use the same Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show four thick ivory horizontal lyric lines with softly rounded ends; make the middle line coral and intersect it with one clear cyan vertical playback cursor ending in a small circular timing head. It immediately reads “time-synchronized live lyrics,” not a menu, document, barcode, equalizer, or abstract stripes. No actual text and no microphone.
+Use the same primary Primuse canvas, palette, geometry, and exclusions. On the solid ink background, create one dominant warm-ivory speech balloon with a bold asymmetric rounded silhouette. Inside it, place exactly three large lyric blocks in cyan, coral, and warm ivory, with the coral middle block clearly highlighted. Transform the balloon tail seamlessly into one thick cyan waveform sweeping along the bottom edge, and place one golden-yellow timing dot on the waveform directly below the highlighted block. It immediately reads “lyrics moving in time with music,” not a menu, document, chat-app logo, barcode, or generic parallel lines. No actual text, microphone, or vertical playback cursor.
 
 ### Direction 4 — cross-device continuity
 
-Use the same Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show two simple ivory screen rectangles side by side, connected by one continuous cyan waveform that enters the first screen and exits through the second; add one small coral playback dot moving along the waveform. It immediately reads “music playback handed off between devices,” not a network diagram, chain link, wireless logo, abstract windows, or specific branded hardware.
+Use the same primary Primuse canvas, palette, geometry, and exclusions. On the solid ink background, show two simple warm-ivory screen rectangles side by side, connected by one continuous cyan waveform that enters the first screen and exits through the second; add one small coral playback dot moving along the waveform. It immediately reads “music playback handed off between devices,” not a network diagram, chain link, wireless logo, abstract windows, or specific branded hardware.
 
 ### Direction 5 — headphones + play
 
@@ -48,7 +48,7 @@ Use case: logo-brand. Asset type: one 1024×1024 Primuse master app icon. Create
 
 ### Direction 6 — record + play
 
-Use the same secondary Primuse canvas, palette, geometry, and exclusions. Draw one large acid-lime circular record with exactly two broad electric-violet groove rings, one unmistakable vivid-pink play triangle at its center, and one small mint-cyan album sleeve peeking from behind it. It instantly reads “music collection and playback,” not a target, eye, radar, camera lens, CD-ROM, or abstract circles.
+Use the same secondary Primuse canvas, palette, geometry, and exclusions. Create a bold top-down turntable composition. Crop one oversized acid-lime vinyl record dynamically into the lower-left corner and use only one broad off-center electric-violet groove arc. Sweep one thick vivid-pink tonearm diagonally from the upper-right toward the record, ending in a mint-cyan stylus touching the groove. Carve one unmistakable soft-white right-pointing play triangle into the record label. It instantly reads “vinyl music playing,” not a centered target, radar, CD-ROM, abstract circles, or an album sleeve. No tiny turntable controls.
 
 ### Direction 7 — music note + waveform
 

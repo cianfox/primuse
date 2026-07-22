@@ -62,16 +62,17 @@ struct ListeningStatsView: View {
 
     #if os(macOS)
     private var macBody: some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        let snapshot = makeMacStatsSnapshot()
+        return ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 24) {
-                macStatsHeader
+                macStatsHeader(snapshot: snapshot)
 
                 if store.entries.isEmpty {
                     macEmptyState
                 } else {
-                    macSummarySection
-                    macHeatmapCard
-                    macTopCards
+                    macSummarySection(snapshot: snapshot)
+                    macHeatmapCard(counts: snapshot.dailyCounts)
+                    macTopCards(snapshot: snapshot)
                 }
             }
             .padding(.horizontal, 36)
@@ -84,7 +85,7 @@ struct ListeningStatsView: View {
         .task(id: range) { logHeatmapStats() }
     }
 
-    private var macStatsHeader: some View {
+    private func macStatsHeader(snapshot: MacStatsSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -119,7 +120,7 @@ struct ListeningStatsView: View {
                     }
                 }
             }
-            Text(statsRangeSubtitle)
+            Text(statsRangeSubtitle(counts: snapshot.dailyCounts))
                 .font(.system(size: 13))
                 .foregroundStyle(PMColor.textMuted)
         }
@@ -127,8 +128,7 @@ struct ListeningStatsView: View {
 
     /// 设计稿副标题: "2026 年 1 月 1 日 — 今天 · 365 天"。起点取热力图首日,
     /// 天数取整个区间天数。
-    private var statsRangeSubtitle: String {
-        let counts = store.dailyPlayCounts(in: range)
+    private func statsRangeSubtitle(counts: [(date: Date, count: Int)]) -> String {
         let start = counts.first?.date ?? Date()
         let df = DateFormatter()
         df.dateFormat = "yyyy 年 M 月 d 日"
@@ -156,9 +156,9 @@ struct ListeningStatsView: View {
 
     // MARK: 摘要四卡 (STATS-04)
 
-    private var macSummarySection: some View {
-        let s = store.summary(in: range)
-        let counts = store.dailyPlayCounts(in: range)
+    private func macSummarySection(snapshot: MacStatsSnapshot) -> some View {
+        let s = snapshot.summary
+        let counts = snapshot.dailyCounts
         let days = max(counts.count, 1)
         let totalMin = Int(s.totalSec / 60)
         let coverage = Int((Double(s.activeDays) / Double(days) * 100).rounded())
@@ -166,7 +166,7 @@ struct ListeningStatsView: View {
         return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
             macSummaryCell(value: decimal(s.totalPlays),
                            label: "总播放",
-                           sub: playsDeltaSub(currentStart: counts.first?.date, spanDays: days, current: s.totalPlays))
+                           sub: playsDeltaSub(previous: snapshot.previousPlayCount, current: s.totalPlays))
             macSummaryCell(value: "\(totalMin / 60)h \(totalMin % 60)m",
                            label: "总时长",
                            sub: "\(decimal(totalMin)) 分钟")
@@ -175,7 +175,7 @@ struct ListeningStatsView: View {
                            sub: "\(coverage)% \(coverLabel)")
             macSummaryCell(value: decimal(s.uniqueSongs),
                            label: "不重复曲目",
-                           sub: "其中 \(heavyRotationCount()) 首播放 ≥ 5 次")
+                           sub: "其中 \(snapshot.heavyRotationCount) 首播放 ≥ 5 次")
         }
     }
 
@@ -207,14 +207,12 @@ struct ListeningStatsView: View {
     }
 
     /// 总播放卡副标题 —— 跟上一个等长周期比的增减。`.all` 没有"上一周期"。
-    private func playsDeltaSub(currentStart: Date?, spanDays: Int, current: Int) -> String {
-        guard range != .all, let curStart = currentStart,
-              let prevStart = Calendar.current.date(byAdding: .day, value: -spanDays, to: curStart) else {
+    private func playsDeltaSub(previous: Int?, current: Int) -> String {
+        guard let previous else {
             return "全部历史累计"
         }
-        let prev = store.entries.filter { $0.playedAt >= prevStart && $0.playedAt < curStart }.count
-        guard prev > 0 else { return "暂无往期对比" }
-        let pct = Int((Double(current - prev) / Double(prev) * 100).rounded())
+        guard previous > 0 else { return "暂无往期对比" }
+        let pct = Int((Double(current - previous) / Double(previous) * 100).rounded())
         let vs: String
         switch range {
         case .week:  vs = "上周"
@@ -225,18 +223,11 @@ struct ListeningStatsView: View {
         return "\(pct >= 0 ? "+" : "")\(pct)% vs \(vs)"
     }
 
-    /// 区间内播放 ≥ 5 次的歌曲数 (不重复曲目卡副标题用)。
-    private func heavyRotationCount() -> Int {
-        Dictionary(grouping: store.entries(in: range)) { $0.songID }
-            .values.filter { $0.count >= 5 }.count
-    }
-
     private func decimal(_ n: Int) -> String { n.formatted(.number) }
 
     // MARK: 热力图 (STATS-02)
 
-    private var macHeatmapCard: some View {
-        let counts = store.dailyPlayCounts(in: range)
+    private func macHeatmapCard(counts: [(date: Date, count: Int)]) -> some View {
         let weeks = groupByWeek(counts: counts, cal: Calendar.current)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
@@ -333,12 +324,153 @@ struct ListeningStatsView: View {
 
     // MARK: Top 三栏 (STATS-03)
 
-    private var macTopCards: some View {
+    private func macTopCards(snapshot: MacStatsSnapshot) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            macTopCard(title: "Top 歌曲", items: store.topSongs(in: range, limit: 6))
-            macTopCard(title: "Top 艺术家", items: store.topArtists(in: range, limit: 6))
-            macTopCard(title: "Top 专辑", items: store.topAlbums(in: range, limit: 6))
+            macTopCard(title: "Top 歌曲", items: snapshot.topSongs)
+            macTopCard(title: "Top 艺术家", items: snapshot.topArtists)
+            macTopCard(title: "Top 专辑", items: snapshot.topAlbums)
         }
+    }
+
+    private struct MacStatsSnapshot {
+        let summary: PlayHistoryStore.Summary
+        let dailyCounts: [(date: Date, count: Int)]
+        let previousPlayCount: Int?
+        let heavyRotationCount: Int
+        let topSongs: [PlayHistoryStore.RankedItem]
+        let topArtists: [PlayHistoryStore.RankedItem]
+        let topAlbums: [PlayHistoryStore.RankedItem]
+    }
+
+    /// 同一次 SwiftUI 渲染共享统计结果，避免标题、摘要、热力图和三个榜单
+    /// 分别再次过滤完整播放历史。
+    private func makeMacStatsSnapshot() -> MacStatsSnapshot {
+        let now = Date()
+        let currentStart = range.startDate(now: now)
+        let previousStart = range == .all
+            ? Date.distantPast
+            : currentStart.addingTimeInterval(-now.timeIntervalSince(currentStart))
+        var scopedEntries: [PlayHistoryStore.Entry] = []
+        var previousPlayCount = 0
+        for entry in store.entries {
+            if entry.playedAt >= currentStart {
+                scopedEntries.append(entry)
+            } else if range != .all, entry.playedAt >= previousStart {
+                previousPlayCount += 1
+            }
+        }
+
+        let calendar = Calendar.current
+        let dayBuckets = Dictionary(grouping: scopedEntries) {
+            calendar.startOfDay(for: $0.playedAt)
+        }.mapValues(\.count)
+        let counts = makeDailyCounts(dayBuckets: dayBuckets, now: now)
+        let playsBySong = Dictionary(grouping: scopedEntries, by: \.songID)
+        let summary = PlayHistoryStore.Summary(
+            totalPlays: scopedEntries.count,
+            totalSec: scopedEntries.reduce(0) { $0 + $1.listenedSec },
+            activeDays: dayBuckets.count,
+            uniqueSongs: playsBySong.count
+        )
+
+        return MacStatsSnapshot(
+            summary: summary,
+            dailyCounts: counts,
+            previousPlayCount: range == .all ? nil : previousPlayCount,
+            heavyRotationCount: playsBySong.values.lazy.filter { $0.count >= 5 }.count,
+            topSongs: rankedSongs(playsBySong, limit: 6),
+            topArtists: rankedArtists(scopedEntries, limit: 6),
+            topAlbums: rankedAlbums(scopedEntries, limit: 6)
+        )
+    }
+
+    private func makeDailyCounts(
+        dayBuckets: [Date: Int],
+        now: Date
+    ) -> [(date: Date, count: Int)] {
+        let calendar = Calendar.current
+        let end = calendar.startOfDay(for: now)
+        let rawStart: Date
+        if range == .all {
+            rawStart = dayBuckets.keys.min() ?? end
+        } else {
+            rawStart = calendar.startOfDay(for: range.startDate(now: now))
+        }
+        let floor = calendar.date(byAdding: .day, value: -740, to: end) ?? rawStart
+        var cursor = max(rawStart, floor)
+        var result: [(date: Date, count: Int)] = []
+        while cursor <= end {
+            result.append((cursor, dayBuckets[cursor] ?? 0))
+            cursor = calendar.date(byAdding: .day, value: 1, to: cursor)
+                ?? cursor.addingTimeInterval(86_400)
+        }
+        return result
+    }
+
+    private func rankedSongs(
+        _ groups: [String: [PlayHistoryStore.Entry]],
+        limit: Int
+    ) -> [PlayHistoryStore.RankedItem] {
+        groups.compactMap { songID, plays in
+            plays.first.map {
+                PlayHistoryStore.RankedItem(
+                    id: songID,
+                    title: $0.songTitle,
+                    subtitle: $0.artistName,
+                    playCount: plays.count,
+                    totalSec: plays.reduce(0) { $0 + $1.listenedSec }
+                )
+            }
+        }
+        .sorted { $0.playCount > $1.playCount }
+        .prefix(limit)
+        .map { $0 }
+    }
+
+    private func rankedArtists(
+        _ entries: [PlayHistoryStore.Entry],
+        limit: Int
+    ) -> [PlayHistoryStore.RankedItem] {
+        Dictionary(grouping: entries.lazy.filter { !$0.artistName.isEmpty }, by: \.artistName)
+            .map { name, plays in
+                PlayHistoryStore.RankedItem(
+                    id: "artist:\(name)",
+                    title: name,
+                    subtitle: String(
+                        format: String(localized: "stats_unique_songs_format"),
+                        Set(plays.map(\.songID)).count
+                    ),
+                    playCount: plays.count,
+                    totalSec: plays.reduce(0) { $0 + $1.listenedSec }
+                )
+            }
+            .sorted { $0.playCount > $1.playCount }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func rankedAlbums(
+        _ entries: [PlayHistoryStore.Entry],
+        limit: Int
+    ) -> [PlayHistoryStore.RankedItem] {
+        Dictionary(
+            grouping: entries.lazy.filter { !$0.albumTitle.isEmpty },
+            by: { "\($0.albumTitle)|\($0.artistName)" }
+        )
+        .compactMap { key, plays in
+            plays.first.map {
+                PlayHistoryStore.RankedItem(
+                    id: "album:\(key)",
+                    title: $0.albumTitle,
+                    subtitle: $0.artistName,
+                    playCount: plays.count,
+                    totalSec: plays.reduce(0) { $0 + $1.listenedSec }
+                )
+            }
+        }
+        .sorted { $0.playCount > $1.playCount }
+        .prefix(limit)
+        .map { $0 }
     }
 
     private func macTopCard(title: String, items: [PlayHistoryStore.RankedItem]) -> some View {

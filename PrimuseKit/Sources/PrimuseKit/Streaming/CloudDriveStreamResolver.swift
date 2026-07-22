@@ -154,7 +154,7 @@ public actor CloudDriveStreamResolver: StreamResolver {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("open_platform", forHTTPHeaderField: "Platform")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["clientID": cid, "clientSecret": secret])
+        req.httpBody = try? SafeJSONSerialization.data(withJSONObject: ["clientID": cid, "clientSecret": secret])
         let (data, response) = try await session.data(for: req)
         try Self.checkAuth(response)
         guard let token = Self.parse123Token(data) else { throw StreamResolveError.authFailed }
@@ -215,7 +215,7 @@ public actor CloudDriveStreamResolver: StreamResolver {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        req.httpBody = try? SafeJSONSerialization.data(withJSONObject: body)
         return req
     }
 

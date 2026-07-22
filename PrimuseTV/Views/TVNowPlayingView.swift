@@ -318,23 +318,23 @@ private struct TVMusicVideoSurface: UIViewRepresentable {
 private final class TVMusicVideoLayerView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
 
-    private var playerLayer: AVPlayerLayer {
-        layer as! AVPlayerLayer
+    private var playerLayer: AVPlayerLayer? {
+        layer as? AVPlayerLayer
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer?.videoGravity = .resizeAspect
         backgroundColor = .black
         isUserInteractionEnabled = false
     }
 
     required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+        return nil
     }
 
     func setPlayer(_ player: AVPlayer) {
-        playerLayer.player = player
+        playerLayer?.player = player
     }
 }
 

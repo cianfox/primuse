@@ -1,4 +1,5 @@
 import Foundation
+import PrimuseKit
 
 actor FnOSAPI {
     private let host: String
@@ -200,7 +201,7 @@ actor FnOSAPI {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let auth { req.setValue("Bearer \(auth)", forHTTPHeaderField: "Authorization") }
         else if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.httpBody = try SafeJSONSerialization.data(withJSONObject: body)
         req.timeoutInterval = 15
         let (data, response) = try await session().data(for: req)
         try checkHTTPStatus(response)

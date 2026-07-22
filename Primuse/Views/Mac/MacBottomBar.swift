@@ -21,7 +21,6 @@ struct MacBottomBar: View {
     @State private var airPlayShown = false
     @State private var castShown = false
     @State private var coverMenuShown = false
-    @State private var dragValue: Double?
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
@@ -182,31 +181,7 @@ struct MacBottomBar: View {
     }
 
     private var scrubberRow: some View {
-        let cur = dragValue ?? player.currentTime
-        let dur = max(player.duration, 0.001)
-        return HStack(spacing: 8) {
-            Text(player.currentSong == nil ? "--:--" : cur.formattedDuration)
-                .font(.system(size: 10.5, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(PMColor.textFaint)
-                .frame(minWidth: 36, alignment: .trailing)
-
-            Scrubber(value: cur, total: dur,
-                     onDrag: { dragValue = $0 },
-                     onCommit: { v in
-                         player.seek(to: v)
-                         dragValue = nil
-                     })
-            .frame(height: 14)
-            .opacity(player.currentSong == nil ? 0.4 : 1)
-
-            Text(player.currentSong == nil ? "--:--" : "-\(max(0, dur - cur).formattedDuration)")
-                .font(.system(size: 10.5, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(PMColor.textFaint)
-                .frame(minWidth: 36, alignment: .leading)
-        }
-        .frame(maxWidth: 560)
+        MacBottomBarProgress()
     }
 
     private var repeatIconName: String {
@@ -308,6 +283,45 @@ struct MacBottomBar: View {
         if v < 0.4 { return "speaker.wave.1.fill" }
         if v < 0.75 { return "speaker.wave.2.fill" }
         return "speaker.wave.3.fill"
+    }
+}
+
+/// 把 `currentTime` 的高频观察限制在进度条内，避免每次播放器 tick 都重算
+/// 整个底栏（封面、菜单、投放设备和音量控件）。
+private struct MacBottomBarProgress: View {
+    @Environment(AudioPlayerService.self) private var player
+    @State private var dragValue: Double?
+
+    var body: some View {
+        let current = dragValue ?? player.currentTime
+        let duration = max(player.duration, 0.001)
+
+        HStack(spacing: 8) {
+            Text(player.currentSong == nil ? "--:--" : current.formattedDuration)
+                .font(.system(size: 10.5, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(PMColor.textFaint)
+                .frame(minWidth: 36, alignment: .trailing)
+
+            Scrubber(
+                value: current,
+                total: duration,
+                onDrag: { dragValue = $0 },
+                onCommit: { value in
+                    player.seek(to: value)
+                    dragValue = nil
+                }
+            )
+            .frame(height: 14)
+            .opacity(player.currentSong == nil ? 0.4 : 1)
+
+            Text(player.currentSong == nil ? "--:--" : "-\(max(0, duration - current).formattedDuration)")
+                .font(.system(size: 10.5, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(PMColor.textFaint)
+                .frame(minWidth: 36, alignment: .leading)
+        }
+        .frame(maxWidth: 560)
     }
 }
 

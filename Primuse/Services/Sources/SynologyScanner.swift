@@ -78,7 +78,7 @@ actor SynologyScanner {
                         } catch {
                             hadDirectoryFailure = true
                             // Log error but continue scanning remaining directories
-                            NSLog("⚠️ Failed to scan directory \(dir): \(error.localizedDescription)")
+                            plog("⚠️ Failed to scan directory \(dir): \(error.localizedDescription)")
                             continue
                         }
                     }
@@ -491,7 +491,7 @@ actor SynologyScanner {
 
             // Metadata tags
             if let items = try? await asset.load(.metadata) {
-                NSLog("📋 Metadata items count: \(items.count) for \(item.name), keys: \(items.compactMap { $0.commonKey?.rawValue })")
+                plog("📋 Metadata items count: \(items.count) for \(item.name), keys: \(items.compactMap { $0.commonKey?.rawValue })")
                 for meta in items {
                     guard let key = meta.commonKey?.rawValue else { continue }
                     let value = try? await meta.load(.value)
@@ -506,9 +506,9 @@ actor SynologyScanner {
                     case AVMetadataKey.commonKeyArtwork.rawValue:
                         if let data = value as? Data {
                             embeddedCoverData = data
-                            NSLog("🎨 Embedded cover art found: \(data.count) bytes for \(item.name)")
+                            plog("🎨 Embedded cover art found: \(data.count) bytes for \(item.name)")
                         } else {
-                            NSLog("🎨 Artwork key exists but value is not Data: \(type(of: value as Any)) for \(item.name)")
+                            plog("🎨 Artwork key exists but value is not Data: \(type(of: value as Any)) for \(item.name)")
                         }
                     default: break
                     }
@@ -531,12 +531,12 @@ actor SynologyScanner {
                     case .id3MetadataUnsynchronizedLyric:
                         if let text = value as? String, !text.isEmpty {
                             embeddedLyricsText = text
-                            NSLog("📝 Embedded USLT lyrics found: \(text.prefix(50))... for \(item.name)")
+                            plog("📝 Embedded USLT lyrics found: \(text.prefix(50))... for \(item.name)")
                         }
                     case .iTunesMetadataLyrics:
                         if let text = value as? String, !text.isEmpty, embeddedLyricsText == nil {
                             embeddedLyricsText = text
-                            NSLog("📝 Embedded iTunes lyrics found: \(text.prefix(50))... for \(item.name)")
+                            plog("📝 Embedded iTunes lyrics found: \(text.prefix(50))... for \(item.name)")
                         }
                     case .id3MetadataUserText:
                         if let extras = try? await meta.load(.extraAttributes),
@@ -599,16 +599,16 @@ actor SynologyScanner {
         // Store embedded cover art and lyrics to asset store
         if let data = embeddedCoverData {
             coverArtFileName = await MetadataAssetStore.shared.storeCover(data, for: songID)
-            NSLog("💾 Stored cover: \(coverArtFileName ?? "nil") for \(title)")
+            plog("💾 Stored cover: \(coverArtFileName ?? "nil") for \(title)")
         }
         if let text = embeddedLyricsText {
             let lyrics = LyricsParser.parseText(text)
             if !lyrics.isEmpty {
                 lyricsFileName = await MetadataAssetStore.shared.storeLyrics(lyrics, for: songID)
-                NSLog("💾 Stored lyrics: \(lyricsFileName ?? "nil") for \(title)")
+                plog("💾 Stored lyrics: \(lyricsFileName ?? "nil") for \(title)")
             }
         }
-        NSLog("📦 Song built: \(title) | cover=\(coverArtFileName ?? "nil") | lyrics=\(lyricsFileName ?? "nil")")
+        plog("📦 Song built: \(title) | cover=\(coverArtFileName ?? "nil") | lyrics=\(lyricsFileName ?? "nil")")
 
         return makeSong(id: songID, title: title, artist: artist, album: album,
                         trackNumber: trackNumber, duration: duration, format: format,

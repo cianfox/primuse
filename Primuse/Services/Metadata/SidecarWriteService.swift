@@ -51,10 +51,13 @@ actor SidecarWriteService {
             do {
                 try await connector.writeFile(data: jpegData, to: coverPath)
                 result.coverWritten = true
-                NSLog("📁 Sidecar: \(coverFileName) written to \(songDir)")
+                plog("📁 Sidecar: \(coverFileName) written to \(songDir)")
             } catch {
                 result.errors.append("Cover: \(error.localizedDescription)")
-                NSLog("⚠️ Sidecar: Failed to write \(coverFileName): \(error)")
+                // Never pass user-controlled paths or remote error descriptions
+                // to NSLog as the format string. A '%' in either value makes
+                // NSLog read a non-existent variadic argument and can crash.
+                plog("⚠️ Sidecar: Failed to write \(coverFileName): \(error)")
             }
         }
 
@@ -66,10 +69,10 @@ actor SidecarWriteService {
                 do {
                     try await connector.writeFile(data: lrcData, to: lrcPath)
                     result.lyricsWritten = true
-                    NSLog("📁 Sidecar: \(baseNameNoExt).lrc written to \(songDir)")
+                    plog("📁 Sidecar: \(baseNameNoExt).lrc written to \(songDir)")
                 } catch {
                     result.errors.append("Lyrics: \(error.localizedDescription)")
-                    NSLog("⚠️ Sidecar: Failed to write .lrc: \(error)")
+                    plog("⚠️ Sidecar: Failed to write .lrc: \(error)")
                 }
             }
         }

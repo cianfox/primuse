@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import JavaScriptCore
 import Network
+import PrimuseKit
 
 /// A generic scraper driven by a ScraperConfig JSON definition.
 /// URL templates use {{var}} placeholders; response parsing is done via embedded JavaScript.
@@ -324,7 +325,7 @@ actor ConfigurableScraper: MusicScraper {
                 for (k, v) in params {
                     bodyDict[k] = Self.applyTemplate(v, vars: vars)
                 }
-                request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
+                request.httpBody = try SafeJSONSerialization.data(withJSONObject: bodyDict)
                 if request.value(forHTTPHeaderField: "Content-Type") == nil {
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 }

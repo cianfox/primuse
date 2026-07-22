@@ -98,7 +98,7 @@ actor MediaServerSource: RefreshingMetadataSongConnector, MediaServerWritebackCo
                 "Username": username,
                 "Pw": secret
             ]
-            let data = try JSONSerialization.data(withJSONObject: payload)
+            let data = try SafeJSONSerialization.data(withJSONObject: payload)
             let response = try await performRequest(
                 path: "/Users/AuthenticateByName",
                 method: "POST",
@@ -556,7 +556,7 @@ actor MediaServerSource: RefreshingMetadataSongConnector, MediaServerWritebackCo
                 .filter { !$0.isEmpty }
         }
 
-        let body = try JSONSerialization.data(withJSONObject: item)
+        let body = try SafeJSONSerialization.data(withJSONObject: item)
         _ = try await performRequest(path: "/Items/\(itemID)", method: "POST", body: body)
     }
 

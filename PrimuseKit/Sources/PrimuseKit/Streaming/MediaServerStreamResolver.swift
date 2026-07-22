@@ -116,7 +116,7 @@ public actor MediaServerStreamResolver: StreamResolver {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let authValue = Self.mediaBrowserAuth(deviceID: deviceID, token: nil)
         req.setValue(authValue, forHTTPHeaderField: emby ? "X-Emby-Authorization" : "Authorization")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["Username": username, "Pw": password])
+        req.httpBody = try? SafeJSONSerialization.data(withJSONObject: ["Username": username, "Pw": password])
 
         let (data, response) = try await session.data(for: req)
         try Self.checkAuth(response)

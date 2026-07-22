@@ -898,6 +898,10 @@ final class MusicLibrary {
     /// Keep the source grouping beside the other visible caches so those
     /// renders don't filter a 10K+ song array once per card per frame.
     private var visiblePlayableSongsBySourceID: [String: [Song]] = [:]
+    /// Sidebar counters need all visible songs, not just playable ones. Keeping
+    /// counts here avoids one full-library filter per source on every sidebar
+    /// body evaluation.
+    private var visibleSongCountBySourceID: [String: Int] = [:]
     private(set) var searchRevision: Int = 0
 
     private let snapshotURL: URL
@@ -929,14 +933,30 @@ final class MusicLibrary {
             let visibleArtistIDs = Set(visibleSongs.compactMap(\.artistID))
             visibleArtists = artists.filter { visibleArtistIDs.contains($0.id) }
         }
-        visibleSongByID = Dictionary(
-            visibleSongs.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        visiblePlayableSongsBySourceID = Dictionary(
-            grouping: visibleSongs.filter(\.isPlayable),
-            by: \.sourceID
-        )
+        let lookups = Self.makeVisibleLookups(songs: visibleSongs)
+        visibleSongByID = lookups.songByID
+        visiblePlayableSongsBySourceID = lookups.playableBySourceID
+        visibleSongCountBySourceID = lookups.countBySourceID
+    }
+
+    private nonisolated static func makeVisibleLookups(
+        songs: [Song]
+    ) -> (
+        songByID: [String: Song],
+        playableBySourceID: [String: [Song]],
+        countBySourceID: [String: Int]
+    ) {
+        var songByID: [String: Song] = [:]
+        var playableBySourceID: [String: [Song]] = [:]
+        var countBySourceID: [String: Int] = [:]
+        for song in songs {
+            if songByID[song.id] == nil { songByID[song.id] = song }
+            countBySourceID[song.sourceID, default: 0] += 1
+            if song.isPlayable {
+                playableBySourceID[song.sourceID, default: []].append(song)
+            }
+        }
+        return (songByID, playableBySourceID, countBySourceID)
     }
 
     private func invalidateSearchCaches() {
@@ -1356,6 +1376,10 @@ final class MusicLibrary {
     /// Cached source slice used by SourcesView.
     func playableSongs(forSourceID sourceID: String) -> [Song] {
         visiblePlayableSongsBySourceID[sourceID] ?? []
+    }
+
+    func visibleSongCount(forSourceID sourceID: String) -> Int {
+        visibleSongCountBySourceID[sourceID, default: 0]
     }
 
     /// Backward-compatible synchronous search. Keep it metadata-only so older
@@ -2109,6 +2133,10 @@ final class MusicLibrary {
     /// 时只有最后一次的结果会 apply。
     private var rebuildIndexTask: Task<Void, Never>?
     private var rebuildIndexGeneration: Int = 0
+    /// Collapse mutations published in the same run-loop burst before starting
+    /// a full-library grouping/sort. More importantly, cancellation can happen
+    /// while the task is still sleeping instead of after expensive work began.
+    private static let rebuildIndexDebounce: Duration = .milliseconds(250)
 
     private func rebuildIndex() {
         rebuildIndexGeneration &+= 1
@@ -2116,9 +2144,15 @@ final class MusicLibrary {
         let snapshot = songs
 
         rebuildIndexTask?.cancel()
-        rebuildIndexTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let result = MusicLibrary.computeAlbumsAndArtists(songs: snapshot)
-            guard !Task.isCancelled else { return }
+        rebuildIndexTask = Task.detached(priority: .utility) { [weak self] in
+            do {
+                try await Task.sleep(for: Self.rebuildIndexDebounce)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  let result = MusicLibrary.computeAlbumsAndArtistsCancellable(songs: snapshot)
+            else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // generation 校验: 期间又有新的 rebuildIndex 调度过, 当前结果
@@ -2320,15 +2354,34 @@ final class MusicLibrary {
     /// 后台 derive albums / artists 集合。纯函数 ── 给定 songs 数组, 算出
     /// 派生集合, 不操作 self。
     nonisolated static func computeAlbumsAndArtists(songs: [Song]) -> (albums: [Album], artists: [Artist]) {
+        computeAlbumsAndArtists(songs: songs, cancellationCheck: { false })!
+    }
+
+    /// Task-aware counterpart used by the incremental rebuild worker. The old
+    /// worker only checked cancellation after all filtering/grouping/sorting had
+    /// completed, so every superseded task still consumed a full-library pass.
+    private nonisolated static func computeAlbumsAndArtistsCancellable(
+        songs: [Song]
+    ) -> (albums: [Album], artists: [Artist])? {
+        computeAlbumsAndArtists(songs: songs, cancellationCheck: { Task.isCancelled })
+    }
+
+    private nonisolated static func computeAlbumsAndArtists(
+        songs: [Song],
+        cancellationCheck: () -> Bool
+    ) -> (albums: [Album], artists: [Artist])? {
+        guard !cancellationCheck() else { return nil }
         let unknownArtist = String(localized: "unknown_artist")
 
         // Albums ── 只 group 有 albumTitle 的歌曲
         let songsWithAlbum = songs.filter { $0.albumTitle != nil && !$0.albumTitle!.isEmpty }
+        guard !cancellationCheck() else { return nil }
         let albumGroups = Dictionary(grouping: songsWithAlbum) { song -> String in
             let artist = song.artistName ?? unknownArtist
             let album = song.albumTitle!
             return "\(artist)\0\(album)"
         }
+        guard !cancellationCheck() else { return nil }
         let albums = albumGroups.map { key, songs -> Album in
             let parts = key.split(separator: "\0", maxSplits: 1)
             let artistName = parts.count > 0 ? String(parts[0]) : unknownArtist
@@ -2345,9 +2398,11 @@ final class MusicLibrary {
                 sourceID: songs.first?.sourceID
             )
         }.sorted { $0.title.localizedCompare($1.title) == .orderedAscending }
+        guard !cancellationCheck() else { return nil }
 
         // Artists ── 全 songs 都参与 group
         let artistGroups = Dictionary(grouping: songs) { $0.artistName ?? unknownArtist }
+        guard !cancellationCheck() else { return nil }
         let artists = artistGroups.map { name, songs -> Artist in
             let albumCount = Set(songs.compactMap(\.albumTitle)).count
             return Artist(
@@ -2357,6 +2412,7 @@ final class MusicLibrary {
                 songCount: songs.count
             )
         }.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        guard !cancellationCheck() else { return nil }
 
         return (albums, artists)
     }

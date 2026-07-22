@@ -18,6 +18,8 @@ struct MacMiniPlayerView: View {
     @Environment(ThemeService.self) private var theme
     @State private var lyrics: [LyricLine] = []
     @State private var currentIndex: Int = 0
+    @State private var lastManualLyricsScroll = Date.distantPast
+    @State private var lyricsAutoFollowTask: Task<Void, Never>?
     @State private var airPlayShown = false
 
     /// 下半部分内容模式 —— 跟 Apple Music 一样,Lyrics / Queue 是互斥的
@@ -76,7 +78,9 @@ struct MacMiniPlayerView: View {
         // 它们是深色,贴在深底上几乎看不见。
         .environment(\.colorScheme, .dark)
         .task(id: player.currentSong?.id) { await reloadLyrics() }
-        .onChange(of: player.currentTime) { _, t in updateIndex(time: t) }
+        .background {
+            MacMiniPlayerTimeObserver { updateIndex(time: $0) }
+        }
         .onChange(of: bottomMode) { _, new in onBottomModeChange?(new) }
         .onReceive(NotificationCenter.default.publisher(for: .primuseLyricsDidChange)) { note in
             guard let songID = note.object as? String,
@@ -310,20 +314,7 @@ struct MacMiniPlayerView: View {
     // MARK: - Scrubber
 
     private var scrubber: some View {
-        VStack(spacing: 4) {
-            ScrubberLine(
-                value: player.currentTime,
-                total: max(player.duration, 0.01),
-                tint: theme.accentColor,
-                onSeek: { player.seek(to: $0) }
-            )
-            HStack {
-                Text(formatTime(player.currentTime))
-                Spacer()
-                Text(formatTime(player.duration))
-            }
-            .font(.caption2).monospacedDigit().foregroundStyle(.white.opacity(0.5))
-        }
+        MacMiniPlayerProgress(tint: theme.accentColor)
     }
 
     // MARK: - Transport
@@ -540,14 +531,58 @@ struct MacMiniPlayerView: View {
                 .padding(.horizontal, 4)
             }
             .onChange(of: currentIndex) { _, new in
-                guard !lyrics.isEmpty, new < lyrics.count else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(lyrics[new].id, anchor: .center)
-                }
+                guard Date().timeIntervalSince(lastManualLyricsScroll) >= 3 else { return }
+                scrollLyrics(to: new, proxy: proxy, animated: true)
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { _ in
+                        lyricsAutoFollowTask?.cancel()
+                        lastManualLyricsScroll = Date()
+                    }
+                    .onEnded { _ in
+                        lastManualLyricsScroll = Date()
+                        scheduleLyricsAutoFollow(proxy: proxy)
+                    }
+            )
+            .task(id: lyricsScrollIdentity) {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                updateIndex(time: player.currentTime)
+                scrollLyrics(to: currentIndex, proxy: proxy, animated: false)
+            }
+            .onDisappear {
+                lyricsAutoFollowTask?.cancel()
             }
             .pmForceHideScrollers()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var lyricsScrollIdentity: String {
+        "\(player.currentSong?.id ?? "")|\(lyrics.first?.id ?? "")|\(lyrics.count)"
+    }
+
+    private func scheduleLyricsAutoFollow(proxy: ScrollViewProxy) {
+        lyricsAutoFollowTask?.cancel()
+        lyricsAutoFollowTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled,
+                  Date().timeIntervalSince(lastManualLyricsScroll) >= 3 else { return }
+            scrollLyrics(to: currentIndex, proxy: proxy, animated: true)
+        }
+    }
+
+    private func scrollLyrics(to index: Int, proxy: ScrollViewProxy, animated: Bool) {
+        guard lyrics.indices.contains(index) else { return }
+        let update = { proxy.scrollTo(lyrics[index].id, anchor: .center) }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.3), update)
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
+        }
     }
 
     @ViewBuilder
@@ -590,16 +625,58 @@ struct MacMiniPlayerView: View {
 
     private func updateIndex(time: TimeInterval) {
         guard !lyrics.isEmpty else { return }
-        for i in (0..<lyrics.count).reversed() where time >= lyrics[i].timestamp {
-            if currentIndex != i { currentIndex = i }
-            return
+        var low = 0
+        var high = lyrics.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if lyrics[middle].timestamp <= time {
+                low = middle + 1
+            } else {
+                high = middle
+            }
         }
-        if currentIndex != 0 { currentIndex = 0 }
+        let index = max(0, low - 1)
+        if currentIndex != index { currentIndex = index }
+    }
+}
+
+private struct MacMiniPlayerTimeObserver: View {
+    @Environment(AudioPlayerService.self) private var player
+    let onTimeChange: (TimeInterval) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: player.currentTime) { _, time in onTimeChange(time) }
+    }
+}
+
+private struct MacMiniPlayerProgress: View {
+    @Environment(AudioPlayerService.self) private var player
+    let tint: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ScrubberLine(
+                value: player.currentTime,
+                total: max(player.duration, 0.01),
+                tint: tint,
+                onSeek: { player.seek(to: $0) }
+            )
+            HStack {
+                Text(formatTime(player.currentTime))
+                Spacer()
+                Text(formatTime(player.duration))
+            }
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(.white.opacity(0.5))
+        }
     }
 
-    private func formatTime(_ t: TimeInterval) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
-        let total = Int(t)
+    private func formatTime(_ time: TimeInterval) -> String {
+        guard time.isFinite, time >= 0 else { return "0:00" }
+        let total = Int(time)
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

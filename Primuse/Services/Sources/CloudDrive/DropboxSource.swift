@@ -106,7 +106,7 @@ actor DropboxSource: MusicSourceConnector, OAuthCloudSource {
 
     private func postJSON(url: String, body: [String: Any]) async throws -> [String: Any] {
         let token = try await getToken()
-        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let bodyData = try SafeJSONSerialization.data(withJSONObject: body)
         let (data, http) = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             try await self.helper.makeAuthorizedRequest(url: URL(string: url)!, method: "POST", body: bodyData, contentType: "application/json", accessToken: tok)
         }
@@ -129,7 +129,7 @@ actor DropboxSource: MusicSourceConnector, OAuthCloudSource {
     func localURL(for path: String) async throws -> URL {
         if helper.hasCached(path: path) { return helper.cachedURL(for: path) }
         let token = try await getToken()
-        let argData = try JSONSerialization.data(withJSONObject: ["path": path])
+        let argData = try SafeJSONSerialization.data(withJSONObject: ["path": path])
         let data: Data = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             var request = URLRequest(url: URL(string: "\(Self.contentBase)/files/download")!)
             request.httpMethod = "POST"
@@ -186,7 +186,7 @@ actor DropboxSource: MusicSourceConnector, OAuthCloudSource {
             return cached.url
         }
         let token = try await getToken()
-        let body = try JSONSerialization.data(withJSONObject: ["path": path])
+        let body = try SafeJSONSerialization.data(withJSONObject: ["path": path])
         let (data, http) = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             try await self.helper.makeAuthorizedRequest(
                 url: URL(string: "\(Self.apiBase)/files/get_temporary_link")!,

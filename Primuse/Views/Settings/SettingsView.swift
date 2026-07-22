@@ -531,7 +531,7 @@ struct MetadataScrapingView: View {
         if let secrets = config.secrets, !secrets.isEmpty {
             dict["secrets"] = secrets
         }
-        guard let bundleData = try? JSONSerialization.data(
+        guard let bundleData = try? SafeJSONSerialization.data(
             withJSONObject: dict,
             options: [.prettyPrinted, .sortedKeys]
         ) else { return nil }

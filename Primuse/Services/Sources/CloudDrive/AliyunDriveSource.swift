@@ -30,7 +30,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
         // 重跑(get → create → 可选 PUT → complete),而不是等本地 expiresAt 过期。
         try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             // 1. 查源文件的父目录 + 真实文件名
-            let getBody = try JSONSerialization.data(withJSONObject: ["drive_id": driveId, "file_id": fileID])
+            let getBody = try SafeJSONSerialization.data(withJSONObject: ["drive_id": driveId, "file_id": fileID])
             let (dData, dHTTP) = try await self.helper.makeAuthorizedRequest(
                 url: URL(string: "\(Self.apiBase)/adrive/v1.0/openFile/get")!,
                 method: "POST", body: getBody, contentType: "application/json", accessToken: tok)
@@ -42,7 +42,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
 
             let sha1 = Insecure.SHA1.hash(data: data).map { String(format: "%02X", $0) }.joined()
             // 2. create(带 proof_code 尝试秒传)
-            let createBody = try JSONSerialization.data(withJSONObject: [
+            let createBody = try SafeJSONSerialization.data(withJSONObject: [
                 "drive_id": driveId, "parent_file_id": parentFileId, "name": sidecarName,
                 "type": "file", "check_name_mode": "refuse", "size": data.count,
                 "content_hash_name": "sha1", "content_hash": sha1,
@@ -75,7 +75,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
             }
 
             // 4. complete
-            let completeBody = try JSONSerialization.data(withJSONObject: [
+            let completeBody = try SafeJSONSerialization.data(withJSONObject: [
                 "drive_id": driveId, "file_id": newFileId, "upload_id": uploadId,
             ])
             _ = try await self.helper.makeAuthorizedRequest(
@@ -148,7 +148,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
         repeat {
             var body: [String: Any] = ["drive_id": driveId, "parent_file_id": parentFileId, "limit": 200, "order_by": "name", "order_direction": "ASC"]
             if let m = marker, !m.isEmpty { body["marker"] = m }
-            let bodyData = try JSONSerialization.data(withJSONObject: body)
+            let bodyData = try SafeJSONSerialization.data(withJSONObject: body)
             let token = try await getToken()
             let (data, http) = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
                 try await self.helper.makeAuthorizedRequest(url: URL(string: "\(Self.apiBase)/adrive/v1.0/openFile/list")!, method: "POST", body: bodyData, contentType: "application/json", accessToken: tok)
@@ -192,7 +192,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
             }
         }
         guard let driveId else { throw CloudDriveError.notAuthenticated }
-        let body = try JSONSerialization.data(withJSONObject: ["drive_id": driveId, "file_id": path])
+        let body = try SafeJSONSerialization.data(withJSONObject: ["drive_id": driveId, "file_id": path])
         let (data, http) = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             try await self.helper.makeAuthorizedRequest(
                 url: URL(string: "\(Self.apiBase)/adrive/v1.0/openFile/get")!,
@@ -233,7 +233,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
         guard let driveId else { throw CloudDriveError.notAuthenticated }
         let token = try await getToken()
         let body: [String: Any] = ["drive_id": driveId, "file_id": path]
-        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let bodyData = try SafeJSONSerialization.data(withJSONObject: body)
         let (data, http) = try await helper.withTokenRetry(initialToken: token, refresh: refreshToken) { @Sendable tok in
             try await self.helper.makeAuthorizedRequest(url: URL(string: "\(Self.apiBase)/adrive/v1.0/openFile/getDownloadUrl")!, method: "POST", body: bodyData, contentType: "application/json", accessToken: tok)
         }
@@ -271,7 +271,7 @@ actor AliyunDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
         let creds = await helper.tokenManager.getAppCredentials()
         guard let cid = creds?.clientId else { throw CloudDriveError.tokenRefreshFailed("No client ID") }
         let body: [String: String] = ["grant_type": "refresh_token", "refresh_token": rt, "client_id": cid, "client_secret": creds?.clientSecret ?? ""]
-        let bodyData = try JSONSerialization.data(withJSONObject: body)
+        let bodyData = try SafeJSONSerialization.data(withJSONObject: body)
         var request = URLRequest(url: URL(string: "\(Self.oauthBase)/access_token")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

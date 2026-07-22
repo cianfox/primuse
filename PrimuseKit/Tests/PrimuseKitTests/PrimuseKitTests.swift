@@ -2,6 +2,35 @@ import Foundation
 import Testing
 @testable import PrimuseKit
 
+@Test func safeJSONSerializationRoundTripsFoundationGraph() throws {
+    let payload: [String: Any] = [
+        "message": "100% %@ safe",
+        "enabled": true,
+        "count": 42,
+        "nested": ["items": ["one", "two"], "none": NSNull()]
+    ]
+
+    let data = try SafeJSONSerialization.data(
+        withJSONObject: payload,
+        options: [.sortedKeys]
+    )
+    let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+    #expect(decoded?["message"] as? String == "100% %@ safe")
+    #expect(decoded?["enabled"] as? Bool == true)
+    #expect(decoded?["count"] as? Int == 42)
+}
+
+@Test func safeJSONSerializationRejectsUnsupportedValues() {
+    var didThrow = false
+    do {
+        _ = try SafeJSONSerialization.data(withJSONObject: ["date": Date()])
+    } catch {
+        didThrow = true
+    }
+    #expect(didThrow)
+}
+
 @Test func testAudioFormatRouting() {
     #expect(AudioFormat.mp3.requiresFFmpeg == false)
     #expect(AudioFormat.flac.requiresFFmpeg == false)

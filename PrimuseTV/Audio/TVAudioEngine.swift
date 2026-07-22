@@ -69,7 +69,7 @@ final class TVAudioEngine {
             try s.setActive(true)
             sessionConfigured = true
         } catch {
-            NSLog("TVAudioEngine: audio session error %@", String(describing: error))
+            plog("TVAudioEngine: audio session error \(error)")
         }
     }
 
@@ -377,7 +377,7 @@ final class TVAudioEngine {
     }
 
     private static func writeSmokeResult(_ msg: String) {
-        NSLog("%@", msg)
+        plog(msg)
         if let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
             try? msg.write(to: dir.appendingPathComponent("audio_smoke_result.txt"),
                            atomically: true, encoding: .utf8)

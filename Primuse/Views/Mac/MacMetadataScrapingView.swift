@@ -333,7 +333,7 @@ struct MacMetadataScrapingView: View {
         if let secrets = config.secrets, !secrets.isEmpty {
             dict["secrets"] = secrets
         }
-        return try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+        return try? SafeJSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
     }
 
     private var scrapingProgress: some View {

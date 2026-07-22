@@ -380,6 +380,8 @@ struct SmartPlaylistEditorView: View {
     private var macLivePreviewCard: some View {
         let songs = macPreviewSongs
         let previewCovers = Array(songs.prefix(4))
+        let durationText = songs.reduce(TimeInterval(0)) { $0 + $1.duration }.formattedShort
+        let sourceCount = Set(songs.map(\.sourceID)).count
         return HStack(spacing: 12) {
             Image(systemName: "sparkles")
                 .font(.system(size: 16, weight: .semibold))
@@ -398,7 +400,7 @@ struct SmartPlaylistEditorView: View {
                 .font(.system(size: 13, weight: .semibold))
 
                 Text(String(format: String(localized: "smart_mac_preview_meta_format"),
-                            macPreviewDurationText, macPreviewSourceCount))
+                            durationText, sourceCount))
                     .font(.system(size: 11.5))
                     .foregroundStyle(PMColor.textMuted)
             }
@@ -459,14 +461,6 @@ struct SmartPlaylistEditorView: View {
                 return updated
             }
             .filter { !$0.rules.isEmpty }
-    }
-
-    private var macPreviewDurationText: String {
-        macPreviewSongs.reduce(TimeInterval(0)) { $0 + $1.duration }.formattedShort
-    }
-
-    private var macPreviewSourceCount: Int {
-        Set(macPreviewSongs.map(\.sourceID)).count
     }
 
     private func macStaticSelect(_ title: String, width: CGFloat) -> some View {

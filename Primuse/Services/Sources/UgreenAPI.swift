@@ -1,4 +1,5 @@
 import Foundation
+import PrimuseKit
 import Security
 
 actor UgreenAPI {
@@ -459,7 +460,7 @@ actor UgreenAPI {
         // 无需手写。旧代码写死 "Cookie: HttpOnly" 是错误的 ——"HttpOnly" 是
         // Set-Cookie 的属性名而非 cookie 值; 且 UGOS 不用 Authorization 头携带
         // token, 一并去掉避免误导与潜在干扰。
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.httpBody = try SafeJSONSerialization.data(withJSONObject: body)
         req.timeoutInterval = 15
         let (data, response) = try await session().data(for: req)
         guard let http = response as? HTTPURLResponse else {

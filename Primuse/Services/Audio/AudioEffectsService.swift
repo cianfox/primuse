@@ -226,7 +226,7 @@ final class AudioEffectsService {
         guard let audioUnit = audioEngine.compressorNode?.audioUnit else { return }
         let status = AudioUnitSetParameter(audioUnit, param, kAudioUnitScope_Global, 0, value, 0)
         if status != noErr {
-            NSLog("⚠️ AudioEffects: failed to set compressor param \(param) = \(value), OSStatus = \(status)")
+            plog("⚠️ AudioEffects: failed to set compressor param \(param) = \(value), OSStatus = \(status)")
         }
     }
 

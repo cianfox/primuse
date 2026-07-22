@@ -28,6 +28,8 @@ struct MacNowPlayingView: View {
 
     @State private var lyrics: [LyricLine] = []
     @State private var currentIndex: Int = 0
+    @State private var lastManualLyricsScroll = Date.distantPast
+    @State private var lyricsAutoFollowTask: Task<Void, Never>?
     @State private var isScrapingCurrentSong = false
     @State private var scrapeAlertMessage: String?
     @State private var hostWindow: NSWindow?
@@ -101,7 +103,9 @@ struct MacNowPlayingView: View {
             }
         }
         .task(id: player.currentSong?.id) { await reloadLyrics() }
-        .onChange(of: player.currentTime) { _, t in updateIndex(time: t) }
+        .background {
+            MacNowPlayingTimeObserver { updateIndex(time: $0) }
+        }
         .onChange(of: lyricsFontScale) { _, _ in
             CloudKVSSync.shared.markChanged(key: CloudKVSKey.lyricsFontScale)
         }
@@ -334,11 +338,55 @@ struct MacNowPlayingView: View {
                 endStop: isWindowFullScreen ? 0.82 : 0.88
             )
             .onChange(of: currentIndex) { _, new in
-                guard !lyrics.isEmpty, new < lyrics.count else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(lyrics[new].id, anchor: .center)
-                }
+                guard Date().timeIntervalSince(lastManualLyricsScroll) >= 3 else { return }
+                scrollLyrics(to: new, proxy: proxy, animated: true)
             }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { _ in
+                        lyricsAutoFollowTask?.cancel()
+                        lastManualLyricsScroll = Date()
+                    }
+                    .onEnded { _ in
+                        lastManualLyricsScroll = Date()
+                        scheduleLyricsAutoFollow(proxy: proxy)
+                    }
+            )
+            .task(id: lyricsScrollIdentity) {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                updateIndex(time: player.currentTime)
+                scrollLyrics(to: currentIndex, proxy: proxy, animated: false)
+            }
+            .onDisappear {
+                lyricsAutoFollowTask?.cancel()
+            }
+        }
+    }
+
+    private var lyricsScrollIdentity: String {
+        "\(player.currentSong?.id ?? "")|\(lyrics.first?.id ?? "")|\(lyrics.count)"
+    }
+
+    private func scheduleLyricsAutoFollow(proxy: ScrollViewProxy) {
+        lyricsAutoFollowTask?.cancel()
+        lyricsAutoFollowTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled,
+                  Date().timeIntervalSince(lastManualLyricsScroll) >= 3 else { return }
+            scrollLyrics(to: currentIndex, proxy: proxy, animated: true)
+        }
+    }
+
+    private func scrollLyrics(to index: Int, proxy: ScrollViewProxy, animated: Bool) {
+        guard lyrics.indices.contains(index) else { return }
+        let update = { proxy.scrollTo(lyrics[index].id, anchor: .center) }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.3), update)
+        } else {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
         }
     }
 
@@ -425,22 +473,8 @@ struct MacNowPlayingView: View {
             .joined(separator: " · ")
     }
 
-    private var playbackProgress: Double {
-        guard player.duration > 0 else { return 0 }
-        return min(1, max(0, player.currentTime / player.duration))
-    }
-
     private func artworkScrubberRow(width: CGFloat) -> some View {
-        HStack(spacing: 8) {
-            Text(player.currentTime.formattedDuration)
-                .frame(width: 38, alignment: .trailing)
-            MacNowPlayingScrubber(progress: playbackProgress, accent: theme.accentColor)
-            Text(player.duration.formattedDuration)
-                .frame(width: 38, alignment: .leading)
-        }
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
-        .foregroundStyle(.white.opacity(0.6))
-        .frame(width: width)
+        MacNowPlayingProgressRow(width: width, accent: theme.accentColor)
     }
 
     private func formattedSampleRate(_ sampleRate: Int) -> String {
@@ -677,11 +711,18 @@ struct MacNowPlayingView: View {
 
     private func updateIndex(time: TimeInterval) {
         guard !lyrics.isEmpty else { return }
-        for i in (0..<lyrics.count).reversed() where time >= lyrics[i].timestamp {
-            if currentIndex != i { currentIndex = i }
-            return
+        var low = 0
+        var high = lyrics.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if lyrics[middle].timestamp <= time {
+                low = middle + 1
+            } else {
+                high = middle
+            }
         }
-        if currentIndex != 0 { currentIndex = 0 }
+        let index = max(0, low - 1)
+        if currentIndex != index { currentIndex = index }
     }
 
     // MARK: - Actions
@@ -704,6 +745,43 @@ struct MacNowPlayingView: View {
     }
 
     // 删除歌曲流程已移到 PlayerMoreMenu,这里不再保留 deleteCurrentSong。
+}
+
+private struct MacNowPlayingTimeObserver: View {
+    @Environment(AudioPlayerService.self) private var player
+    let onTimeChange: (TimeInterval) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: player.currentTime) { _, time in onTimeChange(time) }
+    }
+}
+
+/// Owns the 0.5-second progress dependency so the large now-playing layout is
+/// not reevaluated for every playback tick.
+private struct MacNowPlayingProgressRow: View {
+    @Environment(AudioPlayerService.self) private var player
+    let width: CGFloat
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(player.currentTime.formattedDuration)
+                .frame(width: 38, alignment: .trailing)
+            MacNowPlayingScrubber(progress: progress, accent: accent)
+            Text(player.duration.formattedDuration)
+                .frame(width: 38, alignment: .leading)
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .foregroundStyle(.white.opacity(0.6))
+        .frame(width: width)
+    }
+
+    private var progress: Double {
+        guard player.duration > 0 else { return 0 }
+        return min(1, max(0, player.currentTime / player.duration))
+    }
 }
 
 private struct MacNowPlayingScrubber: View {

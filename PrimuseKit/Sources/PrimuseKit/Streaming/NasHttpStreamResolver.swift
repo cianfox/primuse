@@ -97,7 +97,7 @@ public actor NasHttpStreamResolver: StreamResolver {
             var req = URLRequest(url: base.appendingPathComponent(path))
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            req.httpBody = try? SafeJSONSerialization.data(withJSONObject: body)
             guard let (data, response) = try? await session.data(for: req),
                   let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
                   let token = Self.parseFnosToken(data) else { continue }

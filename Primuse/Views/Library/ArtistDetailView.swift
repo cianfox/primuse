@@ -166,12 +166,13 @@ struct ArtistDetailView: View {
     }
 
     private var macTopSongs: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let playCounts = playCountsBySongID
+        return VStack(alignment: .leading, spacing: 10) {
             macSectionTitle("热门")
 
             VStack(spacing: 1) {
                 ForEach(Array(songs.prefix(8).enumerated()), id: \.element.id) { index, song in
-                    macTopSongRow(song, index: index)
+                    macTopSongRow(song, index: index, playCount: playCounts[song.id, default: 0])
                 }
             }
         }
@@ -202,7 +203,7 @@ struct ArtistDetailView: View {
             .foregroundStyle(PMColor.text)
     }
 
-    private func macTopSongRow(_ song: Song, index: Int) -> some View {
+    private func macTopSongRow(_ song: Song, index: Int, playCount: Int) -> some View {
         let isCurrent = player.currentSong?.id == song.id
         return Button { playSong(song) } label: {
             HStack(spacing: 12) {
@@ -231,7 +232,7 @@ struct ArtistDetailView: View {
                 PMFormatPill.forFormat(song.fileFormat.displayName)
                     .frame(width: 70, alignment: .leading)
 
-                Text(verbatim: "\(playCountsBySongID[song.id, default: 0]) 次")
+                Text(verbatim: "\(playCount) 次")
                     .font(.system(size: 11, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(PMColor.textMuted)

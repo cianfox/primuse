@@ -39,7 +39,7 @@ actor GoogleDriveSource: MusicSourceConnector, OAuthCloudSource, RemoteFileDispl
             let mime = suffix == ".lrc" ? "text/plain" : "image/jpeg"
 
             // multipart/related:元数据(name+parents) + 内容。
-            let metaJSON = try JSONSerialization.data(withJSONObject: ["name": sidecarName, "parents": [parentID]])
+            let metaJSON = try SafeJSONSerialization.data(withJSONObject: ["name": sidecarName, "parents": [parentID]])
             let boundary = "primuse\(UUID().uuidString)"
             var body = Data()
             body.append("--\(boundary)\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8)!)

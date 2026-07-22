@@ -3,6 +3,34 @@ import SwiftUI
 import AppKit
 import PrimuseKit
 
+@MainActor
+private final class MacHomeRefreshCoordinator {
+    var debounceTask: Task<Void, Never>?
+    var computeTask: Task<Void, Never>?
+
+    func cancelAll() {
+        debounceTask?.cancel()
+        computeTask?.cancel()
+        debounceTask = nil
+        computeTask = nil
+    }
+}
+
+/// Keep the rapidly changing revision in a tiny observation scope. Attaching
+/// the onChange directly to MacHomeView invalidated its entire dashboard tree
+/// for every scan/backfill batch, even while the expensive snapshot itself was
+/// debounced.
+private struct MacHomeLibraryRevisionObserver: View {
+    @Environment(MusicLibrary.self) private var library
+    let onRevisionChange: () -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: library.searchRevision) { _, _ in onRevisionChange() }
+    }
+}
+
 /// 1.6 重设计后的 macOS 首页 — Hero (AmbientBackdrop + 封面马赛克 + 欢迎语) →
 /// 库健康度 / 源状态 双卡 → 4 节点 pipeline → 最近添加专辑 → 最近播放 → 艺术家。
 struct MacHomeView: View {
@@ -25,19 +53,26 @@ struct MacHomeView: View {
     // 合并 searchRevision 风暴 —— MusicLibrary 在扫描的每个 upsert 批次都 bump
     // searchRevision, 不去抖会触发几十次全库重算。cancel + 重启计时, 只在最后
     // 一次 revision 落定后重算。
-    @State private var derivedRefreshTask: Task<Void, Never>?
+    @State private var refreshCoordinator = MacHomeRefreshCoordinator()
     private static let derivedRefreshDebounce: Duration = .milliseconds(300)
 
-    private struct DerivedSnapshot {
+    private struct DerivedSnapshot: Sendable {
         var mosaicSongs: [Song] = []
+        var recentSongs: [Song] = []
+        var recentlyAddedAlbums: [Album] = []
+        var artists: [Artist] = []
+        var albumArtworkSongs: [String: Song] = [:]
+        var artistSongCounts: [String: Int] = [:]
         var totalDurationSec: Double = 0
         var coverCount: Int = 0
         var lyricsCount: Int = 0
         var playableCount: Int = 0
         var songCount: Int = 0
+        var albumCount: Int = 0
+        var artistCount: Int = 0
     }
 
-    private var hasContent: Bool { !library.visibleSongs.isEmpty }
+    private var hasContent: Bool { derived.songCount > 0 }
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -53,7 +88,7 @@ struct MacHomeView: View {
                     pipelineSection
                     recentlyAddedSection
                     recentlyPlayedSection
-                    if !library.visibleArtists.isEmpty {
+                    if !derived.artists.isEmpty {
                         artistsSection
                     }
                 } else {
@@ -65,26 +100,27 @@ struct MacHomeView: View {
             .padding(.bottom, 104)
         }
         .background(PMColor.bg.ignoresSafeArea())
+        .background {
+            MacHomeLibraryRevisionObserver {
+                scheduleDerivedRefresh()
+            }
+        }
         .task {
             refreshDerivedIfNeeded()
-        }
-        .onChange(of: library.searchRevision) { _, _ in
-            scheduleDerivedRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .primusePlaybackHistoryDidChange)) { _ in
             refreshDerived()
         }
         .onDisappear {
-            derivedRefreshTask?.cancel()
-            derivedRefreshTask = nil
+            refreshCoordinator.cancelAll()
         }
     }
 
     /// 合并 searchRevision 风暴: cancel 上一次再重启计时, 只有最后一次 revision
     /// 落定后才真正重算。
     private func scheduleDerivedRefresh() {
-        derivedRefreshTask?.cancel()
-        derivedRefreshTask = Task { @MainActor in
+        refreshCoordinator.debounceTask?.cancel()
+        refreshCoordinator.debounceTask = Task { @MainActor in
             try? await Task.sleep(for: Self.derivedRefreshDebounce)
             guard !Task.isCancelled else { return }
             refreshDerived()
@@ -99,27 +135,80 @@ struct MacHomeView: View {
         }
     }
 
-    /// 全库聚合的唯一计算入口 —— 在主线程跑, 但只有库内容/播放历史变化时才调一次。
+    /// 全库聚合的唯一计算入口。主线程只拍 COW 快照，遍历、分组和排序都在
+    /// utility task 中执行，避免刷新落在窗口滚动/导航帧上。
     private func refreshDerived() {
         let songs = library.visibleSongs
+        let albums = library.visibleAlbums
+        let artists = library.visibleArtists
+        let recentlyPlayed = library.recentlyPlayedSongs(limit: 100)
+
+        refreshCoordinator.computeTask?.cancel()
+        refreshCoordinator.computeTask = Task { @MainActor in
+            let snapshot = await Task.detached(priority: .utility) {
+                Self.makeDerivedSnapshot(
+                    songs: songs,
+                    albums: albums,
+                    artists: artists,
+                    recentlyPlayed: recentlyPlayed
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            derived = snapshot
+        }
+    }
+
+    private nonisolated static func makeDerivedSnapshot(
+        songs: [Song],
+        albums: [Album],
+        artists: [Artist],
+        recentlyPlayed: [Song]
+    ) -> DerivedSnapshot {
         var snapshot = DerivedSnapshot()
         snapshot.songCount = songs.count
+        snapshot.albumCount = albums.count
+        snapshot.artistCount = artists.count
+        snapshot.artists = artists
         var totalSec = 0.0
         var coverCount = 0
         var lyricsCount = 0
         var playableCount = 0
+        var songsByAlbum: [String: [Song]] = [:]
+        var artistSongCounts: [String: Int] = [:]
         for song in songs {
             totalSec += max(0, song.duration)
             if song.coverArtFileName?.isEmpty == false { coverCount += 1 }
             if song.lyricsFileName?.isEmpty == false { lyricsCount += 1 }
             if song.isPlayable { playableCount += 1 }
+            if let albumID = song.albumID { songsByAlbum[albumID, default: []].append(song) }
+            if let artistID = song.artistID { artistSongCounts[artistID, default: 0] += 1 }
         }
         snapshot.totalDurationSec = totalSec
         snapshot.coverCount = coverCount
         snapshot.lyricsCount = lyricsCount
         snapshot.playableCount = playableCount
-        snapshot.mosaicSongs = computeMosaicSongs()
-        derived = snapshot
+        snapshot.artistSongCounts = artistSongCounts
+        snapshot.albumArtworkSongs = songsByAlbum.mapValues { albumSongs in
+            albumSongs.first { $0.coverArtFileName?.isEmpty == false } ?? albumSongs[0]
+        }
+
+        let sortedByAdded = songs.sorted { $0.dateAdded > $1.dateAdded }
+        snapshot.recentSongs = recentlyPlayed.isEmpty ? sortedByAdded : recentlyPlayed
+        let latestDateByAlbum = songsByAlbum.mapValues { albumSongs in
+            albumSongs.lazy.map(\.dateAdded).max() ?? .distantPast
+        }
+        snapshot.recentlyAddedAlbums = albums.sorted {
+            (latestDateByAlbum[$0.id] ?? .distantPast) > (latestDateByAlbum[$1.id] ?? .distantPast)
+        }
+
+        var mosaicPool = recentlyPlayed
+        var seenIDs = Set(mosaicPool.map(\.id))
+        for song in sortedByAdded.prefix(40) where seenIDs.insert(song.id).inserted {
+            mosaicPool.append(song)
+        }
+        let covered = mosaicPool.filter { $0.coverArtFileName?.isEmpty == false }
+        snapshot.mosaicSongs = Array((covered.isEmpty ? mosaicPool : covered).prefix(6))
+        return snapshot
     }
 
     // MARK: - Update banner
@@ -211,7 +300,7 @@ struct MacHomeView: View {
     /// "今晚, 你的资料库里藏着 11,248 个故事" 这样的动态叙事。
     /// 1.6 重设计后用它替代静态 "猿音", 把首页从"应用展示页"变成"用户专属仪表盘"。
     private var heroNarrative: String {
-        let count = library.visibleSongs.count
+        let count = derived.songCount
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         let formatted = formatter.string(from: NSNumber(value: count)) ?? "\(count)"
@@ -229,8 +318,8 @@ struct MacHomeView: View {
     /// "来自 8 个源 · 842 张专辑 · 312 位艺术家 · 总时长 47 天 18 小时"
     private var heroStats: String {
         let sources = sourcesStore.sources.filter(\.isEnabled).count
-        let albums = library.visibleAlbums.count
-        let artists = library.visibleArtists.count
+        let albums = derived.albumCount
+        let artists = derived.artistCount
         let totalSec = derived.totalDurationSec
         let days = Int(totalSec / 86400)
         let hours = Int((totalSec.truncatingRemainder(dividingBy: 86400)) / 3600)
@@ -391,18 +480,6 @@ struct MacHomeView: View {
 
     private var mosaicSongs: [Song] { derived.mosaicSongs }
 
-    /// 实际计算封面马赛克候选(全库 sort, 较重)—— 只在 refreshDerived 时调一次。
-    private func computeMosaicSongs() -> [Song] {
-        let recent = library.recentlyPlayedSongs(limit: 12)
-        let added = library.visibleSongs.sorted { $0.dateAdded > $1.dateAdded }.prefix(40)
-        var pool = recent
-        for song in added where !pool.contains(where: { $0.id == song.id }) {
-            pool.append(song)
-        }
-        let covered = pool.filter { $0.coverArtFileName?.isEmpty == false }
-        return Array((covered.isEmpty ? pool : covered).prefix(6))
-    }
-
     // MARK: - Stats row (库健康度 + 源状态)
 
     private var statsRow: some View {
@@ -421,9 +498,9 @@ struct MacHomeView: View {
         homeCard(title: "home_health_title", spec: "LIB-09") {
             VStack(alignment: .leading, spacing: PMSpace.m) {
                 HStack(spacing: PMSpace.m) {
-                    metric(value: library.visibleSongs.count, label: "tab_songs")
-                    metric(value: library.visibleAlbums.count, label: "tab_albums")
-                    metric(value: library.visibleArtists.count, label: "tab_artists")
+                    metric(value: derived.songCount, label: "tab_songs")
+                    metric(value: derived.albumCount, label: "tab_albums")
+                    metric(value: derived.artistCount, label: "tab_artists")
                 }
                 Rectangle().fill(PMColor.divider).frame(height: 0.5).padding(.vertical, 2)
                 // 设计稿: 封面绿 / 歌词红 / 可播放蓝 (跟"健康"语义不同维度区分)。
@@ -436,71 +513,7 @@ struct MacHomeView: View {
     }
 
     private var sourceStatusCard: some View {
-        homeCard(title: "Source Status", spec: "SRC-* · LIB-14/15") {
-            VStack(alignment: .leading, spacing: PMSpace.m) {
-                HStack(spacing: PMSpace.m) {
-                    metric(value: enabledSourcesCount, label: "home_enabled_sources")
-                    metric(value: activeTaskCount, label: "home_active_scans")
-                    metric(value: backfill.remainingCount(forSource: nil), label: "home_pending_details")
-                }
-                Rectangle().fill(PMColor.divider).frame(height: 0.5).padding(.vertical, 2)
-                if let entry = activeScanEntry {
-                    // 文件扫描 (发现新歌)。
-                    sourceTaskBox(
-                        title: entry.source.name,
-                        phase: entry.state.isScanning ? Lz("Reading files") : Lz("Resume pending"),
-                        detail: entry.state.currentFile,
-                        progress: entry.state.totalCount > 0 ? min(entry.state.progress, 1) : 0,
-                        indeterminate: entry.state.totalCount == 0
-                    )
-                } else if backfill.isRunning || backfill.hasPendingWork {
-                    // 元数据回填 (读取本地文件标签补全基础信息) —— 就是源卡片上那个
-                    // 「读取标签中 · 剩余 N 首」。之前首页完全没检测它, 所以明明在跑却
-                    // 显示「暂无扫描任务」。
-                    let processed = backfill.processedCount
-                    let total = processed + backfill.remainingCount
-                    sourceTaskBox(
-                        title: Lz("Metadata backfill"),
-                        phase: Lz("Reading tags"),
-                        detail: String(format: String(localized: "backfill_remaining"), backfill.remainingCount),
-                        progress: total > 0 ? Double(processed) / Double(total) : 0,
-                        indeterminate: total == 0
-                    )
-                } else if scraperService.isScraping {
-                    // 在线刮削封面 / 歌词。
-                    sourceTaskBox(
-                        title: Lz("Metadata scraping"),
-                        phase: Lz("Covers / Lyrics"),
-                        detail: scraperService.currentSongTitle,
-                        progress: scraperService.progress,
-                        indeterminate: scraperService.totalCount == 0
-                    )
-                } else if backfill.failedCount > 0 {
-                    // 没有进行中的任务, 但有读取失败 / 多次超时被挂起的歌 ——
-                    // 给个手动重试入口 (源恢复后再试一次)。
-                    Button {
-                        backfill.retryFailed()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundStyle(PMColor.bad)
-                            Text(String(format: String(localized: "backfill_retry_failed"), backfill.failedCount))
-                                .font(.system(size: 12))
-                                .foregroundStyle(PMColor.textMuted)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(PMColor.ok)
-                        Text("home_no_scans")
-                            .font(.system(size: 12))
-                            .foregroundStyle(PMColor.textMuted)
-                    }
-                }
-            }
-        }
+        MacHomeSourceStatusCard()
     }
 
     /// 当前正在扫描的源 (含其 sourceID 对应的 MusicSource) —— scanStates 的 key 才是
@@ -640,31 +653,7 @@ struct MacHomeView: View {
     // MARK: - Pipeline
 
     private var pipelineSection: some View {
-        HStack(spacing: PMSpace.s8) {
-            pipelineNode("externaldrive.fill", "Sources",
-                         statusText: "\(enabledSourcesCount) \(Lz("online"))",
-                         isActive: !sourcesStore.sources.isEmpty)
-            pipelineConnector(isActive: !activeScans.isEmpty || hasContent)
-            pipelineNode("arrow.triangle.2.circlepath", "Scan",
-                         statusText: activeScans.isEmpty ? Lz("No Scan") : "\(activeScans.count) \(Lz("in progress"))",
-                         isActive: !activeScans.isEmpty || hasContent)
-            pipelineConnector(isActive: hasContent)
-            pipelineNode("tag.fill", "Metadata",
-                         statusText: scraperService.isScraping
-                             ? "\(scraperService.processedCount)/\(scraperService.totalCount) \(Lz("in progress"))"
-                             : (backfill.remainingCount(forSource: nil) == 0
-                                 ? Lz("Done")
-                                 : "\(backfill.remainingCount(forSource: nil)) \(Lz("pending backfill"))"),
-                         isActive: hasContent || scraperService.isScraping)
-            pipelineConnector(isActive: player.currentSong != nil)
-            pipelineNode("play.fill", "Listen",
-                         statusText: player.currentSong?.title ?? Lz("Not Playing"),
-                         isActive: player.currentSong != nil)
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity)
-        .pmCard(cornerRadius: PMRadius.l)
+        MacHomePipelineSection(hasContent: hasContent)
     }
 
     private func pipelineNode(_ icon: String, _ title: String,
@@ -712,7 +701,7 @@ struct MacHomeView: View {
                 alignment: .leading,
                 spacing: PMSpace.l
             ) {
-                ForEach(library.recentlyAddedAlbums(limit: 12)) { album in
+                ForEach(derived.recentlyAddedAlbums.prefix(12)) { album in
                     Button { playAlbum(album) } label: {
                         albumCard(album)
                     }
@@ -723,8 +712,7 @@ struct MacHomeView: View {
     }
 
     private func albumCard(_ album: Album) -> some View {
-        let albumSongs = library.songs(forAlbum: album.id)
-        let song = albumSongs.first { $0.coverArtFileName?.isEmpty == false } ?? albumSongs.first
+        let song = derived.albumArtworkSongs[album.id]
         return VStack(alignment: .leading, spacing: 8) {
             CachedArtworkView(
                 coverRef: song?.coverArtFileName,
@@ -805,13 +793,7 @@ struct MacHomeView: View {
     }
 
     private var recentSongs: [Song] {
-        recentSongs(limit: 18)
-    }
-
-    private func recentSongs(limit: Int) -> [Song] {
-        let recent = library.recentlyPlayedSongs(limit: limit)
-        if !recent.isEmpty { return recent }
-        return Array(library.visibleSongs.sorted { $0.dateAdded > $1.dateAdded }.prefix(limit))
+        derived.recentSongs
     }
 
     // MARK: - Artists (horizontal scroll)
@@ -824,7 +806,7 @@ struct MacHomeView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: PMSpace.l) {
-                    ForEach(library.visibleArtists.prefix(14)) { artist in
+                    ForEach(derived.artists.prefix(14)) { artist in
                         NavigationLink(value: artist) {
                             artistChip(artist)
                         }
@@ -855,7 +837,7 @@ struct MacHomeView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(PMColor.text)
                 .lineLimit(1)
-            Text("\(library.songs(forArtist: artist.id).count)")
+            Text("\(derived.artistSongCounts[artist.id, default: 0])")
                 .font(.system(size: 10.5))
                 .foregroundStyle(PMColor.textFaint)
         }
@@ -911,13 +893,13 @@ struct MacHomeView: View {
             recentlyPlayedAllView
                 .navigationTitle("recently_played")
         case .artists:
-            ArtistListView(artists: library.visibleArtists)
+            ArtistListView(artists: derived.artists)
                 .navigationTitle("tab_artists")
         }
     }
 
     private var recentlyAddedAllView: some View {
-        let albums = library.recentlyAddedAlbums(limit: max(library.visibleAlbums.count, 1))
+        let albums = derived.recentlyAddedAlbums
 
         return ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
@@ -948,7 +930,7 @@ struct MacHomeView: View {
     }
 
     private var recentlyPlayedAllView: some View {
-        let songs = recentSongs(limit: max(library.visibleSongs.count, 1))
+        let songs = derived.recentSongs
 
         return ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
@@ -1091,6 +1073,263 @@ struct MacHomeView: View {
         player.shuffleEnabled = false
         player.setQueue(queue, startAt: 0)
         Task { await player.play(song: first) }
+    }
+}
+
+/// Scan/backfill progress changes far more often than the rest of the home
+/// dashboard. Keeping this card in its own View limits those invalidations to
+/// one small subtree.
+private struct MacHomeSourceStatusCard: View {
+    @Environment(SourcesStore.self) private var sourcesStore
+    @Environment(ScanService.self) private var scanService
+    @Environment(MetadataBackfillService.self) private var backfill
+    @Environment(MusicScraperService.self) private var scraperService
+
+    var body: some View {
+        card(title: "Source Status", spec: "SRC-* · LIB-14/15") {
+            VStack(alignment: .leading, spacing: PMSpace.m) {
+                HStack(spacing: PMSpace.m) {
+                    metric(value: enabledSourcesCount, label: "home_enabled_sources")
+                    metric(value: activeTaskCount, label: "home_active_scans")
+                    metric(value: backfill.remainingCount(forSource: nil), label: "home_pending_details")
+                }
+                Rectangle().fill(PMColor.divider).frame(height: 0.5).padding(.vertical, 2)
+                activityBody
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var activityBody: some View {
+        if let entry = activeScanEntry {
+            taskBox(
+                title: entry.source.name,
+                phase: entry.state.isScanning ? Lz("Reading files") : Lz("Resume pending"),
+                detail: entry.state.currentFile,
+                progress: entry.state.totalCount > 0 ? min(entry.state.progress, 1) : 0,
+                indeterminate: entry.state.totalCount == 0
+            )
+        } else if backfill.isRunning || backfill.hasPendingWork {
+            let processed = backfill.processedCount
+            let total = processed + backfill.remainingCount
+            taskBox(
+                title: Lz("Metadata backfill"),
+                phase: Lz("Reading tags"),
+                detail: String(format: String(localized: "backfill_remaining"), backfill.remainingCount),
+                progress: total > 0 ? Double(processed) / Double(total) : 0,
+                indeterminate: total == 0
+            )
+        } else if scraperService.isScraping {
+            taskBox(
+                title: Lz("Metadata scraping"),
+                phase: Lz("Covers / Lyrics"),
+                detail: scraperService.currentSongTitle,
+                progress: scraperService.progress,
+                indeterminate: scraperService.totalCount == 0
+            )
+        } else if backfill.failedCount > 0 {
+            Button { backfill.retryFailed() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise").foregroundStyle(PMColor.bad)
+                    Text(String(format: String(localized: "backfill_retry_failed"), backfill.failedCount))
+                        .font(.system(size: 12))
+                        .foregroundStyle(PMColor.textMuted)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(PMColor.ok)
+                Text("home_no_scans")
+                    .font(.system(size: 12))
+                    .foregroundStyle(PMColor.textMuted)
+            }
+        }
+    }
+
+    private var activeScanEntry: (source: MusicSource, state: ScanService.ScanState)? {
+        for (id, state) in scanService.scanStates where state.isScanning || state.canResume {
+            if let source = sourcesStore.sources.first(where: { $0.id == id }) {
+                return (source, state)
+            }
+        }
+        return nil
+    }
+
+    private var activeTaskCount: Int {
+        scanService.scanStates.values.filter { $0.isScanning || $0.canResume }.count
+            + (scraperService.isScraping ? 1 : 0)
+            + ((backfill.isRunning || backfill.hasPendingWork) ? 1 : 0)
+    }
+
+    private var enabledSourcesCount: Int { sourcesStore.sources.filter(\.isEnabled).count }
+
+    private func taskBox(
+        title: String,
+        phase: String,
+        detail: String,
+        progress: Double,
+        indeterminate: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Circle().fill(PMColor.brand).frame(width: 6, height: 6)
+                Text(verbatim: title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(PMColor.text)
+                    .lineLimit(1)
+                Text(verbatim: "· \(phase)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(PMColor.textMuted)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            if !detail.isEmpty {
+                Text(verbatim: detail)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(PMColor.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack(spacing: 8) {
+                if indeterminate {
+                    ProgressView().controlSize(.small)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    progressBar(progress)
+                    Text(verbatim: "\(Int(min(max(progress, 0), 1) * 100))%")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(PMColor.textMuted)
+                        .monospacedDigit()
+                        .frame(width: 36, alignment: .trailing)
+                }
+            }
+        }
+        .padding(10)
+        .background(PMColor.bgDeep.opacity(0.35), in: .rect(cornerRadius: 9))
+        .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(PMColor.cardBorder, lineWidth: 0.5) }
+    }
+
+    private func progressBar(_ progress: Double) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(PMColor.divider)
+                Capsule().fill(PMColor.brand)
+                    .frame(width: proxy.size.width * min(max(progress, 0), 1))
+            }
+        }
+        .frame(height: 5)
+    }
+
+    private func metric(value: Int, label: LocalizedStringKey) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value, format: .number)
+                .font(.system(size: 30, weight: .bold))
+                .monospacedDigit()
+                .tracking(-0.5)
+                .foregroundStyle(PMColor.text)
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(PMColor.textFaint)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func card<C: View>(
+        title: LocalizedStringKey,
+        spec: String,
+        @ViewBuilder content: () -> C
+    ) -> some View {
+        VStack(alignment: .leading, spacing: PMSpace.m14) {
+            HStack {
+                Text(title).font(.system(size: 14, weight: .semibold)).tracking(-0.3)
+                Spacer()
+                let visibleSpec = PMTextWithoutDesignCodes(spec)
+                if !visibleSpec.isEmpty {
+                    Text(verbatim: visibleSpec)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(PMColor.textFaint)
+                }
+            }
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(PMSpace.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .pmCard(cornerRadius: PMRadius.l)
+    }
+}
+
+/// Pipeline status changes with scan progress and playback state. Isolating it
+/// prevents those changes from rebuilding the artwork grids above and below it.
+private struct MacHomePipelineSection: View {
+    let hasContent: Bool
+    @Environment(AudioPlayerService.self) private var player
+    @Environment(SourcesStore.self) private var sourcesStore
+    @Environment(ScanService.self) private var scanService
+    @Environment(MetadataBackfillService.self) private var backfill
+    @Environment(MusicScraperService.self) private var scraperService
+
+    var body: some View {
+        HStack(spacing: PMSpace.s8) {
+            node("externaldrive.fill", "Sources",
+                 statusText: "\(enabledSourcesCount) \(Lz("online"))",
+                 isActive: !sourcesStore.sources.isEmpty)
+            connector(isActive: !activeScans.isEmpty || hasContent)
+            node("arrow.triangle.2.circlepath", "Scan",
+                 statusText: activeScans.isEmpty ? Lz("No Scan") : "\(activeScans.count) \(Lz("in progress"))",
+                 isActive: !activeScans.isEmpty || hasContent)
+            connector(isActive: hasContent)
+            node("tag.fill", "Metadata",
+                 statusText: scraperService.isScraping
+                    ? "\(scraperService.processedCount)/\(scraperService.totalCount) \(Lz("in progress"))"
+                    : (backfill.remainingCount(forSource: nil) == 0
+                        ? Lz("Done")
+                        : "\(backfill.remainingCount(forSource: nil)) \(Lz("pending backfill"))"),
+                 isActive: hasContent || scraperService.isScraping)
+            connector(isActive: player.currentSong != nil)
+            node("play.fill", "Listen",
+                 statusText: player.currentSong?.title ?? Lz("Not Playing"),
+                 isActive: player.currentSong != nil)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
+        .frame(maxWidth: .infinity)
+        .pmCard(cornerRadius: PMRadius.l)
+    }
+
+    private var activeScans: [ScanService.ScanState] {
+        scanService.scanStates.values.filter { $0.isScanning || $0.canResume }
+    }
+
+    private var enabledSourcesCount: Int { sourcesStore.sources.filter(\.isEnabled).count }
+
+    private func node(_ icon: String, _ title: String, statusText: String, isActive: Bool) -> some View {
+        VStack(alignment: .center, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(PMColor.brand)
+                .frame(width: 52, height: 52)
+                .background(isActive ? PMColor.brand.opacity(0.18) : PMColor.brand.opacity(0.10),
+                            in: .rect(cornerRadius: 12, style: .continuous))
+            Text(verbatim: title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(PMColor.text)
+                .lineLimit(1)
+            Text(statusText)
+                .font(.system(size: 11))
+                .foregroundStyle(PMColor.textFaint)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func connector(isActive: Bool) -> some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(isActive ? PMColor.text.opacity(0.6) : PMColor.textFaint.opacity(0.4))
+            .padding(.horizontal, 6)
     }
 }
 

@@ -44,7 +44,7 @@ actor MetadataService {
     ) async -> SongMetadata {
         // 1. Read embedded metadata
         let embedded = await FileMetadataReader.read(from: url)
-        NSLog("📖 FileMetadataReader: title=\(embedded.title ?? "nil") cover=\(embedded.coverArtData?.count ?? 0)bytes lyrics=\(embedded.lyricsText?.prefix(30) ?? "nil") file=\(url.lastPathComponent)")
+        plog("📖 FileMetadataReader: title=\(embedded.title ?? "nil") cover=\(embedded.coverArtData?.count ?? 0)bytes lyrics=\(embedded.lyricsText?.prefix(30) ?? "nil") file=\(url.lastPathComponent)")
 
         // url.lastPathComponent 在 scrape 路径下是 cache 的 sanitized 名
         // 丑名字。caller 传原始文件名当 fallbackTitle 优先用。

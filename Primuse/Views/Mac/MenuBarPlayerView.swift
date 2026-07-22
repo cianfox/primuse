@@ -130,22 +130,7 @@ struct MenuBarPlayerView: View {
     // MARK: - Scrubber
 
     private var scrubber: some View {
-        VStack(spacing: 4) {
-            MenuBarScrubberLine(
-                value: player.currentTime,
-                total: player.duration,
-                tint: PMColor.brand
-            ) { player.seek(to: $0) }
-
-            HStack {
-                Text(formatTime(player.currentTime))
-                Spacer()
-                Text(formatTime(player.duration))
-            }
-            .font(.system(size: 10, design: .monospaced))
-            .monospacedDigit()
-            .foregroundStyle(PMColor.textFaint)
-        }
+        MenuBarPlayerProgress()
     }
 
     // MARK: - Transport
@@ -265,9 +250,33 @@ struct MenuBarPlayerView: View {
         .buttonStyle(.plain)
     }
 
-    private func formatTime(_ t: TimeInterval) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
-        let total = Int(t)
+}
+
+private struct MenuBarPlayerProgress: View {
+    @Environment(AudioPlayerService.self) private var player
+
+    var body: some View {
+        VStack(spacing: 4) {
+            MenuBarScrubberLine(
+                value: player.currentTime,
+                total: player.duration,
+                tint: PMColor.brand
+            ) { player.seek(to: $0) }
+
+            HStack {
+                Text(formatTime(player.currentTime))
+                Spacer()
+                Text(formatTime(player.duration))
+            }
+            .font(.system(size: 10, design: .monospaced))
+            .monospacedDigit()
+            .foregroundStyle(PMColor.textFaint)
+        }
+    }
+
+    private func formatTime(_ time: TimeInterval) -> String {
+        guard time.isFinite, time >= 0 else { return "0:00" }
+        let total = Int(time)
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

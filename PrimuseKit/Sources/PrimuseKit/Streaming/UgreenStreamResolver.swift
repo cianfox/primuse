@@ -70,7 +70,7 @@ public actor UgreenStreamResolver: StreamResolver {
         var req = URLRequest(url: comp.url!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["username": username])
+        req.httpBody = try? SafeJSONSerialization.data(withJSONObject: ["username": username])
         let (_, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse,
               let rsaToken = http.value(forHTTPHeaderField: "x-rsa-token"), !rsaToken.isEmpty else {
@@ -83,7 +83,7 @@ public actor UgreenStreamResolver: StreamResolver {
         var req = URLRequest(url: base.appendingPathComponent("ugreen/v1/verify/login"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        req.httpBody = try? SafeJSONSerialization.data(withJSONObject: [
             "username": username, "password": encryptedPassword,
             "is_simple": true, "keepalive": true, "otp": false,
         ])

@@ -198,7 +198,11 @@ final class LibrarySnapshotSync: Sendable {
             }
         }
         guard !blob.isEmpty else { return nil }
-        return try? JSONSerialization.data(withJSONObject: blob)
+        // NSJSONSerialization may raise an Objective-C exception instead of
+        // returning an Error while bridging a large Swift dictionary. Such an
+        // exception bypasses `try?` and terminates the process. The payload is
+        // already Codable, so keep this path entirely in Swift.
+        return try? JSONEncoder().encode(blob)
     }
 
     /// tvOS:把快照里的歌词文件还原到本机 MetadataAssetStore(文件名不变,
@@ -212,7 +216,7 @@ final class LibrarySnapshotSync: Sendable {
     /// 把歌词 blob(解压后的 JSON `{文件名: base64}`)还原到本机 MetadataAssetStore。
     /// CloudKit 与 LAN 直传两条路共用(各自先把 gzip 字段解压再调这里)。
     static func writeLyrics(blob raw: Data, fm: FileManager) {
-        guard let blob = (try? JSONSerialization.jsonObject(with: raw)) as? [String: String] else { return }
+        guard let blob = try? JSONDecoder().decode([String: String].self, from: raw) else { return }
         let dir = MetadataAssetStore.shared.lyricsDirectoryURL
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         var n = 0
