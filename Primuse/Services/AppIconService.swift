@@ -45,15 +45,15 @@ final class AppIconService {
 
     /// Brand tints sampled from the shared flat icon palette.
     private static let iconTints: [String: Color] = [
-        "":         Color(red: 0.251, green: 0.765, blue: 0.816), // multi-source playback — cyan
+        "":         Color(red: 0.914, green: 0.314, blue: 0.263), // default headphones — coral
         "AppIcon1": Color(red: 0.957, green: 0.784, blue: 0.298), // private library — yellow
         "AppIcon2": Color(red: 0.251, green: 0.765, blue: 0.816), // lossless audio — cyan
-        "AppIcon3": Color(red: 1.000, green: 0.420, blue: 0.341), // synchronized lyrics — coral
-        "AppIcon4": Color(red: 0.251, green: 0.765, blue: 0.816), // cross-device continuity — cyan
-        "AppIcon5": Color(red: 0.545, green: 0.424, blue: 1.000), // headphones — electric violet
-        "AppIcon6": Color(red: 0.788, green: 0.941, blue: 0.353), // record — acid lime
-        "AppIcon7": Color(red: 0.388, green: 0.902, blue: 0.839), // music note — mint cyan
-        "AppIcon8": Color(red: 1.000, green: 0.373, blue: 0.561), // speaker — vivid pink
+        "AppIcon3": Color(red: 0.788, green: 0.941, blue: 0.353), // turntable — acid lime
+        "AppIcon4": Color(red: 0.388, green: 0.902, blue: 0.839), // music note — mint cyan
+        "AppIcon5": Color(red: 1.000, green: 0.373, blue: 0.561), // speaker — vivid pink
+        "AppIcon6": Color(red: 0.251, green: 0.835, blue: 0.784), // restored soft note — mint
+        "AppIcon7": Color(red: 0.220, green: 0.835, blue: 0.784), // Primuse P — turquoise
+        "AppIcon8": Color(red: 1.000, green: 0.569, blue: 0.482), // Muse spark — coral
     ]
 
     let options: [IconOption] = {
@@ -105,9 +105,8 @@ final class AppIconService {
         if options.contains(where: { $0.id == persistedID }) {
             self.currentIconID = persistedID
         } else {
-            // Themes 9–11 were removed in the 2026 icon-system refresh.
-            // Normalize an old stored selection so the settings UI and tint
-            // both fall back to the new primary icon after an app update.
+            // Normalize a stored selection that no longer exists in the
+            // current nine-icon catalog so UI and tint fall back together.
             storedChoiceID = ""
         }
         // Make sure the widget extension sees the right brand color on first

@@ -78,15 +78,15 @@
 // MARK: - Appearance
 "appearance" = "Appearance";
 "app_icon" = "App Icon";
-"icon_default" = "Default";
+"icon_default" = "Headphone Play";
 "icon_theme_1" = "Private Library";
 "icon_theme_2" = "Lossless Audio";
-"icon_theme_3" = "Live Lyrics";
-"icon_theme_4" = "Continuity";
-"icon_theme_5" = "Headphone Play";
-"icon_theme_6" = "Record Collection";
-"icon_theme_7" = "Music Pulse";
-"icon_theme_8" = "Speaker Play";
+"icon_theme_3" = "Record Collection";
+"icon_theme_4" = "Music Pulse";
+"icon_theme_5" = "Speaker Play";
+"icon_theme_6" = "Soft Note";
+"icon_theme_7" = "Primuse Mark";
+"icon_theme_8" = "Muse Spark";
 "queue_title" = "Queue";
 "queue_empty" = "Queue Empty";
 "queue_empty_desc" = "Add songs to the queue";

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,25 +71,59 @@ SECONDARY_DARK_PALETTE = [
     (0xFB, 0xFA, 0xFF),
 ]
 
+# The primary headphones icon deliberately drops violet entirely. Its source
+# artwork still uses the secondary palette, but output maps those indices to a
+# calmer mint / deep-teal surface with a coral play mark.
+HEADPHONES_LIGHT_PALETTE = [
+    (0xE8, 0xFA, 0xF6),  # pale mint background
+    (0xE9, 0x50, 0x43),  # coral play mark
+    (0x0F, 0x91, 0xA0),  # teal pulse
+    (0xE4, 0x3D, 0x73),
+    (0xD2, 0x98, 0x00),
+    (0x10, 0x2D, 0x35),  # deep-teal headphones
+]
+HEADPHONES_DARK_PALETTE = [
+    (0x07, 0x1B, 0x21),  # deep-teal background
+    (0xFF, 0x78, 0x66),  # coral play mark
+    (0x55, 0xD1, 0xDC),  # cyan pulse
+    (0xFF, 0x75, 0x9F),
+    (0xFF, 0xD5, 0x61),
+    (0xFA, 0xF7, 0xEF),  # warm-ivory headphones
+]
+
 PALETTE_FAMILIES = {
     "primary": (PRIMARY_SOURCE_PALETTE, PRIMARY_LIGHT_PALETTE, PRIMARY_DARK_PALETTE),
     "secondary": (SECONDARY_SOURCE_PALETTE, SECONDARY_LIGHT_PALETTE, SECONDARY_DARK_PALETTE),
+    "headphones": (SECONDARY_SOURCE_PALETTE, HEADPHONES_LIGHT_PALETTE, HEADPHONES_DARK_PALETTE),
 }
 
 # tvOS artwork is a separate landscape/parallax system. Keep its established
 # high-chroma palette independent from the iOS light appearance.
-TV_PALETTE = PRIMARY_SOURCE_PALETTE
+TV_PALETTE = HEADPHONES_DARK_PALETTE
 
 ICONS = [
-    ("00-multi-source-playback.png", "AppIcon", "AppIconPreview", "primary"),
-    ("01-private-library.png", "AppIcon1", "AppIcon1Preview", "primary"),
-    ("02-lossless-audio.png", "AppIcon2", "AppIcon2Preview", "primary"),
-    ("03-synchronized-lyrics.png", "AppIcon3", "AppIcon3Preview", "primary"),
-    ("04-cross-device-continuity.png", "AppIcon4", "AppIcon4Preview", "primary"),
-    ("05-headphones-play.png", "AppIcon5", "AppIcon5Preview", "secondary"),
-    ("06-record-play.png", "AppIcon6", "AppIcon6Preview", "secondary"),
-    ("07-music-note-waveform.png", "AppIcon7", "AppIcon7Preview", "secondary"),
-    ("08-speaker-sound.png", "AppIcon8", "AppIcon8Preview", "secondary"),
+    ("00-headphones-play.png", "00-headphones-play", "AppIcon", "AppIconPreview", "headphones"),
+    ("01-private-library.png", "01-private-library", "AppIcon1", "AppIcon1Preview", "primary"),
+    ("02-lossless-audio.png", "02-lossless-audio", "AppIcon2", "AppIcon2Preview", "primary"),
+    ("03-record-play.png", "03-record-play", "AppIcon3", "AppIcon3Preview", "secondary"),
+    ("04-music-note-waveform.png", "04-music-note-waveform", "AppIcon4", "AppIcon4Preview", "secondary"),
+    ("05-speaker-sound.png", "05-speaker-sound", "AppIcon5", "AppIcon5Preview", "secondary"),
+]
+
+EXACT_ICONS = [
+    (
+        "06-soft-note",
+        "AppIcon6",
+        "AppIcon6Preview",
+        "06-soft-note.png",
+        "06-soft-note-dark.png",
+        "06-soft-note-tinted.png",
+    ),
+]
+
+SIMPLE_ICONS = [
+    ("07-primuse-mark", "AppIcon7", "AppIcon7Preview", "primuse"),
+    ("08-muse-spark", "AppIcon8", "AppIcon8Preview", "muse"),
 ]
 
 
@@ -114,6 +148,7 @@ def render_variant(indexed: Image.Image, colors: list[tuple[int, int, int]], siz
 
 def save_ios_assets(
     indexed: Image.Image,
+    master_stem: str,
     icon_name: str,
     preview_name: str,
     light_colors: list[tuple[int, int, int]],
@@ -123,7 +158,29 @@ def save_ios_assets(
     dark_icon = render_variant(indexed, dark_colors, (1024, 1024))
     tinted_icon = render_variant(indexed, TINTED_PALETTE, (1024, 1024))
 
-    master_path = DESIGN_DIR / f"{ICONS_BY_NAME[icon_name]}.png"
+    return save_direct_ios_assets(
+        any_icon,
+        dark_icon,
+        tinted_icon,
+        master_stem,
+        icon_name,
+        preview_name,
+    )
+
+
+def save_direct_ios_assets(
+    any_icon: Image.Image,
+    dark_icon: Image.Image,
+    tinted_icon: Image.Image,
+    master_stem: str,
+    icon_name: str,
+    preview_name: str,
+) -> tuple[Image.Image, Image.Image]:
+    any_icon = any_icon.convert("RGB").resize((1024, 1024), Image.Resampling.LANCZOS)
+    dark_icon = dark_icon.convert("RGB").resize((1024, 1024), Image.Resampling.LANCZOS)
+    tinted_icon = tinted_icon.convert("RGB").resize((1024, 1024), Image.Resampling.LANCZOS)
+
+    master_path = DESIGN_DIR / f"{master_stem}.png"
     any_icon.save(master_path, optimize=True)
 
     iconset = IOS_ASSETS / f"{icon_name}.appiconset"
@@ -135,6 +192,82 @@ def save_ios_assets(
     any_icon.save(preview / f"{preview_name}.png", optimize=True)
     dark_icon.save(preview / f"{preview_name}-dark.png", optimize=True)
     return any_icon, dark_icon
+
+
+def diagonal_gradient(start: tuple[int, int, int], end: tuple[int, int, int]) -> Image.Image:
+    size = (1024, 1024)
+    vertical = Image.linear_gradient("L").resize(size)
+    horizontal = vertical.rotate(90)
+    mask = Image.blend(vertical, horizontal, 0.5)
+    return Image.composite(Image.new("RGB", size, end), Image.new("RGB", size, start), mask)
+
+
+def apply_soft_symbol(
+    background: Image.Image,
+    mask: Image.Image,
+    symbol_color: tuple[int, int, int],
+) -> Image.Image:
+    canvas = background.convert("RGBA")
+    blurred = mask.filter(ImageFilter.GaussianBlur(24))
+    shifted = blurred.transform(mask.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, -18))
+    shadow_alpha = shifted.point(lambda value: round(value * 0.28))
+    shadow = Image.new("RGBA", mask.size, (0x08, 0x2A, 0x32, 0))
+    shadow.putalpha(shadow_alpha)
+    canvas.alpha_composite(shadow)
+
+    symbol = Image.new("RGBA", mask.size, (*symbol_color, 0))
+    symbol.putalpha(mask)
+    canvas.alpha_composite(symbol)
+    return canvas.convert("RGB")
+
+
+def make_simple_icon(kind: str, appearance: str) -> Image.Image:
+    palettes = {
+        "primuse": {
+            "light": ((0xE9, 0xFF, 0xF9), (0x38, 0xD5, 0xC8), (0xFF, 0xFD, 0xF6)),
+            "dark": ((0x06, 0x2C, 0x35), (0x0F, 0x7F, 0x89), (0xFF, 0xF9, 0xED)),
+            "tinted": ((0xF2, 0xF2, 0xF2), (0x6F, 0x6F, 0x6F), (0xFA, 0xFA, 0xFA)),
+        },
+        "muse": {
+            "light": ((0xFF, 0xF5, 0xDF), (0xFF, 0x91, 0x7B), (0xFF, 0xFD, 0xF6)),
+            "dark": ((0x31, 0x13, 0x22), (0x9F, 0x37, 0x46), (0xFF, 0xF9, 0xED)),
+            "tinted": ((0xF2, 0xF2, 0xF2), (0x75, 0x75, 0x75), (0xFA, 0xFA, 0xFA)),
+        },
+    }
+    start, end, symbol_color = palettes[kind][appearance]
+    background = diagonal_gradient(start, end)
+    mask = Image.new("L", (1024, 1024), 0)
+    draw = ImageDraw.Draw(mask)
+
+    if kind == "primuse":
+        # A deliberately simple P monogram. The triangular counter makes the
+        # letter simultaneously read as Primuse and playback.
+        draw.rounded_rectangle((260, 184, 438, 850), radius=89, fill=255)
+        draw.ellipse((340, 184, 824, 662), fill=255)
+        draw.polygon(((488, 320), (488, 526), (672, 423)), fill=0)
+    elif kind == "muse":
+        # The four-point spark represents the "Muse" in Primuse; its large
+        # negative-space eighth note anchors the mark explicitly in music.
+        draw.polygon(
+            (
+                (512, 126),
+                (612, 402),
+                (898, 512),
+                (612, 622),
+                (512, 898),
+                (412, 622),
+                (126, 512),
+                (412, 402),
+            ),
+            fill=255,
+        )
+        draw.ellipse((372, 526, 562, 716), fill=0)
+        draw.rounded_rectangle((514, 306, 600, 620), radius=43, fill=0)
+        draw.polygon(((556, 306), (734, 386), (706, 480), (586, 423)), fill=0)
+    else:
+        raise ValueError(f"Unknown simple icon kind: {kind}")
+
+    return apply_soft_symbol(background, mask, symbol_color)
 
 
 def rounded_mac_master(source: Image.Image) -> Image.Image:
@@ -259,29 +392,17 @@ def save_appearance_sheet(light_icons: list[Image.Image], dark_icons: list[Image
     sheet.save(DESIGN_DIR / "appearance-comparison.png", optimize=True)
 
 
-ICONS_BY_NAME = {
-    "AppIcon": "00-multi-source-playback",
-    "AppIcon1": "01-private-library",
-    "AppIcon2": "02-lossless-audio",
-    "AppIcon3": "03-synchronized-lyrics",
-    "AppIcon4": "04-cross-device-continuity",
-    "AppIcon5": "05-headphones-play",
-    "AppIcon6": "06-record-play",
-    "AppIcon7": "07-music-note-waveform",
-    "AppIcon8": "08-speaker-sound",
-}
-
-
 def main() -> None:
     indexed_icons: list[Image.Image] = []
     light_icons: list[Image.Image] = []
     dark_icons: list[Image.Image] = []
-    for raw_filename, icon_name, preview_name, family in ICONS:
+    for raw_filename, master_stem, icon_name, preview_name, family in ICONS:
         source_colors, light_colors, dark_colors = PALETTE_FAMILIES[family]
         indexed = snap_to_palette(RAW_DIR / raw_filename, source_colors)
         indexed_icons.append(indexed)
         light_icon, dark_icon = save_ios_assets(
             indexed,
+            master_stem,
             icon_name,
             preview_name,
             light_colors,
@@ -289,6 +410,39 @@ def main() -> None:
         )
         light_icons.append(light_icon)
         dark_icons.append(dark_icon)
+
+    for master_stem, icon_name, preview_name, light_name, dark_name, tinted_name in EXACT_ICONS:
+        light_icon, dark_icon = save_direct_ios_assets(
+            Image.open(RAW_DIR / light_name),
+            Image.open(RAW_DIR / dark_name),
+            Image.open(RAW_DIR / tinted_name),
+            master_stem,
+            icon_name,
+            preview_name,
+        )
+        light_icons.append(light_icon)
+        dark_icons.append(dark_icon)
+
+    for master_stem, icon_name, preview_name, kind in SIMPLE_ICONS:
+        variants = {
+            appearance: make_simple_icon(kind, appearance)
+            for appearance in ("light", "dark", "tinted")
+        }
+        variants["light"].save(RAW_DIR / f"{master_stem}.png", optimize=True)
+        variants["dark"].save(RAW_DIR / f"{master_stem}-dark.png", optimize=True)
+        variants["tinted"].save(RAW_DIR / f"{master_stem}-tinted.png", optimize=True)
+        light_icon, dark_icon = save_direct_ios_assets(
+            variants["light"],
+            variants["dark"],
+            variants["tinted"],
+            master_stem,
+            icon_name,
+            preview_name,
+        )
+        light_icons.append(light_icon)
+        dark_icons.append(dark_icon)
+
+    assert len(light_icons) == len(dark_icons) == 9
     watch_icon = render_variant(indexed_icons[0], TV_PALETTE, (1024, 1024))
     save_mac_and_watch(light_icons[0], watch_icon)
     save_tv_assets(indexed_icons[0])

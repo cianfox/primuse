@@ -658,8 +658,12 @@ struct PrimuseApp: App {
                         AppServices.shared.spotlightIndex.cancelPendingReindex()
                         playerService.handleAppWillResignActive()
                         musicLibrary.persistNow()
-                        // 把整库快照上传到 iCloud,供 tvOS 等不扫描的端下载浏览。
-                        if iCloudSyncEnabled {
+                        // active → inactive → background is the normal scene
+                        // transition. Upload only for the final background
+                        // phase; doing it for both phases used to launch several
+                        // complete lyric snapshot encodes at once. uploadNow()
+                        // also coalesces manual and lifecycle requests globally.
+                        if newPhase == .background, iCloudSyncEnabled {
                             Task.detached(priority: .background) {
                                 await LibrarySnapshotSync.shared.uploadNow()
                             }

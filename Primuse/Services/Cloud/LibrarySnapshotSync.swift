@@ -3,6 +3,53 @@ import Compression
 import Foundation
 import PrimuseKit
 
+/// Coalesces repeated full-snapshot requests onto one task. Scene transitions
+/// and manual sync actions can arrive close together; every caller receives the
+/// same result instead of rebuilding the complete payload again.
+private actor SnapshotUploadSingleFlight {
+    private var inFlight: (id: UUID, task: Task<Bool, Never>)?
+
+    func run(_ operation: @escaping @Sendable () async -> Bool) async -> Bool {
+        if let inFlight {
+            return await inFlight.task.value
+        }
+
+        let id = UUID()
+        let task = Task { await operation() }
+        inFlight = (id, task)
+        let result = await task.value
+        if inFlight?.id == id {
+            inFlight = nil
+        }
+        return result
+    }
+}
+
+/// Serializes CloudKit mutations so a sources-only write cannot race a full
+/// snapshot delete/recreate cycle.
+private actor SnapshotMutationLock {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isLocked {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isLocked = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 /// 把整库快照(`library-cache.json` + `sources.json`)作为 CKAsset 通过 iCloud 私有库
 /// 在设备间传输。songs/albums/artists/playlists 本身不走 CloudKit 逐条同步,所以
 /// 像 tvOS 这种不扫描音乐源的端,靠下载这份快照就能浏览完整曲库。
@@ -20,6 +67,8 @@ final class LibrarySnapshotSync: Sendable {
     private let recordName = "library-snapshot"
     private let credRecordType = "CredentialSnapshot"
     private let credRecordName = "credential-snapshot"
+    private let fullUploadSingleFlight = SnapshotUploadSingleFlight()
+    private let cloudMutationLock = SnapshotMutationLock()
 
     private var database: CKDatabase {
         CKContainer(identifier: containerID).privateCloudDatabase
@@ -46,19 +95,18 @@ final class LibrarySnapshotSync: Sendable {
     /// (供 UI 给出真实反馈;失败/跳过都返回 false)。
     @discardableResult
     func uploadNow() async -> Bool {
+        await fullUploadSingleFlight.run { [self] in
+            await withCloudMutationLock {
+                await self.performUploadNow()
+            }
+        }
+    }
+
+    private func performUploadNow() async -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: libraryCacheURL.path) else {
             plog("LibrarySnapshotSync: no local library-cache.json, skip upload")
             return false
-        }
-        // 先删旧记录再重建:旧记录可能残留下载不下来的 library CKAsset;而且对一条
-        // 已存在的记录用「新建(无 change-tag)+ .allKeys」覆盖偶发不落字段。删后重建是
-        // 干净一致的写入。记录不存在时 deleteRecord 抛错,忽略即可。
-        do {
-            try await database.deleteRecord(withID: recordID)
-            plog("LibrarySnapshotSync: cleared old snapshot record before re-upload")
-        } catch {
-            // unknownItem(记录本就不存在)是正常的,不打扰。
         }
 
         let record = CKRecord(recordType: recordType, recordID: recordID)
@@ -70,12 +118,27 @@ final class LibrarySnapshotSync: Sendable {
             srcInfo = attachSourcesSnapshot(record, gzKey: "sourcesGz", assetKey: "sources")
         }
         // 歌词:把本机已抓到的歌词(MetadataAssetStore 里的 .json)随快照传给 TV。
-        if let blob = Self.gatherLyricsBlob(),
-           let gz = try? (blob as NSData).compressed(using: .zlib) as Data, gz.count < Self.inlineGzLimit {
-            record["lyricsGz"] = gz as CKRecordValue
-            srcInfo += "; lyricsGz=\(gz.count)B"
+        if let lyrics = Self.gatherLyricsBlob() {
+            if let gz = Self.gzip(lyrics.data), gz.count < Self.inlineGzLimit {
+                record["lyricsGz"] = gz as CKRecordValue
+                srcInfo += "; lyricsGz=\(gz.count)B files=\(lyrics.fileCount) skipped=\(lyrics.skippedFileCount)"
+            } else {
+                srcInfo += "; lyrics=skip-compressed-too-large files=\(lyrics.fileCount)"
+            }
         }
         record["modifiedAt"] = Date() as CKRecordValue
+
+        // Build every bounded local field before deleting the old record. If a
+        // local read fails, the last known-good cloud snapshot remains intact.
+        // Old records are still recreated because stale CKAsset fields may not
+        // be cleared reliably by an all-keys save without a change tag.
+        do {
+            try await database.deleteRecord(withID: recordID)
+            plog("LibrarySnapshotSync: cleared old snapshot record before re-upload")
+        } catch {
+            // unknownItem (the record did not exist) is expected.
+        }
+
         var ok = false
         do {
             let (saveResults, _) = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys)
@@ -105,6 +168,12 @@ final class LibrarySnapshotSync: Sendable {
     /// 仅把本地 `sources.json` 重新内联进 sources 字段后存回。无本地 sources 则跳过。
     @discardableResult
     func uploadSourcesOnly() async -> Bool {
+        await withCloudMutationLock { [self] in
+            await performUploadSourcesOnly()
+        }
+    }
+
+    private func performUploadSourcesOnly() async -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: sourcesURL.path) else {
             plog("LibrarySnapshotSync: no local sources.json, skip sources-only upload")
@@ -149,6 +218,15 @@ final class LibrarySnapshotSync: Sendable {
         return ok
     }
 
+    private func withCloudMutationLock(
+        _ operation: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        await cloudMutationLock.acquire()
+        let result = await operation()
+        await cloudMutationLock.release()
+        return result
+    }
+
     // MARK: 下载(tvOS)
 
     /// 拉取最新快照写入本地容器。成功返回 true(调用方据此决定是否重载库)。
@@ -184,25 +262,17 @@ final class LibrarySnapshotSync: Sendable {
     private static let maxLibraryRawBytes = 64 * 1024 * 1024
     private static let maxSourcesRawBytes = 8 * 1024 * 1024
     private static let maxLyricsBlobRawBytes = 16 * 1024 * 1024
+    private static let maxLyricsUploadRawBytes = 4 * 1024 * 1024
+    private static let maxSingleLyricsFileBytes = 1 * 1024 * 1024
+    private static let maxInlineSnapshotInputBytes = 8 * 1024 * 1024
 
     /// 收集本机 MetadataAssetStore 的全部歌词文件 → {文件名: base64} 的 JSON。
-    private static func gatherLyricsBlob() -> Data? {
-        let dir = MetadataAssetStore.shared.lyricsDirectoryURL
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil) else { return nil }
-        var blob: [String: String] = [:]
-        for f in files where !f.hasDirectoryPath {
-            guard isSafeLyricsFileName(f.lastPathComponent) else { continue }
-            if let data = try? Data(contentsOf: f), !data.isEmpty {
-                blob[f.lastPathComponent] = data.base64EncodedString()
-            }
-        }
-        guard !blob.isEmpty else { return nil }
-        // NSJSONSerialization may raise an Objective-C exception instead of
-        // returning an Error while bridging a large Swift dictionary. Such an
-        // exception bypasses `try?` and terminates the process. The payload is
-        // already Codable, so keep this path entirely in Swift.
-        return try? JSONEncoder().encode(blob)
+    private static func gatherLyricsBlob() -> LyricsSnapshotEncoder.Result? {
+        LyricsSnapshotEncoder.encodeDirectory(
+            MetadataAssetStore.shared.lyricsDirectoryURL,
+            maximumOutputBytes: maxLyricsUploadRawBytes,
+            maximumFileBytes: maxSingleLyricsFileBytes
+        )
     }
 
     /// tvOS:把快照里的歌词文件还原到本机 MetadataAssetStore(文件名不变,
@@ -365,7 +435,7 @@ final class LibrarySnapshotSync: Sendable {
     }
 
     private static func isSafeLyricsFileName(_ name: String) -> Bool {
-        name.range(of: #"^[A-Fa-f0-9]{32}\.json$"#, options: .regularExpression) != nil
+        LyricsSnapshotEncoder.isValidFileName(name)
     }
 
     private static func safeChildURL(in directory: URL, fileName: String) -> URL? {
@@ -382,6 +452,12 @@ final class LibrarySnapshotSync: Sendable {
     /// 把 `fileURL` 的内容压缩后内联进 record;过大则回退 CKAsset。返回简要说明供日志。
     @discardableResult
     private func attachSnapshot(_ record: CKRecord, fileURL: URL, gzKey: String, assetKey: String) -> String {
+        if let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+           let size = values.fileSize,
+           size > Self.maxInlineSnapshotInputBytes {
+            record[assetKey] = CKAsset(fileURL: fileURL)
+            return "\(assetKey)=asset raw=\(size)B"
+        }
         guard let raw = try? Data(contentsOf: fileURL) else { return "\(gzKey)=no-file" }
         if let gz = try? (raw as NSData).compressed(using: .zlib) as Data, gz.count < Self.inlineGzLimit {
             record[gzKey] = gz as CKRecordValue
@@ -396,7 +472,7 @@ final class LibrarySnapshotSync: Sendable {
     /// this device. Keep that token in the local sources.json, but never put it
     /// into the cross-device snapshot payload.
     private func attachSourcesSnapshot(_ record: CKRecord, gzKey: String, assetKey: String) -> String {
-        guard let raw = try? Data(contentsOf: sourcesURL),
+        guard let raw = try? Data(contentsOf: sourcesURL), raw.count <= Self.maxSourcesRawBytes,
               let sanitized = Self.sanitizedSourcesData(raw) else {
             return "\(gzKey)=no-file"
         }
@@ -670,7 +746,7 @@ final class LibrarySnapshotSync: Sendable {
            let sanitized = Self.sanitizedSourcesData(raw) {
             payload.sourcesGz = Self.gzip(sanitized)
         }
-        if let blob = Self.gatherLyricsBlob() { payload.lyricsGz = Self.gzip(blob) }
+        if let lyrics = Self.gatherLyricsBlob() { payload.lyricsGz = Self.gzip(lyrics.data) }
         payload.credentials = await gatherCredentialBundle(respectingChannel: false)
         return payload
     }
