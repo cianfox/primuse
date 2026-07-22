@@ -932,6 +932,8 @@ final class MusicLibrary {
         get { visibleArtistsReference.value }
         set { visibleArtistsReference = LibraryArrayReference(newValue) }
     }
+    @ObservationIgnored private var songIndexByID: [String: Int] = [:]
+    @ObservationIgnored private var visibleSongIndexByID: [String: Int] = [:]
     @ObservationIgnored private var visibleSongByID: [String: Song] = [:]
     @ObservationIgnored private var visibleSongsBySourceID: [String: [Song]] = [:]
     /// Source cards are re-rendered frequently while scanning/backfilling.
@@ -958,6 +960,7 @@ final class MusicLibrary {
     private let decoder = JSONDecoder()
 
     func updateDisabledSourceIDs(_ ids: Set<String>) {
+        guard disabledSourceIDs != ids else { return }
         disabledSourceIDs = ids
         rebuildVisibleCache()
     }
@@ -984,6 +987,10 @@ final class MusicLibrary {
             visibleArtists = artists.filter { visibleArtistIDs.contains($0.id) }
         }
         let lookups = Self.makeVisibleLookups(songs: visibleSongs)
+        songIndexByID = disabledSourceIDs.isEmpty
+            ? lookups.indexByID
+            : Self.makeSongIndex(songs)
+        visibleSongIndexByID = lookups.indexByID
         visibleSongByID = lookups.songByID
         visibleSongsBySourceID = lookups.songsBySourceID
         visiblePlayableSongsBySourceID = lookups.playableBySourceID
@@ -1001,16 +1008,19 @@ final class MusicLibrary {
     private nonisolated static func makeVisibleLookups(
         songs: [Song]
     ) -> (
+        indexByID: [String: Int],
         songByID: [String: Song],
         songsBySourceID: [String: [Song]],
         playableBySourceID: [String: [Song]],
         countBySourceID: [String: Int]
     ) {
+        var indexByID: [String: Int] = [:]
         var songByID: [String: Song] = [:]
         var songsBySourceID: [String: [Song]] = [:]
         var playableBySourceID: [String: [Song]] = [:]
         var countBySourceID: [String: Int] = [:]
-        for song in songs {
+        for (index, song) in songs.enumerated() {
+            indexByID[song.id] = index
             if songByID[song.id] == nil { songByID[song.id] = song }
             songsBySourceID[song.sourceID, default: []].append(song)
             countBySourceID[song.sourceID, default: 0] += 1
@@ -1018,7 +1028,16 @@ final class MusicLibrary {
                 playableBySourceID[song.sourceID, default: []].append(song)
             }
         }
-        return (songByID, songsBySourceID, playableBySourceID, countBySourceID)
+        return (indexByID, songByID, songsBySourceID, playableBySourceID, countBySourceID)
+    }
+
+    private nonisolated static func makeSongIndex(_ songs: [Song]) -> [String: Int] {
+        var result: [String: Int] = [:]
+        result.reserveCapacity(songs.count)
+        for (index, song) in songs.enumerated() {
+            result[song.id] = index
+        }
+        return result
     }
 
     private func invalidateSearchCaches() {
@@ -1152,31 +1171,28 @@ final class MusicLibrary {
             return
         }
 
-        var songIndexByID: [String: Int] = [:]
-        songIndexByID.reserveCapacity(songs.count)
-        for (index, song) in songs.enumerated() {
-            songIndexByID[song.id] = index
-        }
-
-        var visibleIndexByID: [String: Int] = [:]
-        visibleIndexByID.reserveCapacity(visibleSongs.count)
-        for (index, song) in visibleSongs.enumerated() {
-            visibleIndexByID[song.id] = index
-        }
-
+        var nextSongs = songs
+        var nextVisibleSongs = visibleSongs
         var appliedIDs: [String] = []
         appliedIDs.reserveCapacity(lyricsTextBySongID.count)
         for (songID, text) in lyricsTextBySongID {
             guard let index = songIndexByID[songID] else { continue }
-            guard songs[index].lyricsText != text else { continue }
-            songs[index].lyricsText = text
-            if let visibleIndex = visibleIndexByID[songID] {
-                visibleSongs[visibleIndex].lyricsText = text
+            guard nextSongs[index].lyricsText != text else { continue }
+            nextSongs[index].lyricsText = text
+            if let visibleIndex = visibleSongIndexByID[songID] {
+                nextVisibleSongs[visibleIndex].lyricsText = text
             }
             appliedIDs.append(songID)
         }
 
         guard !appliedIDs.isEmpty else { return }
+        songs = nextSongs
+        visibleSongs = nextVisibleSongs
+        for songID in appliedIDs {
+            if let visibleIndex = visibleSongIndexByID[songID] {
+                visibleSongByID[songID] = nextVisibleSongs[visibleIndex]
+            }
+        }
         plog("📚 updateLyricsText: requested=\(lyricsTextBySongID.count) applied=\(appliedIDs.count) librarySongs=\(songs.count)")
         invalidateSearchCaches()
         persistSnapshot()
@@ -1186,29 +1202,35 @@ final class MusicLibrary {
     /// artist, playlist, and history indexes. Scraped sidecar assets only
     /// change where UI loaders read media from; they don't affect grouping.
     func updateAssetReferences(songID: String, coverRef: String? = nil, lyricsRef: String? = nil) {
-        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return }
-        let oldCoverRef = songs[index].coverArtFileName
+        guard let index = songIndexByID[songID] else { return }
+        var updatedSong = songs[index]
+        let oldCoverRef = updatedSong.coverArtFileName
         var changed = false
 
-        if coverRef != nil, songs[index].coverArtFileName != coverRef {
-            songs[index].coverArtFileName = coverRef
+        if coverRef != nil, updatedSong.coverArtFileName != coverRef {
+            updatedSong.coverArtFileName = coverRef
             changed = true
         }
-        if lyricsRef != nil, songs[index].lyricsFileName != lyricsRef {
-            songs[index].lyricsFileName = lyricsRef
+        if lyricsRef != nil, updatedSong.lyricsFileName != lyricsRef {
+            updatedSong.lyricsFileName = lyricsRef
             changed = true
         }
         guard changed else { return }
 
-        if let visibleIndex = visibleSongs.firstIndex(where: { $0.id == songID }) {
-            visibleSongs[visibleIndex] = songs[index]
+        var nextSongs = songs
+        nextSongs[index] = updatedSong
+        songs = nextSongs
+        if let visibleIndex = visibleSongIndexByID[songID] {
+            var nextVisibleSongs = visibleSongs
+            nextVisibleSongs[visibleIndex] = updatedSong
+            visibleSongs = nextVisibleSongs
         }
-        visibleSongByID[songID] = songs[index]
-        lastReplacedSong = songs[index]
+        visibleSongByID[songID] = updatedSong
+        lastReplacedSong = updatedSong
         lastReplacedSongIDs = [songID]
         songReplacementToken = UUID()
-        if oldCoverRef != songs[index].coverArtFileName {
-            postArtworkInvalidation(songID: songID, oldRef: oldCoverRef, newRef: songs[index].coverArtFileName)
+        if oldCoverRef != updatedSong.coverArtFileName {
+            postArtworkInvalidation(songID: songID, oldRef: oldCoverRef, newRef: updatedSong.coverArtFileName)
         }
         persistSnapshot()
     }
@@ -1217,15 +1239,21 @@ final class MusicLibrary {
     /// playlist, and history indexes. `nil` is meaningful here: it clears a
     /// stale video sidecar discovered during playback or scanning.
     func updateMusicVideoReference(songID: String, mvPath: String?) {
-        guard let index = songs.firstIndex(where: { $0.id == songID }),
+        guard let index = songIndexByID[songID],
               songs[index].mvPath != mvPath else { return }
 
-        songs[index].mvPath = mvPath
-        if let visibleIndex = visibleSongs.firstIndex(where: { $0.id == songID }) {
-            visibleSongs[visibleIndex] = songs[index]
+        var updatedSong = songs[index]
+        updatedSong.mvPath = mvPath
+        var nextSongs = songs
+        nextSongs[index] = updatedSong
+        songs = nextSongs
+        if let visibleIndex = visibleSongIndexByID[songID] {
+            var nextVisibleSongs = visibleSongs
+            nextVisibleSongs[visibleIndex] = updatedSong
+            visibleSongs = nextVisibleSongs
         }
-        visibleSongByID[songID] = songs[index]
-        lastReplacedSong = songs[index]
+        visibleSongByID[songID] = updatedSong
+        lastReplacedSong = updatedSong
         lastReplacedSongIDs = [songID]
         songReplacementToken = UUID()
         persistSnapshot()
@@ -1359,6 +1387,7 @@ final class MusicLibrary {
         }
 
         songs = mergedSongs
+        songIndexByID = Self.makeSongIndex(mergedSongs)
         cleanPlaylistEntries()
         cleanPlaybackHistoryEntries()
         // Newly-added songs may resolve identities that were stashed when
@@ -1388,6 +1417,7 @@ final class MusicLibrary {
     @discardableResult
     func deleteSong(_ song: Song) -> Int {
         songs.removeAll { $0.id == song.id }
+        songIndexByID = Self.makeSongIndex(songs)
         // Tombstone keyed by canonical identity (account+path, not
         // mount-UUID+path) so re-adding the same Baidu account on
         // a fresh source UUID doesn't bypass it.
@@ -1413,6 +1443,7 @@ final class MusicLibrary {
             deletedSongIdentities.insert(identityKey(for: song))
         }
         songs.removeAll { idsToDelete.contains($0.id) }
+        songIndexByID = Self.makeSongIndex(songs)
         cleanPlaylistEntries()
         cleanPlaybackHistoryEntries()
         rebuildIndex()
@@ -1461,6 +1492,7 @@ final class MusicLibrary {
         }
 
         songs.removeAll { sourceIDs.contains($0.sourceID) }
+        songIndexByID = Self.makeSongIndex(songs)
         invalidateSearchCaches()
         cleanPlaylistEntries()
         cleanPlaybackHistoryEntries()
@@ -1476,9 +1508,12 @@ final class MusicLibrary {
     /// views from their parent's latest state.
     func song(id: String) -> Song? {
         // Backfill asks this several times per result. Enabled songs are in the
-        // visible cache, making the common path O(1) instead of O(library size).
+        // visible cache; disabled songs retain an all-library index. Both paths
+        // stay O(1) instead of falling back to a 10K-item scan.
         _ = visibleSongsReference
-        return visibleSongByID[id] ?? songs.first(where: { $0.id == id })
+        if let visibleSong = visibleSongByID[id] { return visibleSong }
+        guard let index = songIndexByID[id] else { return nil }
+        return songs[index]
     }
 
     /// O(1) membership check for UI observers that must distinguish the
@@ -1633,13 +1668,11 @@ final class MusicLibrary {
     /// 不存在的 songID 会被静默忽略 (避免 sync 比 song 写库稍晚的 race)。
     func replacePlaylistSongs(playlistID: String, songIDs: [String]) {
         guard let idx = allPlaylists.firstIndex(where: { $0.id == playlistID }) else { return }
-        let validIDs = Set(songs.map(\.id))
-        let kept = songIDs.filter { validIDs.contains($0) }
+        let kept = songIDs.filter { songIndexByID[$0] != nil }
         playlistSongIDs[playlistID] = kept
         allPlaylists[idx].updatedAt = Date()
         allPlaylists[idx].coverArtPath = kept.first
-            .flatMap { id in songs.first(where: { $0.id == id }) }?
-            .coverArtFileName
+            .flatMap { id in songIndexByID[id].flatMap { songs[$0].coverArtFileName } }
         sortPlaylists()
         persistSnapshot()
         notifyPlaylistsChanged([playlistID])
@@ -1762,7 +1795,7 @@ final class MusicLibrary {
     }
 
     func add(songID: String, toPlaylist playlistID: String) {
-        guard songs.contains(where: { $0.id == songID }),
+        guard songIndexByID[songID] != nil,
               let existingIndex = allPlaylists.firstIndex(where: { $0.id == playlistID }) else {
             return
         }
@@ -1774,7 +1807,8 @@ final class MusicLibrary {
         playlistSongIDs[playlistID] = entries
 
         allPlaylists[existingIndex].updatedAt = Date()
-        allPlaylists[existingIndex].coverArtPath = songs.first(where: { $0.id == entries.first })?.coverArtFileName
+        allPlaylists[existingIndex].coverArtPath = entries.first
+            .flatMap { songIndexByID[$0].flatMap { songs[$0].coverArtFileName } }
         sortPlaylists()
         persistSnapshot()
         notifyPlaylistsChanged([playlistID])
@@ -1816,7 +1850,8 @@ final class MusicLibrary {
         playlistSongIDs[playlistID] = entries
 
         allPlaylists[existingIndex].updatedAt = Date()
-        allPlaylists[existingIndex].coverArtPath = songs.first(where: { $0.id == entries.first })?.coverArtFileName
+        allPlaylists[existingIndex].coverArtPath = entries.first
+            .flatMap { songIndexByID[$0].flatMap { songs[$0].coverArtFileName } }
         sortPlaylists()
         persistSnapshot()
         notifyPlaylistsChanged([playlistID])
@@ -2146,7 +2181,7 @@ final class MusicLibrary {
     private(set) var songReplacementToken = UUID()
 
     func replaceSong(_ updatedSong: Song) {
-        guard let index = songs.firstIndex(where: { $0.id == updatedSong.id }) else { return }
+        guard let index = songIndexByID[updatedSong.id] else { return }
         let oldCoverRef = songs[index].coverArtFileName
         var s = updatedSong
         MusicLibrary.fillDerivedIDs(&s)
@@ -2177,9 +2212,7 @@ final class MusicLibrary {
     func replaceSongs(_ updatedSongs: [Song]) {
         guard !updatedSongs.isEmpty else { return }
         var nextSongs = songs
-        var idToIndex: [String: Int] = [:]
-        idToIndex.reserveCapacity(nextSongs.count)
-        for (i, song) in nextSongs.enumerated() { idToIndex[song.id] = i }
+        let idToIndex = songIndexByID
 
         var lastApplied: Song?
         var appliedIDs: Set<String> = []
@@ -2312,8 +2345,16 @@ final class MusicLibrary {
             return
         }
 
-        songs = snapshot.songs
-        let repairedLegacyTextCount = repairLegacyChineseMetadataTextInSnapshot()
+        // Migrate the decoded value before publishing it. `songs` is backed by
+        // an immutable observable reference, so mutating `songs[i]` would run
+        // its setter once per item. With a 10K+ library that copied and
+        // published the complete array thousands of times during cold launch.
+        // Keeping the work local gives the array one copy-on-write mutation
+        // and the observable model one final publication.
+        var loadedSongs = snapshot.songs
+        let migration = Self.migrateLoadedSongs(&loadedSongs)
+        songs = loadedSongs
+        songIndexByID = Self.makeSongIndex(loadedSongs)
         allPlaylists = snapshot.playlists
         allSmartPlaylists = snapshot.smartPlaylists ?? []
         playlistSongIDs = snapshot.playlistSongIDs ?? [:]
@@ -2330,32 +2371,39 @@ final class MusicLibrary {
         // previous launch (e.g. user added the right cloud source between
         // sessions). Try resolving them once on load.
         flushPendingIdentities()
-        // 启动时给所有歌就近填 albumID/artistID, 之后 mutation 路径自维护。
-        // 老的 snapshot 里如果 ID 已存在, 重填一遍也无妨 (deterministic hash)。
-        for i in songs.indices {
-            MusicLibrary.fillDerivedIDs(&songs[i])
-        }
         // init 阶段直接同步 rebuild ── UI 还没起来, 不需要走异步 schedule。
         rebuildIndexSync()
-        if repairedLegacyTextCount > 0 {
-            plog("📚 repaired legacy Chinese metadata text for \(repairedLegacyTextCount) song(s)")
+        if migration.repairedTextCount > 0 {
+            plog("📚 repaired legacy Chinese metadata text for \(migration.repairedTextCount) song(s)")
+        }
+        if migration.repairedTextCount > 0 || migration.filledDerivedIDCount > 0 {
             persistNow()
         }
     }
 
-    private func repairLegacyChineseMetadataTextInSnapshot() -> Int {
-        var repairedCount = 0
+    private static func migrateLoadedSongs(
+        _ songs: inout [Song]
+    ) -> (repairedTextCount: Int, filledDerivedIDCount: Int) {
+        var repairedTextCount = 0
+        var filledDerivedIDCount = 0
 
         for index in songs.indices {
             var song = songs[index]
-            if Self.repairLegacyChineseMetadataText(in: &song) {
-                MusicLibrary.fillDerivedIDs(&song)
+            let repairedText = repairLegacyChineseMetadataText(in: &song)
+            let hasAlbum = song.albumTitle?.isEmpty == false
+            let needsDerivedIDs = song.artistID?.isEmpty != false
+                || (hasAlbum && song.albumID?.isEmpty != false)
+                || (!hasAlbum && song.albumID != nil)
+
+            if repairedText || needsDerivedIDs {
+                fillDerivedIDs(&song)
                 songs[index] = song
-                repairedCount += 1
             }
+            if repairedText { repairedTextCount += 1 }
+            if needsDerivedIDs { filledDerivedIDCount += 1 }
         }
 
-        return repairedCount
+        return (repairedTextCount, filledDerivedIDCount)
     }
 
     private static func repairLegacyChineseMetadataText(in song: inout Song) -> Bool {
@@ -2452,15 +2500,15 @@ final class MusicLibrary {
     }
 
     private func cleanPlaylistEntries() {
-        let validSongIDs = Set(songs.map(\.id))
         for playlistID in playlistSongIDs.keys {
-            playlistSongIDs[playlistID] = (playlistSongIDs[playlistID] ?? []).filter { validSongIDs.contains($0) }
+            playlistSongIDs[playlistID] = (playlistSongIDs[playlistID] ?? []).filter {
+                songIndexByID[$0] != nil
+            }
         }
     }
 
     private func cleanPlaybackHistoryEntries() {
-        let validSongIDs = Set(songs.map(\.id))
-        recentPlaybackSongIDs = recentPlaybackSongIDs.filter { validSongIDs.contains($0) }
+        recentPlaybackSongIDs = recentPlaybackSongIDs.filter { songIndexByID[$0] != nil }
     }
 
     /// 纯函数, 可跨 actor 调用 ── rebuildIndex 后台化时 nonisolated
