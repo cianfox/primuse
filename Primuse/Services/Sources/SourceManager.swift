@@ -21,6 +21,11 @@ struct SongFileDeletionResult: Sendable {
     }
 }
 
+struct SongFileDeletionOutcome: Sendable {
+    let song: Song
+    let result: SongFileDeletionResult
+}
+
 struct OfflineDownloadBatchResult: Sendable {
     let requestedCount: Int
     let completedCount: Int
@@ -1893,37 +1898,182 @@ final class SourceManager {
 
     @discardableResult
     func deleteSourceFiles(for song: Song, deleteSidecars: Bool = true) async -> SongFileDeletionResult {
-        var result = SongFileDeletionResult()
-
         do {
             let sources = try await sourcesProvider()
             guard let source = sources.first(where: { $0.id == song.sourceID }) else {
-                result.failedPaths.append(.init(path: song.filePath, message: "Source not found"))
+                let result = Self.sourceNotFoundDeletionResult(for: song)
+                Self.logDeletionFailures(result, song: song)
                 return result
             }
-
             let conn = connector(for: source)
-            try await conn.connect()
+            return await Self.performSourceFileDeletion(
+                for: song,
+                connector: conn,
+                deleteSidecars: deleteSidecars
+            )
+        } catch {
+            var result = SongFileDeletionResult()
+            result.failedPaths.append(.init(path: song.filePath, message: error.localizedDescription))
+            Self.logDeletionFailures(result, song: song)
+            return result
+        }
+    }
 
+    /// Delete a collection without reloading the complete source list for every
+    /// song. The operation remains serial per call so stateful NAS/cloud
+    /// connectors keep their existing ordering, while every actual file
+    /// operation runs on the connector's executor and yields the main actor.
+    func deleteSourceFiles(
+        for songs: [Song],
+        deleteSidecarsForSongIDs: Set<String>,
+        onProgress: (Int) -> Void
+    ) async -> [SongFileDeletionOutcome] {
+        guard !songs.isEmpty else { return [] }
+
+        let sourceByID: [String: MusicSource]
+        do {
+            sourceByID = Dictionary(
+                try await sourcesProvider().map { ($0.id, $0) },
+                uniquingKeysWith: { current, _ in current }
+            )
+        } catch {
+            let message = error.localizedDescription
+            plog("⚠️ Batch source deletion could not load sources: \(message)")
+            let outcomes = songs.map { song in
+                var result = SongFileDeletionResult()
+                result.failedPaths.append(.init(path: song.filePath, message: message))
+                return SongFileDeletionOutcome(song: song, result: result)
+            }
+            onProgress(songs.count)
+            return outcomes
+        }
+
+        var connectorBySourceID: [String: any MusicSourceConnector] = [:]
+        connectorBySourceID.reserveCapacity(sourceByID.count)
+        var connectionFailureBySourceID: [String: String] = [:]
+        var missingSourceIDs = Set<String>()
+        var outcomes: [SongFileDeletionOutcome] = []
+        outcomes.reserveCapacity(songs.count)
+
+        for (index, song) in songs.enumerated() {
+            if Task.isCancelled { break }
+
+            let result: SongFileDeletionResult
+            if let source = sourceByID[song.sourceID] {
+                if connectorBySourceID[song.sourceID] == nil,
+                   connectionFailureBySourceID[song.sourceID] == nil {
+                    let created = connector(for: source)
+                    do {
+                        try await created.connect()
+                        connectorBySourceID[song.sourceID] = created
+                    } catch {
+                        connectionFailureBySourceID[song.sourceID] = error.localizedDescription
+                        plog("⚠️ Batch source deletion connection failed for source \(song.sourceID): \(error.localizedDescription)")
+                    }
+                }
+
+                if let connectionFailure = connectionFailureBySourceID[song.sourceID] {
+                    var failure = SongFileDeletionResult()
+                    failure.failedPaths.append(.init(path: song.filePath, message: connectionFailure))
+                    result = failure
+                } else if let conn = connectorBySourceID[song.sourceID] {
+                    result = await Self.performSourceFileDeletion(
+                        for: song,
+                        connector: conn,
+                        deleteSidecars: deleteSidecarsForSongIDs.contains(song.id),
+                        connectFirst: false
+                    )
+                } else {
+                    result = Self.sourceNotFoundDeletionResult(for: song)
+                }
+            } else {
+                result = Self.sourceNotFoundDeletionResult(for: song)
+                if missingSourceIDs.insert(song.sourceID).inserted {
+                    plog("⚠️ Batch source deletion could not find source \(song.sourceID)")
+                }
+            }
+
+            outcomes.append(SongFileDeletionOutcome(song: song, result: result))
+            onProgress(index + 1)
+        }
+        return outcomes
+    }
+
+    /// Build all sidecar-sharing decisions in one O(librarySize) pass. The old
+    /// per-song `retainedSongs.contains` implementation was O(deleteCount ×
+    /// librarySize) and repeatedly allocated Sets on the main actor.
+    nonisolated static func sidecarDeletionSongIDs(
+        deleting songs: [Song],
+        retaining retainedSongs: [Song]
+    ) -> Set<String> {
+        var retainedSidecarPaths = Set<String>()
+        retainedSidecarPaths.reserveCapacity(retainedSongs.count * 2)
+        for retained in retainedSongs {
+            for path in sidecarPathsToDelete(for: retained) {
+                retainedSidecarPaths.insert(sidecarSharingKey(sourceID: retained.sourceID, path: path))
+            }
+        }
+
+        var result = Set<String>()
+        result.reserveCapacity(songs.count)
+        for song in songs {
+            let paths = sidecarPathsToDelete(for: song)
+            guard !paths.isEmpty,
+                  paths.allSatisfy({
+                      !retainedSidecarPaths.contains(sidecarSharingKey(sourceID: song.sourceID, path: $0))
+                  })
+            else { continue }
+            result.insert(song.id)
+        }
+        return result
+    }
+
+    private nonisolated static func sidecarSharingKey(sourceID: String, path: String) -> String {
+        "\(sourceID)\u{0}\(path)"
+    }
+
+    nonisolated func shouldDeleteSidecars(for song: Song, retaining retainedSongs: [Song]) -> Bool {
+        Self.sidecarDeletionSongIDs(deleting: [song], retaining: retainedSongs).contains(song.id)
+    }
+
+    private nonisolated static func sourceNotFoundDeletionResult(for song: Song) -> SongFileDeletionResult {
+        var result = SongFileDeletionResult()
+        result.failedPaths.append(.init(path: song.filePath, message: "Source not found"))
+        return result
+    }
+
+    private nonisolated static func performSourceFileDeletion(
+        for song: Song,
+        connector: any MusicSourceConnector,
+        deleteSidecars: Bool,
+        connectFirst: Bool = true
+    ) async -> SongFileDeletionResult {
+        var result = SongFileDeletionResult()
+
+        do {
+            if connectFirst {
+                try await connector.connect()
+            }
             do {
-                try await conn.deleteFile(at: song.filePath)
+                try await connector.deleteFile(at: song.filePath)
                 result.deletedPaths.append(song.filePath)
             } catch {
-                if Self.isMissingFileError(error) {
+                if isMissingFileError(error) {
                     result.missingPaths.append(song.filePath)
                 } else {
                     result.failedPaths.append(.init(path: song.filePath, message: error.localizedDescription))
+                    logDeletionFailures(result, song: song)
                     return result
                 }
             }
 
             if deleteSidecars {
-                for path in Self.sidecarPathsToDelete(for: song) {
+                for path in sidecarPathsToDelete(for: song) {
                     do {
-                        try await conn.deleteFile(at: path)
+                        try await connector.deleteFile(at: path)
                         result.deletedPaths.append(path)
                     } catch {
-                        if Self.isMissingFileError(error) {
+                        if isMissingFileError(error) {
                             result.missingPaths.append(path)
                         } else {
                             result.failedPaths.append(.init(path: path, message: error.localizedDescription))
@@ -1935,22 +2085,14 @@ final class SourceManager {
             result.failedPaths.append(.init(path: song.filePath, message: error.localizedDescription))
         }
 
-        if result.hasFailures {
-            let failures = result.failedPaths.map { "\($0.path): \($0.message)" }.joined(separator: "; ")
-            plog("⚠️ Delete source files failed for '\(song.title)': \(failures)")
-        }
+        logDeletionFailures(result, song: song)
         return result
     }
 
-    nonisolated func shouldDeleteSidecars(for song: Song, retaining retainedSongs: [Song]) -> Bool {
-        let targetSidecars = Set(Self.sidecarPathsToDelete(for: song))
-        guard targetSidecars.isEmpty == false else { return false }
-
-        let sidecarsAreShared = retainedSongs.contains { retained in
-            guard retained.id != song.id, retained.sourceID == song.sourceID else { return false }
-            return Set(Self.sidecarPathsToDelete(for: retained)).isDisjoint(with: targetSidecars) == false
-        }
-        return !sidecarsAreShared
+    private nonisolated static func logDeletionFailures(_ result: SongFileDeletionResult, song: Song) {
+        guard result.hasFailures else { return }
+        let failures = result.failedPaths.map { "\($0.path): \($0.message)" }.joined(separator: "; ")
+        plog("⚠️ Delete source files failed for '\(song.title)': \(failures)")
     }
 
     private static var smbCacheDir: URL {

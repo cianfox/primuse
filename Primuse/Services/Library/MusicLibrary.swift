@@ -1486,19 +1486,28 @@ final class MusicLibrary {
     /// view rebuilds; on a 10K-song library with 3K duplicates the
     /// watchdog killed the app. Doing the bulk operations once amortizes
     /// the work to a single O(N) pass.
-    func deleteSongs(_ songsToDelete: [Song]) {
-        guard !songsToDelete.isEmpty else { return }
+    @discardableResult
+    func deleteSongs(_ songsToDelete: [Song]) -> [String: Int] {
+        guard !songsToDelete.isEmpty else { return [:] }
         let idsToDelete = Set(songsToDelete.map(\.id))
+        let affectedSourceIDs = Set(songsToDelete.map(\.sourceID))
         for song in songsToDelete {
             deletedSongIdentities.insert(identityKey(for: song))
         }
         songs.removeAll { idsToDelete.contains($0.id) }
         songIndexByID = Self.makeSongIndex(songs)
+        var remainingCounts = Dictionary(
+            uniqueKeysWithValues: affectedSourceIDs.map { ($0, 0) }
+        )
+        for song in songs where affectedSourceIDs.contains(song.sourceID) {
+            remainingCounts[song.sourceID, default: 0] += 1
+        }
         cleanPlaylistEntries()
         cleanPlaybackHistoryEntries()
         rebuildIndex()
         persistSnapshot()
         postSongsRemoved(songsToDelete)
+        return remainingCounts
     }
 
     /// Reverse a previous `deleteSong` so the next scan can re-add the
@@ -1682,13 +1691,26 @@ final class MusicLibrary {
     }
 
     func createPlaylist(name: String) -> Playlist {
+        createPlaylist(name: name, songIDs: [])
+    }
+
+    /// Create a playlist with its initial contents in one observable mutation,
+    /// persistence request, and CloudKit notification. Importing 1000 tracks
+    /// through `createPlaylist` + 1000 calls to `add` previously serialized the
+    /// whole library snapshot and invalidated playlist views 1001 times.
+    func createPlaylist(name: String, songIDs: [String]) -> Playlist {
         let playlist = Playlist(name: name)
+        let entries = validUniqueSongIDs(songIDs)
         allPlaylists.append(playlist)
-        playlistSongIDs[playlist.id] = []
+        playlistSongIDs[playlist.id] = entries
+        if let firstID = entries.first,
+           let songIndex = songIndexByID[firstID] {
+            allPlaylists[allPlaylists.count - 1].coverArtPath = songs[songIndex].coverArtFileName
+        }
         sortPlaylists()
         persistSnapshot()
         notifyPlaylistsChanged([playlist.id])
-        return playlist
+        return allPlaylists.first(where: { $0.id == playlist.id }) ?? playlist
     }
 
     /// 用固定 ID 创建/取回 playlist ── 给"系统级"歌单 (Apple Music 资料库
@@ -1852,15 +1874,28 @@ final class MusicLibrary {
     }
 
     func add(songID: String, toPlaylist playlistID: String) {
-        guard songIndexByID[songID] != nil,
-              let existingIndex = allPlaylists.firstIndex(where: { $0.id == playlistID }) else {
-            return
-        }
+        add(songIDs: [songID], toPlaylist: playlistID)
+    }
+
+    /// Batch playlist insertion. Input order is retained, missing songs and
+    /// duplicate IDs are ignored exactly as repeated calls to `add` did, but
+    /// the playlist is published and persisted only once.
+    func add(songIDs: [String], toPlaylist playlistID: String) {
+        guard !songIDs.isEmpty,
+              let existingIndex = allPlaylists.firstIndex(where: { $0.id == playlistID })
+        else { return }
 
         var entries = playlistSongIDs[playlistID] ?? []
-        guard entries.contains(songID) == false else { return }
-
-        entries.append(songID)
+        var seen = Set(entries)
+        var changed = false
+        entries.reserveCapacity(entries.count + songIDs.count)
+        for songID in songIDs where songIndexByID[songID] != nil {
+            if seen.insert(songID).inserted {
+                entries.append(songID)
+                changed = true
+            }
+        }
+        guard changed else { return }
         playlistSongIDs[playlistID] = entries
 
         allPlaylists[existingIndex].updatedAt = Date()
@@ -1869,6 +1904,18 @@ final class MusicLibrary {
         sortPlaylists()
         persistSnapshot()
         notifyPlaylistsChanged([playlistID])
+    }
+
+    private func validUniqueSongIDs(_ songIDs: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        result.reserveCapacity(songIDs.count)
+        for songID in songIDs where songIndexByID[songID] != nil {
+            if seen.insert(songID).inserted {
+                result.append(songID)
+            }
+        }
+        return result
     }
 
     /// 「我喜欢」系统级歌单的固定 ID。NowPlayingView 的 heart 按钮直接 toggle

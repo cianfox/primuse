@@ -49,12 +49,33 @@ private final class SongListCache {
 
     @ObservationIgnored private var songsByID: [String: Song] = [:]
     @ObservationIgnored private var rowModelsByID: [String: SongListRowModel] = [:]
+    @ObservationIgnored private var sourceCounts: [String: Int] = [:]
+    @ObservationIgnored private var cachedPlayableCount = 0
+    @ObservationIgnored private var cachedTotalDuration: TimeInterval = 0
+
+    var songCount: Int { sortedSongIDs.count }
+    var playableCount: Int { cachedPlayableCount }
+    var totalDuration: TimeInterval { cachedTotalDuration }
+
+    func songCount(forSourceID sourceID: String) -> Int {
+        sourceCounts[sourceID, default: 0]
+    }
 
     func replace(with songs: [Song]) {
-        let nextSongsByID = Dictionary(
-            songs.map { ($0.id, $0) },
-            uniquingKeysWith: { current, _ in current }
-        )
+        var nextSongsByID: [String: Song] = [:]
+        var nextSourceCounts: [String: Int] = [:]
+        var nextPlayableCount = 0
+        var nextTotalDuration: TimeInterval = 0
+        nextSongsByID.reserveCapacity(songs.count)
+        nextSourceCounts.reserveCapacity(sourceCounts.count)
+        for song in songs {
+            if nextSongsByID[song.id] == nil {
+                nextSongsByID[song.id] = song
+            }
+            nextSourceCounts[song.sourceID, default: 0] += 1
+            if song.isPlayable { nextPlayableCount += 1 }
+            nextTotalDuration += song.duration.sanitizedDuration
+        }
 
         // Existing row models are already kept current by `patch`. Replacing
         // all previously visited models here would turn an explicit sort into
@@ -62,6 +83,9 @@ private final class SongListCache {
         // even applies its new ID order.
         rowModelsByID = rowModelsByID.filter { nextSongsByID[$0.key] != nil }
         songsByID = nextSongsByID
+        sourceCounts = nextSourceCounts
+        cachedPlayableCount = nextPlayableCount
+        cachedTotalDuration = nextTotalDuration
         let nextIDs = songs.map(\.id)
         if sortedSongIDs != nextIDs {
             sortedSongIDs = nextIDs
@@ -334,7 +358,7 @@ struct SongListView: View {
                     sourceFilterChips
                     macToolbarRow
 
-                    if filteredSongs.isEmpty {
+                    if filteredSongIDs.isEmpty {
                         ContentUnavailableView.search(text: searchText)
                             .padding(.top, 48)
                     } else {
@@ -357,13 +381,13 @@ struct SongListView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 sourceChip(title: String(localized: "search_chip_all"),
-                           count: songs.count, color: nil,
+                           count: listCache.songCount, color: nil,
                            active: selectedSourceID == nil) {
                     selectedSourceID = nil
                 }
 
                 ForEach(sourcesStore.allSources.prefix(5), id: \.id) { source in
-                    let count = songs.filter { $0.sourceID == source.id }.count
+                    let count = listCache.songCount(forSourceID: source.id)
                     if count > 0 {
                         sourceChip(title: source.name, count: count,
                                    color: sourceColor(source),
@@ -506,8 +530,7 @@ struct SongListView: View {
     }
 
     private var librarySubtitle: String {
-        let playableCount = songs.filter(\.isPlayable).count
-        return "\(songs.count) \(String(localized: "songs_count")) · \(playableCount) \(String(localized: "home_playable")) · \(totalDuration.formattedShort)"
+        "\(listCache.songCount) \(String(localized: "songs_count")) · \(listCache.playableCount) \(String(localized: "home_playable")) · \(listCache.totalDuration.formattedShort)"
     }
 
     @ViewBuilder
@@ -1005,49 +1028,72 @@ struct SongListView: View {
     }
 
     private var listMoreMenu: AnyView {
-        let playable = visiblePlayableSongs
-        let visible = filteredSongs
+        // Header/menu construction is part of every macOS body update. Keep it
+        // on lightweight IDs; materialize 10K Song values only after the user
+        // actually invokes an action.
+        let visibleIDs = filteredSongIDs
+        let playableCount: Int
+        if selectedSourceID == nil,
+           searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            playableCount = listCache.playableCount
+        } else {
+            playableCount = visibleIDs.reduce(into: 0) { count, songID in
+                if listCache.song(id: songID)?.isPlayable == true { count += 1 }
+            }
+        }
+
+        func materializeVisible() -> [Song] {
+            visibleIDs.compactMap { listCache.song(id: $0) }
+        }
+
+        func materializePlayable() -> [Song] {
+            visibleIDs.compactMap { songID in
+                guard let song = listCache.song(id: songID), song.isPlayable else { return nil }
+                return song
+            }
+        }
+
         return AnyView(MacHeaderMoreMenu(sections: [
             [
                 .init(icon: "text.line.last.and.arrowtriangle.forward",
                       title: "全部加入队列",
-                      trailing: playable.count.formatted(),
-                      enabled: !playable.isEmpty) {
-                    player.appendToQueue(playable)
+                      trailing: playableCount.formatted(),
+                      enabled: playableCount > 0) {
+                    player.appendToQueue(materializePlayable())
                 },
                 .init(icon: "text.line.first.and.arrowtriangle.forward",
                       title: "插入下一首",
-                      enabled: !playable.isEmpty) {
-                    player.insertNextInQueue(playable)
+                      enabled: playableCount > 0) {
+                    player.insertNextInQueue(materializePlayable())
                 },
                 .init(icon: "text.badge.plus",
                       title: "加入歌单…",
-                      enabled: !playable.isEmpty) {
+                      enabled: playableCount > 0) {
                     showAddVisibleToPlaylist = true
                 },
             ],
             [
                 .init(icon: "shuffle",
                       title: "随机全部",
-                      enabled: !playable.isEmpty) {
+                      enabled: playableCount > 0) {
                     playLibrary(shuffled: true)
                 },
             ],
             [
                 .init(icon: "wand.and.stars",
                       title: "批量刮削缺失元数据",
-                      trailing: visible.count.formatted(),
-                      enabled: !visible.isEmpty && !scraperService.isScraping) {
-                    scraperService.scrapeMissingMetadata(songs: visible, in: library)
+                      trailing: visibleIDs.count.formatted(),
+                      enabled: !visibleIDs.isEmpty && !scraperService.isScraping) {
+                    scraperService.scrapeMissingMetadata(songs: materializeVisible(), in: library)
                 },
                 .init(icon: "square.and.arrow.up",
                       title: "导出 M3U8…",
-                      enabled: !playable.isEmpty) {
+                      enabled: playableCount > 0) {
                     exportVisibleSongs(format: .m3u8)
                 },
                 .init(icon: "curlybraces",
                       title: "导出 JSON…",
-                      enabled: !playable.isEmpty) {
+                      enabled: playableCount > 0) {
                     exportVisibleSongs(format: .json)
                 },
             ],
@@ -1342,10 +1388,6 @@ struct SongListView: View {
         }
     }
 
-    private var totalDuration: TimeInterval {
-        songs.reduce(0) { $0 + $1.duration.sanitizedDuration }
-    }
-
     private func playSong(_ song: Song) {
         let visibleQueue = filteredSongs
         guard let index = visibleQueue.firstIndex(where: { $0.id == song.id }) else { return }
@@ -1534,9 +1576,7 @@ private struct MacAddVisibleSongsToPlaylistSheet: View {
             guard !name.isEmpty else { return }
             targetID = library.createPlaylist(name: name).id
         }
-        for song in songs {
-            library.add(songID: song.id, toPlaylist: targetID)
-        }
+        library.add(songIDs: songs.map(\.id), toPlaylist: targetID)
         onClose()
     }
 }

@@ -93,13 +93,10 @@ enum PlaylistImporter {
         // 命中停用源的歌只会出现在全量 library.songs 里, 写进歌单后通过
         // songs(forPlaylist:) 也看不到, 会造成"导入成功却凭空少歌"。
         let visibleSongs = library.visibleSongs
-        let songsByID = Dictionary(
-            visibleSongs.map { ($0.id, $0) },
-            uniquingKeysWith: { current, _ in current }
-        )
+        let index = SongMatchIndex(songs: visibleSongs)
         let entries = file.tracks.map { track -> ImportEntry in
             // 1. song.id 完全匹配
-            if let s = songsByID[track.songID] {
+            if let s = index.byID[track.songID] {
                 return ImportEntry(
                     displayTitle: track.title,
                     displayArtist: track.artistName,
@@ -108,7 +105,7 @@ enum PlaylistImporter {
                 )
             }
             // 2. basename 匹配
-            if let s = matchByBasename(track.filePath, in: visibleSongs) {
+            if let s = index.matchByBasename(track.filePath) {
                 return ImportEntry(
                     displayTitle: track.title,
                     displayArtist: track.artistName,
@@ -117,7 +114,7 @@ enum PlaylistImporter {
                 )
             }
             // 3. 模糊匹配 title+artist
-            if let s = matchByTitleArtist(title: track.title, artist: track.artistName, in: visibleSongs) {
+            if let s = index.matchByTitleArtist(title: track.title, artist: track.artistName) {
                 return ImportEntry(
                     displayTitle: track.title,
                     displayArtist: track.artistName,
@@ -174,10 +171,11 @@ enum PlaylistImporter {
 
         // 匹配池用 visibleSongs(排除停用源), 与手动匹配 / 歌单展示口径一致。
         let visibleSongs = library.visibleSongs
+        let index = SongMatchIndex(songs: visibleSongs)
         let entries = rawEntries.map { raw -> ImportEntry in
             let (displayTitle, displayArtist) = parseExtInf(raw.extInf, fallbackPath: raw.path)
             // 1. basename 匹配
-            if let s = matchByBasename(raw.path, in: visibleSongs) {
+            if let s = index.matchByBasename(raw.path) {
                 return ImportEntry(
                     displayTitle: displayTitle,
                     displayArtist: displayArtist,
@@ -186,7 +184,7 @@ enum PlaylistImporter {
                 )
             }
             // 2. 模糊匹配
-            if let s = matchByTitleArtist(title: displayTitle, artist: displayArtist, in: visibleSongs) {
+            if let s = index.matchByTitleArtist(title: displayTitle, artist: displayArtist) {
                 return ImportEntry(
                     displayTitle: displayTitle,
                     displayArtist: displayArtist,
@@ -229,35 +227,61 @@ enum PlaylistImporter {
 
     // MARK: - Match strategies
 
-    private static func matchByBasename(_ path: String, in songs: [Song]) -> Song? {
-        let needle = (path as NSString).lastPathComponent.lowercased()
-        let hits = songs.filter { song in
-            (song.filePath as NSString).lastPathComponent.lowercased() == needle
-        }
-        return chooseBest(from: hits)
-    }
+    /// Pre-index once so importing M tracks into an N-song library is O(N+M)
+    /// instead of repeatedly filtering and normalizing the whole library.
+    private struct SongMatchIndex {
+        let byID: [String: Song]
+        private let byBasename: [String: [Song]]
+        private let byNormalizedTitle: [String: [Song]]
 
-    private static func matchByTitleArtist(title: String, artist: String?, in songs: [Song]) -> Song? {
-        let normTitle = normalize(title)
-        let normArtist = artist.map { normalize($0) }
-        guard !normTitle.isEmpty else { return nil }
-        let hits = songs.filter { song in
-            guard normalize(song.title) == normTitle else { return false }
-            if let normArtist {
-                return normalize(song.artistName ?? "") == normArtist
+        init(songs: [Song]) {
+            var ids: [String: Song] = [:]
+            var basenames: [String: [Song]] = [:]
+            var titles: [String: [Song]] = [:]
+            ids.reserveCapacity(songs.count)
+            basenames.reserveCapacity(songs.count)
+            titles.reserveCapacity(songs.count)
+            for song in songs {
+                if ids[song.id] == nil { ids[song.id] = song }
+                let basename = (song.filePath as NSString).lastPathComponent.lowercased()
+                basenames[basename, default: []].append(song)
+                let title = PlaylistImporter.normalize(song.title)
+                if !title.isEmpty {
+                    titles[title, default: []].append(song)
+                }
             }
-            return true
+            byID = ids
+            byBasename = basenames
+            byNormalizedTitle = titles
         }
-        return chooseBest(from: hits)
+
+        func matchByBasename(_ path: String) -> Song? {
+            let needle = (path as NSString).lastPathComponent.lowercased()
+            return PlaylistImporter.chooseBest(from: byBasename[needle] ?? [])
+        }
+
+        func matchByTitleArtist(title: String, artist: String?) -> Song? {
+            let normalizedTitle = PlaylistImporter.normalize(title)
+            guard !normalizedTitle.isEmpty,
+                  let candidates = byNormalizedTitle[normalizedTitle]
+            else { return nil }
+            guard let artist else {
+                return PlaylistImporter.chooseBest(from: candidates)
+            }
+            let normalizedArtist = PlaylistImporter.normalize(artist)
+            return PlaylistImporter.chooseBest(from: candidates.filter {
+                PlaylistImporter.normalize($0.artistName ?? "") == normalizedArtist
+            })
+        }
     }
 
     /// 多个匹配命中时挑最高音质 (DuplicateDetector 已经把这一逻辑写好了)。
-    private static func chooseBest(from songs: [Song]) -> Song? {
+    nonisolated private static func chooseBest(from songs: [Song]) -> Song? {
         guard !songs.isEmpty else { return nil }
         return songs.max { DuplicateDetector.qualityScore(of: $0) < DuplicateDetector.qualityScore(of: $1) }
     }
 
-    private static func normalize(_ s: String) -> String {
+    nonisolated private static func normalize(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
     }
@@ -272,12 +296,9 @@ enum PlaylistImporter {
         named playlistName: String,
         library: MusicLibrary
     ) -> Playlist {
-        let playlist = library.createPlaylist(name: playlistName)
         let songIDs = preview.entries.compactMap { $0.matchedSong?.id }
-        // 按导入顺序加入歌单
-        for songID in songIDs {
-            library.add(songID: songID, toPlaylist: playlist.id)
-        }
-        return playlist
+        // 按导入顺序一次写入。逐首 add 会让大型歌单重复持久化整份曲库
+        // 快照并向 SwiftUI / CloudKit 发布 N 次。
+        return library.createPlaylist(name: playlistName, songIDs: songIDs)
     }
 }

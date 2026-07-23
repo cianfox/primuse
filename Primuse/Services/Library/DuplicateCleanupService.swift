@@ -57,43 +57,71 @@ final class DuplicateCleanupService {
                 self.activeTask = nil
             }
 
+            // Sidecar sharing used to scan the complete retained library once
+            // for every song being removed. Plan all decisions off-main in one
+            // pass before touching the source.
+            let librarySnapshot = self.library.songs
             let deletingIDs = Set(songs.map(\.id))
-            let retainedSongs = self.library.songs.filter { !deletingIDs.contains($0.id) }
-            var result = SongFileDeletionResult()
+            let sidecarDeletionSongIDs = await Task.detached(priority: .utility) {
+                let retainedSongs = librarySnapshot.filter { !deletingIDs.contains($0.id) }
+                return SourceManager.sidecarDeletionSongIDs(
+                    deleting: songs,
+                    retaining: retainedSongs
+                )
+            }.value
+
             // 只有源端文件确实被删 (或本就不存在) 的歌才能从库里移除并写
             // tombstone; 删除失败、文件仍在 NAS/云盘上的歌必须保留, 否则它们
             // 会被 tombstone 永久挡掉重扫, 而用户没有恢复入口。
             var removableSongs: [Song] = []
             var failedSongs: [Song] = []
-
-            for (idx, song) in songs.enumerated() {
-                if Task.isCancelled { break }
-                let deleteSidecars = self.sourceManager.shouldDeleteSidecars(
-                    for: song, retaining: retainedSongs
-                )
-                let songResult = await self.sourceManager.deleteSourceFilesAndCaches(
-                    for: song, deleteSidecars: deleteSidecars
-                )
-                result.merge(songResult)
-                if songResult.hasFailures {
-                    failedSongs.append(song)
-                } else {
-                    removableSongs.append(song)
+            var failureCount = 0
+            var lastProgressPublishAt = Date.distantPast
+            let outcomes = await self.sourceManager.deleteSourceFiles(
+                for: songs,
+                deleteSidecarsForSongIDs: sidecarDeletionSongIDs
+            ) { done in
+                // A local folder can delete hundreds of tiny files per second.
+                // Publishing every counter value made the entire duplicate
+                // Form recompute at that rate, so cap UI updates while keeping
+                // network-backed (slow) deletions visibly live.
+                let now = Date()
+                if done == songs.count
+                    || done.isMultiple(of: 16)
+                    || now.timeIntervalSince(lastProgressPublishAt) >= 0.1 {
+                    self.progress = Progress(done: done, total: songs.count)
+                    lastProgressPublishAt = now
                 }
-                self.progress = Progress(done: idx + 1, total: songs.count)
             }
 
-            if result.hasFailures {
-                plog("⚠️ Duplicate cleanup source deletion failures: \(result.failedPaths.count) (\(failedSongs.count) songs retained in library)")
+            for outcome in outcomes {
+                if outcome.result.hasFailures {
+                    failureCount += outcome.result.failedPaths.count
+                    failedSongs.append(outcome.song)
+                } else {
+                    removableSongs.append(outcome.song)
+                }
             }
 
-            self.library.deleteSongs(removableSongs)
-            for sourceID in Set(removableSongs.map(\.sourceID)) {
-                let remaining = self.library.songs.filter { $0.sourceID == sourceID }.count
+            if failureCount > 0 {
+                plog("⚠️ Duplicate cleanup source deletion failures: \(failureCount) (\(failedSongs.count) songs retained in library)")
+            }
+
+            // `primuseSongsRemoved` now performs cache cleanup once for this
+            // whole batch. The previous path deleted caches per song here and
+            // then deleted the same caches again from that notification.
+            let remainingCounts = self.library.deleteSongs(removableSongs)
+            for (sourceID, remaining) in remainingCounts {
                 self.sourcesStore.updateLocal(sourceID) { $0.songCount = remaining }
             }
             self.lastCompletedCount = removableSongs.count
             self.lastFailedTitles = failedSongs.map(\.title)
+
+            if outcomes.count < songs.count {
+                self.progress = nil
+            } else if self.progress?.done != songs.count {
+                self.progress = Progress(done: songs.count, total: songs.count)
+            }
         }
         activeTask = task
         return task
