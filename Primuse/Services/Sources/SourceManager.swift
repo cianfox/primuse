@@ -1948,55 +1948,117 @@ final class SourceManager {
             return outcomes
         }
 
-        var connectorBySourceID: [String: any MusicSourceConnector] = [:]
-        connectorBySourceID.reserveCapacity(sourceByID.count)
-        var connectionFailureBySourceID: [String: String] = [:]
-        var missingSourceIDs = Set<String>()
-        var outcomes: [SongFileDeletionOutcome] = []
-        outcomes.reserveCapacity(songs.count)
+        let songsBySourceID = Dictionary(grouping: songs, by: \Song.sourceID)
+        var orderedSourceIDs: [String] = []
+        var seenSourceIDs = Set<String>()
+        for song in songs where seenSourceIDs.insert(song.sourceID).inserted {
+            orderedSourceIDs.append(song.sourceID)
+        }
 
-        for (index, song) in songs.enumerated() {
-            if Task.isCancelled { break }
+        var outcomeBySongID: [String: SongFileDeletionOutcome] = [:]
+        outcomeBySongID.reserveCapacity(songs.count)
+        var completedCount = 0
 
-            let result: SongFileDeletionResult
-            if let source = sourceByID[song.sourceID] {
-                if connectorBySourceID[song.sourceID] == nil,
-                   connectionFailureBySourceID[song.sourceID] == nil {
-                    let created = connector(for: source)
-                    do {
-                        try await created.connect()
-                        connectorBySourceID[song.sourceID] = created
-                    } catch {
-                        connectionFailureBySourceID[song.sourceID] = error.localizedDescription
-                        plog("⚠️ Batch source deletion connection failed for source \(song.sourceID): \(error.localizedDescription)")
-                    }
+        sourceLoop: for sourceID in orderedSourceIDs {
+            guard let sourceSongs = songsBySourceID[sourceID], !sourceSongs.isEmpty else { continue }
+            guard let source = sourceByID[sourceID] else {
+                plog("⚠️ Batch source deletion could not find source \(sourceID)")
+                for song in sourceSongs {
+                    outcomeBySongID[song.id] = SongFileDeletionOutcome(
+                        song: song,
+                        result: Self.sourceNotFoundDeletionResult(for: song)
+                    )
+                    completedCount += 1
                 }
+                onProgress(completedCount)
+                continue
+            }
 
-                if let connectionFailure = connectionFailureBySourceID[song.sourceID] {
+            let conn = connector(for: source)
+            do {
+                try await conn.connect()
+            } catch {
+                let message = error.localizedDescription
+                plog("⚠️ Batch source deletion connection failed for source \(sourceID): \(message)")
+                for song in sourceSongs {
                     var failure = SongFileDeletionResult()
-                    failure.failedPaths.append(.init(path: song.filePath, message: connectionFailure))
-                    result = failure
-                } else if let conn = connectorBySourceID[song.sourceID] {
-                    result = await Self.performSourceFileDeletion(
+                    failure.failedPaths.append(.init(path: song.filePath, message: message))
+                    outcomeBySongID[song.id] = SongFileDeletionOutcome(song: song, result: failure)
+                    completedCount += 1
+                }
+                onProgress(completedCount)
+                continue
+            }
+
+            let batchSize = max(1, conn.preferredDeleteBatchSize)
+            if batchSize > 1 {
+                // Cloud providers such as Baidu expose a real batch recycle-bin
+                // API. Deleting 4K duplicates one HTTP call at a time takes
+                // minutes and quickly hits rate limits, so process bounded
+                // chunks and publish progress once per chunk.
+                for start in stride(from: 0, to: sourceSongs.count, by: batchSize) {
+                    if Task.isCancelled { break sourceLoop }
+                    let end = min(start + batchSize, sourceSongs.count)
+                    let chunk = Array(sourceSongs[start..<end])
+                    do {
+                        try await conn.deleteFiles(at: chunk.map(\.filePath))
+                        for song in chunk {
+                            var result = SongFileDeletionResult()
+                            result.deletedPaths.append(song.filePath)
+                            outcomeBySongID[song.id] = SongFileDeletionOutcome(song: song, result: result)
+                        }
+
+                        // Sidecars are cleanup-only: once the audio deletion
+                        // succeeded, a missing/locked sidecar must never keep a
+                        // dead song in the library. Batch them best-effort.
+                        let sidecarPaths = Array(Set(chunk
+                            .filter { deleteSidecarsForSongIDs.contains($0.id) }
+                            .flatMap { Self.sidecarPathsToDelete(for: $0) }))
+                        for sidecarStart in stride(from: 0, to: sidecarPaths.count, by: batchSize) {
+                            let sidecarEnd = min(sidecarStart + batchSize, sidecarPaths.count)
+                            do {
+                                try await conn.deleteFiles(
+                                    at: Array(sidecarPaths[sidecarStart..<sidecarEnd])
+                                )
+                            } catch {
+                                plog("⚠️ Batch sidecar deletion failed for source \(sourceID): \(error.localizedDescription)")
+                            }
+                        }
+                    } catch {
+                        let message = error.localizedDescription
+                        for song in chunk {
+                            var result = SongFileDeletionResult()
+                            if Self.isMissingFileError(error) {
+                                result.missingPaths.append(song.filePath)
+                            } else {
+                                result.failedPaths.append(.init(path: song.filePath, message: message))
+                            }
+                            outcomeBySongID[song.id] = SongFileDeletionOutcome(song: song, result: result)
+                        }
+                        plog("⚠️ Batch source deletion failed for source \(sourceID), paths=\(chunk.count): \(message)")
+                    }
+                    completedCount += chunk.count
+                    onProgress(completedCount)
+                }
+            } else {
+                for song in sourceSongs {
+                    if Task.isCancelled { break sourceLoop }
+                    let result = await Self.performSourceFileDeletion(
                         for: song,
                         connector: conn,
                         deleteSidecars: deleteSidecarsForSongIDs.contains(song.id),
                         connectFirst: false
                     )
-                } else {
-                    result = Self.sourceNotFoundDeletionResult(for: song)
-                }
-            } else {
-                result = Self.sourceNotFoundDeletionResult(for: song)
-                if missingSourceIDs.insert(song.sourceID).inserted {
-                    plog("⚠️ Batch source deletion could not find source \(song.sourceID)")
+                    outcomeBySongID[song.id] = SongFileDeletionOutcome(song: song, result: result)
+                    completedCount += 1
+                    onProgress(completedCount)
                 }
             }
-
-            outcomes.append(SongFileDeletionOutcome(song: song, result: result))
-            onProgress(index + 1)
         }
-        return outcomes
+
+        // Preserve caller order even though provider batching is grouped by
+        // source. This keeps progress/result handling deterministic.
+        return songs.compactMap { outcomeBySongID[$0.id] }
     }
 
     /// Build all sidecar-sharing decisions in one O(librarySize) pass. The old
@@ -2076,7 +2138,10 @@ final class SourceManager {
                         if isMissingFileError(error) {
                             result.missingPaths.append(path)
                         } else {
-                            result.failedPaths.append(.init(path: path, message: error.localizedDescription))
+                            // The audio is already gone. A sidecar cleanup
+                            // failure is a warning, not a reason to retain a
+                            // library row that can no longer play.
+                            plog("⚠️ Delete sidecar failed for '\(song.title)' at \(path): \(error.localizedDescription)")
                         }
                     }
                 }

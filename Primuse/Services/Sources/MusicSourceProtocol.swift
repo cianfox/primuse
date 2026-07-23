@@ -221,6 +221,13 @@ protocol MusicSourceConnector: Sendable {
     /// file and safe same-name sidecars.
     func deleteFile(at path: String) async throws
 
+    /// Delete several remote files in one source operation. Connectors whose
+    /// provider exposes a batch API override this together with
+    /// `preferredDeleteBatchSize`; the default preserves the existing serial
+    /// behaviour for SMB/NFS/WebDAV and other stateful filesystems.
+    func deleteFiles(at paths: [String]) async throws
+    var preferredDeleteBatchSize: Int { get }
+
     /// Count audio files in a directory (recursive). Default implementation uses scanAudioFiles.
     func countAudioFiles(in path: String) async throws -> Int
 
@@ -250,6 +257,7 @@ protocol MusicSourceConnector: Sendable {
 
 extension MusicSourceConnector {
     var supportsSidecarWriting: Bool { false }
+    var preferredDeleteBatchSize: Int { 1 }
 
     /// 默认 noop ── 大多数 connector 不需要预热, 单次 fetchRange 自带的
     /// metadata resolve 已经够。只有受限速 / batch API 收益高的源 (百度网盘)
@@ -275,6 +283,12 @@ extension MusicSourceConnector {
 
     func deleteFile(at path: String) async throws {
         throw SourceError.connectionFailed("This source does not support file deletion")
+    }
+
+    func deleteFiles(at paths: [String]) async throws {
+        for path in paths {
+            try await deleteFile(at: path)
+        }
     }
 
     /// Default fallback: download the whole file via `localURL` then slice.

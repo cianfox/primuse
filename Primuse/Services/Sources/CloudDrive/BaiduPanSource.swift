@@ -9,6 +9,7 @@ import PrimuseKit
 actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
     let sourceID: String
     nonisolated let supportsSidecarWriting = true   // 刮削歌词/封面写回百度网盘同目录
+    nonisolated var preferredDeleteBatchSize: Int { 100 }
     private let helper: CloudDriveHelper
 
     /// 写 sidecar 到百度网盘:precreate → superfile2(单分片) → create(rtype=3 覆盖)。
@@ -70,6 +71,58 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
             throw CloudDriveError.apiError(0, "Baidu create failed: \(crJSON)")
         }
         plog("📁 Baidu sidecar uploaded: \((path as NSString).lastPathComponent)")
+    }
+
+    /// 百度 filemanager 支持一次删除多个路径。旧实现没有覆写协议默认方法，
+    /// 所以一键去重的每首歌都会立即失败为“不支持删除”。路径直接按批同步
+    /// 提交到回收站；不能在这里逐目录预查是否存在，否则数千首分散在大量
+    /// 专辑目录时，会把几十次批量请求重新膨胀成数千次网络往返。
+    func deleteFile(at path: String) async throws {
+        try await deleteFiles(at: [path])
+    }
+
+    func deleteFiles(at paths: [String]) async throws {
+        let requestedPaths = Array(Set(paths)).sorted()
+        guard !requestedPaths.isEmpty else { return }
+
+        let fileListData = try JSONSerialization.data(
+            withJSONObject: requestedPaths.map { ["path": $0] }
+        )
+        guard let fileList = String(data: fileListData, encoding: .utf8) else {
+            throw CloudDriveError.invalidResponse
+        }
+
+        _ = try await callFormAPI(
+            base: "\(Self.apiBase)/rest/2.0/xpan/file",
+            queryItems: [
+                .init(name: "method", value: "filemanager"),
+                .init(name: "opera", value: "delete"),
+            ],
+            formItems: [
+                .init(name: "async", value: "0"),
+                .init(name: "filelist", value: fileList),
+            ]
+        )
+
+        let deletedSet = Set(requestedPaths)
+        for path in requestedPaths {
+            invalidateDlink(for: path)
+            invalidateCdnURL(for: path)
+        }
+        // Preserve the useful directory cache for the next chunk, but remove
+        // entries that were just sent to the recycle bin.
+        let affectedDirectories = Set(requestedPaths.map {
+            ($0 as NSString).deletingLastPathComponent
+        })
+        for directory in affectedDirectories {
+            guard let cached = dirListingCache[directory] else { continue }
+            let remaining = cached.entries.filter { entry in
+                guard let path = entry["path"] as? String else { return true }
+                return !deletedSet.contains(path)
+            }
+            dirListingCache[directory] = (remaining, cached.expiresAt)
+        }
+        plog("🗑️ Baidu batch deleted \(requestedPaths.count) paths")
     }
     private static let apiBase = "https://pan.baidu.com"
     private static let oauthBase = "https://openapi.baidu.com/oauth/2.0"
@@ -709,6 +762,59 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
 
             let msg = (json["errmsg"] as? String) ?? humanReadable(errno: errno)
             throw CloudDriveError.apiError(errno, msg)
+        }
+    }
+
+    /// POST form variant used by xpan/filemanager. It mirrors `callAPI`'s
+    /// token handling, throttling, errno parsing, and 31034 backoff instead of
+    /// treating Baidu's always-HTTP-200 error response as success.
+    private func callFormAPI(
+        base: String,
+        queryItems: [URLQueryItem],
+        formItems: [URLQueryItem]
+    ) async throws -> [String: Any] {
+        var attempt = 0
+        var backoff: TimeInterval = 0.5
+        while true {
+            try await throttle()
+            let token = try await getToken()
+            var components = URLComponents(string: base)!
+            components.queryItems = queryItems + [.init(name: "access_token", value: token)]
+            guard let url = components.url else { throw CloudDriveError.invalidResponse }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.httpBody = CloudDriveHelper.formURLEncodedBody(formItems)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                plog("☁️ Baidu HTTP \(http.statusCode) url=\(base) body=\(body.prefix(500))")
+                throw CloudDriveError.apiError(http.statusCode, body)
+            }
+
+            guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let errno = (json["errno"] as? NSNumber)?.intValue
+            else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                plog("☁️ Baidu invalid filemanager response url=\(base) body=\(body.prefix(500))")
+                throw CloudDriveError.invalidResponse
+            }
+            if errno == 0 { return json }
+
+            let bodyPreview = String(data: data, encoding: .utf8)?.prefix(500) ?? ""
+            plog("☁️ Baidu errno=\(errno) attempt=\(attempt) url=\(base) body=\(bodyPreview)")
+            if errno == 31034, attempt < Self.rateLimitMaxRetries {
+                let nanoseconds = (backoff * 1_000_000_000).finiteUInt64(or: 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanoseconds)
+                backoff *= 2
+                attempt += 1
+                continue
+            }
+
+            let message = (json["errmsg"] as? String) ?? humanReadable(errno: errno)
+            throw CloudDriveError.apiError(errno, message)
         }
     }
 
