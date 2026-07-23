@@ -138,6 +138,10 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
     /// errno 31034 命中时最多重试次数（指数退避）
     private static let rateLimitMaxRetries = 4
 
+    /// 切换前后台时，系统可能中断正在进行的 URLSession 请求。批量去重不能
+    /// 因一次瞬时断线直接放弃整批 100 首；任务恢复后用同一批路径重试。
+    private static let transportMaxRetries = 4
+
     /// 解析过的 dlink 缓存有效期。百度 dlink 实际有效 ~8 小时，但保守
     /// 一点用 30 分钟——避免 token 刷新或服务端策略变化时拿到老链接。
     /// 对一次播放来说远超够用：5MB 的歌按 256KB 一块拉 20 次，全程
@@ -773,8 +777,10 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
         queryItems: [URLQueryItem],
         formItems: [URLQueryItem]
     ) async throws -> [String: Any] {
-        var attempt = 0
-        var backoff: TimeInterval = 0.5
+        var rateLimitAttempt = 0
+        var transportAttempt = 0
+        var rateLimitBackoff: TimeInterval = 0.5
+        var transportBackoff: TimeInterval = 0.75
         while true {
             try await throttle()
             let token = try await getToken()
@@ -787,10 +793,31 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.httpBody = CloudDriveHelper.formURLEncodedBody(formItems)
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                guard Self.isRetryableTransportError(error),
+                      transportAttempt < Self.transportMaxRetries
+                else { throw error }
+
+                transportAttempt += 1
+                plog("☁️ Baidu filemanager transport retry \(transportAttempt)/\(Self.transportMaxRetries): \(error.localizedDescription)")
+                try await Task.sleep(for: .seconds(transportBackoff))
+                transportBackoff = min(transportBackoff * 2, 6)
+                continue
+            }
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 plog("☁️ Baidu HTTP \(http.statusCode) url=\(base) body=\(body.prefix(500))")
+                if (http.statusCode == 408 || http.statusCode == 429 || http.statusCode >= 500),
+                   transportAttempt < Self.transportMaxRetries {
+                    transportAttempt += 1
+                    try await Task.sleep(for: .seconds(transportBackoff))
+                    transportBackoff = min(transportBackoff * 2, 6)
+                    continue
+                }
                 throw CloudDriveError.apiError(http.statusCode, body)
             }
 
@@ -804,17 +831,35 @@ actor BaiduPanSource: MusicSourceConnector, OAuthCloudSource {
             if errno == 0 { return json }
 
             let bodyPreview = String(data: data, encoding: .utf8)?.prefix(500) ?? ""
-            plog("☁️ Baidu errno=\(errno) attempt=\(attempt) url=\(base) body=\(bodyPreview)")
-            if errno == 31034, attempt < Self.rateLimitMaxRetries {
-                let nanoseconds = (backoff * 1_000_000_000).finiteUInt64(or: 1_000_000_000)
+            plog("☁️ Baidu errno=\(errno) attempt=\(rateLimitAttempt) url=\(base) body=\(bodyPreview)")
+            if errno == 31034, rateLimitAttempt < Self.rateLimitMaxRetries {
+                let nanoseconds = (rateLimitBackoff * 1_000_000_000).finiteUInt64(or: 1_000_000_000)
                 try await Task.sleep(nanoseconds: nanoseconds)
-                backoff *= 2
-                attempt += 1
+                rateLimitBackoff *= 2
+                rateLimitAttempt += 1
                 continue
             }
 
             let message = (json["errmsg"] as? String) ?? humanReadable(errno: errno)
             throw CloudDriveError.apiError(errno, message)
+        }
+    }
+
+    private nonisolated static func isRetryableTransportError(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .resourceUnavailable:
+            return true
+        default:
+            return false
         }
     }
 
